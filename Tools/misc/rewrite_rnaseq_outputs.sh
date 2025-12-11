@@ -1,0 +1,14 @@
+
+HUMAN
+
+more chr10/indels.txt | grep '#$ COLUMNS' > Indels.tsv; for((i=1;i<=22;i++)); do cat chr$i/indels.txt | grep -v '#' >> Indels.tsv; done; cat chrX/indels.txt chrY/indels.txt chrM/indels.txt | grep -v '#' >> Indels.tsv; mod Indels.tsv; more chr10/snps.txt | grep '#$ COLUMNS' > SNPs.tsv; for((i=1;i<=22;i++)); do cat chr$i/snps.txt | grep -v '#' >> SNPs.tsv; done; cat chrX/snps.txt chrY/snps.txt chrM/snps.txt | grep -v '#' >> SNPs.tsv; mod SNPs.tsv; for((i=1;i<=22;i++)); do cat chr$i/chr${i}_exon_count.txt >> RPKM-Exons.tsv; done; cat chrX/chrX_exon_count.txt chrY/chrY_exon_count.txt chrM/chrM_exon_count.txt >> RPKM-Exons.tsv; mod RPKM-Exons.tsv; for((i=1;i<=22;i++)); do cat chr$i/chr${i}_genes_count.txt >> RPKM-Genes.tsv; done; cat chrX/chrX_genes_count.txt chrY/chrY_genes_count.txt chrM/chrM_genes_count.txt >> RPKM-Genes.tsv; mod RPKM-Genes.tsv; for((i=1;i<=22;i++)); do cat chr$i/chr${i}_splice_count.txt >> RPKM-Junctions.tsv; done; cat chrX/chrX_splice_count.txt chrY/chrY_splice_count.txt chrM/chrM_splice_count.txt >> RPKM-Junctions.tsv; mod RPKM-Junctions.tsv; ll
+
+
+MOUSE
+
+more chr10/indels.txt | grep '#$ COLUMNS' > Indels.tsv; for((i=1;i<=19;i++)); do cat chr$i/indels.txt | grep -v '#' >> Indels.tsv; done; cat chrX/indels.txt chrY/indels.txt chrM/indels.txt | grep -v '#' >> Indels.tsv; mod Indels.tsv; more chr10/snps.txt | grep '#$ COLUMNS' > SNPs.tsv; for((i=1;i<=19;i++)); do cat chr$i/snps.txt | grep -v '#' >> SNPs.tsv; done; cat chrX/snps.txt chrY/snps.txt chrM/snps.txt | grep -v '#' >> SNPs.tsv; mod SNPs.tsv; for((i=1;i<=19;i++)); do cat chr$i/chr${i}_exon_count.txt >> RPKM-Exons.tsv; done; cat chrX/chrX_exon_count.txt chrY/chrY_exon_count.txt chrM/chrM_exon_count.txt >> RPKM-Exons.tsv; mod RPKM-Exons.tsv; for((i=1;i<=19;i++)); do cat chr$i/chr${i}_genes_count.txt >> RPKM-Genes.tsv; done; cat chrX/chrX_genes_count.txt chrY/chrY_genes_count.txt chrM/chrM_genes_count.txt >> RPKM-Genes.tsv; mod RPKM-Genes.tsv; for((i=1;i<=19;i++)); do cat chr$i/chr${i}_splice_count.txt >> RPKM-Junctions.tsv; done; cat chrX/chrX_splice_count.txt chrY/chrY_splice_count.txt chrM/chrM_splice_count.txt >> RPKM-Junctions.tsv; mod RPKM-Junctions.tsv; ll
+
+WITH CHROMOSOME LIST IN "chromosomes.txt"
+
+more chr10/indels.txt | grep '#$ COLUMNS' > Indels.tsv; for chr in `cat ../chromosomes.txt`; do cat $chr/indels.txt | grep -v '#' >> Indels.tsv; done; mod Indels.tsv; more chr10/snps.txt | grep '#$ COLUMNS' > SNPs.tsv; for chr in `cat ../chromosomes.txt`; do cat $chr/snps.txt | grep -v '#' >> SNPs.tsv; done; mod SNPs.tsv; for chr in `cat ../chromosomes.txt`; do cat $chr/${chr}_exon_count.txt >> RPKM-Exons.tsv; done; mod RPKM-Exons.tsv; for chr in `cat ../chromosomes.txt`; do cat $chr/${chr}_genes_count.txt >> RPKM-Genes.tsv; done; mod RPKM-Genes.tsv; for chr in `cat ../chromosomes.txt`; do cat $chr/${chr}_splice_count.txt >> RPKM-Junctions.tsv; done; mod RPKM-Junctions.tsv; ll
+
