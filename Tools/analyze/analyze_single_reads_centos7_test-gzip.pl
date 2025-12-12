@@ -34,8 +34,8 @@ my $len=length($cand); if(($len>=4)&&($len<=12)&&($cand=~/^[ACGT]+$/)){
 $multiplex=1; if($barcode eq ""){ $barcode="$cand"; } else{ $barcode.="-$cand"; } }
 if($cand eq "PrNotRecog"){ $multiplex=1; $barcode="Not Recognized"; } } }
 if(! -f "$fastq"){ print "Input Fastq File Not Found.\n"; exit; }
-my $gdfont_path="/usr/share/fonts/dejavu"; if(! -d "$gdfont_path"){
-print "Font Not Found.\n"; exit; } my $gdfont_export="export GDFONTPATH=$gdfont_path";
+my $gdfont_path="/usr/share/fonts/dejavu-sans-fonts:/usr/share/fonts/dejavu-serif-fonts:/usr/share/fonts/dejavu-sans-mono-fonts";
+my $gdfont_export="export GDFONTPATH=$gdfont_path";
 if($verbose){ print "\n  FASTQ FILE : $fastq\n  PREFIX OUT : $prefix\n  SAMPLE ";
 print "ID  : $library\n  MULTIPLEX  : $multiplex\n  BARCODE    : $barcode\n\n"; }
 
@@ -69,9 +69,9 @@ my $xlabel_font="font \"DejaVuSerif-Bold,12\""; my $ylabel_font="font \"DejaVuSe
 my $copyright_font="font \"DejaVuSerif,9\"";    my $copyright_pos="screen 0.01, screen 0.025";
 my $phred_ylabel="Mean PHRED Quality Score";       my $calls_ylabel="Base Call Frequency";
 my $stats_font="font \"DejaVuSansMono-Bold,12\""; my $stats_pos="screen 0.62, screen 0.82";
-my $xlabel="Sequence Position"; my $copyright="\251 Institute for Genomics and Bioinformatics";
-my $plot_width=820; my $plot_height=540; my $c_black="lt -1"; my $c_blue="lt 3"; my $c_red="lt 1";
-my $c_orange="lt 9"; my $c_lgreen="lt 2"; my $c_dgreen="lt 10"; my $tmargin="5"; my $bmargin="4";
+my $xlabel="Sequence Position"; my $copyright="Institute for Genomics and Bioinformatics";
+my $plot_width=820; my $plot_height=540; my $c_black="lc rgb \"#000000\""; my $c_blue="lc rgb \"#0072B2\""; my $c_red="lc rgb \"#D55E00\"";
+my $c_orange="lc rgb \"#E69F00\""; my $c_lgreen="lc rgb \"#009E73\""; my $c_dgreen="lc rgb \"#009E73\""; my $tmargin="5"; my $bmargin="4";
 my $title_lane1=""; my $title_lane2=""; my $title_lane3=""; my $pos_min=1; my $pos_xtics=5;
 my $pos_max; my $bin_min=1; my $bin_max; my $bin_xtics=10; my $phred_min=60; my $phred_max=0;
 my $phred_ytics=1;my $phred_lmargin="8";my $phred_rmargin="3";my $phred_offset="0";my $stats_label;

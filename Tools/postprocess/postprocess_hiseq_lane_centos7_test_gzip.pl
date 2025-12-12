@@ -18,7 +18,7 @@ print "Start id S number =$start_s_id\n";
 ####################################################################################################
 
 # Load Sample Information
-my $is_barcoded=0; my $num_barcodes=0; my @barcodes; my @prefixes; open(IN,"$sample_sheet");
+my $is_barcoded=0; my $num_barcodes=0; my @barcodes; my @prefixes; my @projects; open(IN,"$sample_sheet");
 if((my $l=<IN>)!~"Data"){ print "Incorrect file header"; exit 1; }
 if((my $l=<IN>)!~"Project,Lane,SampleID"){ print "Incorrect file header"; exit 1; }
 my $generic_sample_id="1"; my @generic;
@@ -35,6 +35,7 @@ while(my $l=<IN>){
       if($d[5] eq ""){ push(@barcodes,"$d[4]"); }
       else{ push(@barcodes,"$d[4]-$d[5]"); }
       push(@prefixes,"$d[2]");
+      push(@projects,"$d[0]");
       push(@generic,"$generic_sample_id"); } }
       print "in check $d[2] \n";
   $generic_sample_id++; } close(IN);
@@ -52,18 +53,22 @@ if($is_barcoded==0)
 # Process Lane (Case Multiplexed)
 else{
   print "\n  Found $num_barcodes Barcodes For Lane $lane ($name)\n\n";
+  my %project_counters;
   for(my $i=0;$i<$num_barcodes;$i++){
-    my $barcode=$barcodes[$i]; my $prefix=$prefixes[$i]; my $genid=$generic[$i] +  $start_s_id - 1;
+    my $project=$projects[$i]; $project_counters{$project}++;
+    my $barcode=$barcodes[$i]; my $prefix=$prefixes[$i]; 
+    my $sample_id_in_project=$project_counters{$project};
+    my $genid=$generic[$i] + $start_s_id - 1;
     print "  Processing Library \"$name\" - Barcode $barcode ($prefix)... genid=${genid} \n";
-    my $file_in_R1="${prefix}_S${genid}_L00${lane}_R1_001.fastq.gz";
-    my $file_in_R2="${prefix}_S${genid}_L00${lane}_R2_001.fastq.gz";
-    if(! -f "$file_in_R1"){ print "Cannot find fastq file 1 $file_in_R1 \n"; exit 1; }
+    my $file_in_R1="data/output/${project}/${project}${sample_id_in_project}_S${genid}_L00${lane}_R1_001.fastq.gz";
+    my $file_in_R2="data/output/${project}/${project}${sample_id_in_project}_S${genid}_L00${lane}_R2_001.fastq.gz";
+    if(! -f "$file_in_R1"){ print "Cannot find fastq file 1 $file_in_R1 \n"; print $file_in_R1; exit 1; }
     if(($num_reads==2)&&(! -f "$file_in_R2")){ print "Cannot find fastq file\n"; exit 1; }
     
     ################################################################################################
     
     if($num_reads==1){
-      my $file_out="${prefix}-${barcode}-Sequences.txt.gz";
+      my $file_out="data/output/processed/${prefix}-${barcode}-Sequences.txt.gz";
       `mv $file_in_R1 $file_out`;
       `$process_single $file_out ${prefix}-${barcode} \"$name\"`;
       `chmod 770 $prefix*`; `chmod 770 $file_out`;

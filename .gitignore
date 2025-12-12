@@ -1,1 +1,7 @@
 data/
+*.tar
+*.tar.gz
+*.zip
+md5sum*
+*.csv
+*.png
