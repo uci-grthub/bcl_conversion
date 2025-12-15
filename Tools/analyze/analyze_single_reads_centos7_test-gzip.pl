@@ -1,5 +1,6 @@
 #!/usr/bin/perl
 use strict;
+use POSIX qw(strftime);
 
 ##########################################################################################
 #                                                                                        #
@@ -27,6 +28,7 @@ my $max_number_bins=400;       # Max number of bins to display on plots
 # Script Inputs
 my $script_usage="./analyze_single_reads.pl  fastq  prefix  [sample]";
 if(($#ARGV!=1)&&($#ARGV!=2)){ print "\nUsage: $script_usage\n\n"; exit; }
+log_msg("Starting analyze_single_reads.pl with args: @ARGV");
 my $fastq=$ARGV[0]; my $prefix=$ARGV[1]; my $library="$prefix";
 my $multiplex=0; my $barcode=""; if($#ARGV==2){ $library=$ARGV[2]; }
 if($prefix=~"-"){ my @d=split("-",$prefix); foreach my $cand (@d){
@@ -88,6 +90,7 @@ my $cumul_ytics; my $cumul_step; my $cumul_rmargin; my $cumul_offset=-0.5; my $c
 
 # Performing Statistics Per Position
 if($verbose){ print "  Analyzing fastq file (long process)...\n"; }
+log_msg("Analyzing fastq file: $fastq");
 open(IN,"gunzip -c $fastq |"); while(my $l=<IN>){ if($l!~/^@/){
 print "Input not in FastQ file format.\n"; exit; } $l=<IN>; chomp($l);
 my @nts=split("",$l); my $len=$#nts+1; $POS_NUMSQ[$len-1]++;
@@ -97,11 +100,13 @@ if(($#phred+1)!=$len){ print "Scores length mismatch.\n"; exit; }
 for(my $i=0;$i<$len;$i++){ $POS_PHRED[$i]+=(int(ord($phred[$i]))-$offset); }
 $num_reads++; } close(IN); if($num_reads==0){ print "Empty FastQ File!\n"; exit; }
 if($verbose){ print "  Done! $num_reads reads found in input.\n"; }
+log_msg("Done analyzing fastq. Found $num_reads reads.");
 
 ##########################################################################################
 
 # Finalizing Statistics Per Position
 if($verbose){ print "  Finalizing stats per position...\n\n"; }
+log_msg("Finalizing stats per position...");
 for(my $i=0;$i<=$#POS_NUMSQ;$i++){ my $pos=$i+1; push(@POS_ID,"$pos");
 if($POS_CUMUL[$i] eq ""){ print "Inconsistent cumul. counts.\n"; exit; }
 if($POS_PHRED[$i] eq ""){ print "Inconsistent PHRED scores.\n"; exit; }
@@ -123,7 +128,9 @@ $avg_len=sprintf("%.2f",$avg_len/$num_reads); $num_reads=format_int($num_reads);
 # Reporting Statistics Per Position
 if(($num_len==1)&&($num_POS<=$max_illumina_len)){
 if($verbose){ print "  CASE 1 detected (Illumina)\n"; }
+log_msg("CASE 1 detected (Illumina)");
 if(($verbose)&&($write_raw_stats_pos)){ print "  Writing stats per position...\n"; }
+log_msg("Writing stats per position to $raw_stats_pos_out");
 open(OUT,">$raw_stats_pos_out"); print OUT "Position\tNum Reads\tCumulated\tPHRED\tA\tC\tG\tT\tN\n";
 for(my $i=0;$i<=$#POS_NUMSQ;$i++){ $POS_PHRED[$i]=sprintf("%.2f",$POS_PHRED[$i]/$POS_CUMUL[$i]);
 print OUT "$POS_ID[$i]\t$POS_NUMSQ[$i]\t$POS_CUMUL[$i]\t$POS_PHRED[$i]"; foreach my $nt (@NTS){
@@ -135,6 +142,7 @@ print OUT "\t".$POS_CALLS{"$i-$nt"}; } print OUT "\n"; } close(OUT);
 
 # Reporting Basic Sample Description
 if($verbose){ print "  Writing basic sample info...\n"; } open(OUT,">$basic_description");
+log_msg("Writing basic sample info to $basic_description");
 print OUT "Files   : $prefix-*\n"; if($multiplex){ print OUT "Library : $library\n";
 print OUT "Barcode : $barcode\n"; } else{ print OUT "Sample  : $library\n"; }
 print OUT "#Reads  : $num_reads\n#Cycles : $num_POS\n"; close(OUT); `chmod 770 $basic_description`;
@@ -143,6 +151,7 @@ print OUT "#Reads  : $num_reads\n#Cycles : $num_POS\n"; close(OUT); `chmod 770 $
 
 # Extracting Graph Features
 if($verbose){ print "  Extracting graph features...\n\n"; } if($multiplex){
+log_msg("Extracting graph features...");
 $title_lane1="Library '$library' - Barcode"; if($barcode=~/^[ACGT]+$/){
 $title_lane1.=" '$barcode'"; } elsif($barcode eq "Not Recognized"){
 $title_lane1.=" $barcode"; } else{ $title_lane1.="s '$barcode'"; } } else{
@@ -159,6 +168,7 @@ if($calls_max>1){ $calls_max=1; } if($calls_max<0.5){ $calls_max=0.5; }
 
 # Generating Gnuplot Figure - PHRED Scores
 if($verbose){ print "  Generating plot for quality scores...\n"; } open(OUT,">$gnuplot_data");
+log_msg("Generating plot for quality scores: $gnuplot_phred_out");
 for(my $i=0;$i<$num_POS;$i++){ print OUT "$POS_ID[$i] $POS_PHRED[$i]\n"; } close(OUT);
 $title_lane3="Sequencing Data Quality"; open(OUT,">$gnuplot_source");
 print OUT "set term png size $plot_width,$plot_height $plot_font\n";
@@ -183,6 +193,7 @@ print OUT "plot \"$gnuplot_data\" using 1:2 with lines $c_blue lw 2 notitle\n"; 
 
 # Generating Gnuplot Figure - Base Composition
 if($verbose){ print "  Generating plot for base composition...\n\n"; }
+log_msg("Generating plot for base composition: $gnuplot_calls_out");
 open(OUT,">$gnuplot_data"); for(my $i=0;$i<$num_POS;$i++){ print OUT "$POS_ID[$i]";
 foreach my $nt (@NTS){ print OUT " ".$POS_CALLS{"$i-$nt"}; } print OUT "\n"; }
 close(OUT); $title_lane3="Base Composition"; open(OUT,">$gnuplot_source");
@@ -220,7 +231,9 @@ print OUT "\"$gnuplot_data\" using 1:6 with lines $c_black lw 2 title \"N\"\n"; 
 # Reporting Statistics Per Position
 elsif(($num_len>1)&&($num_POS>=$min_pacbio_len)){
 if($verbose){ print "  CASE 2 detected (PacBio)\n"; }
+log_msg("CASE 2 detected (PacBio)");
 if(($verbose)&&($write_raw_stats_pos)){ print "  Writing stats per position...\n"; }
+log_msg("Writing stats per position to $raw_stats_pos_out");
 open(OUT,">$raw_stats_pos_out"); print OUT "Position\tNum Reads\tCumulated\tPHRED\tA\tC\tG\tT\tN\n";
 for(my $i=0;$i<=$#POS_NUMSQ;$i++){ my $pos_phred=sprintf("%.2f",$POS_PHRED[$i]/$POS_CUMUL[$i]);
 print OUT "$POS_ID[$i]\t$POS_NUMSQ[$i]\t$POS_CUMUL[$i]\t$pos_phred";
@@ -232,6 +245,7 @@ if($write_raw_stats_pos==0){ `rm -rf $raw_stats_pos_out`; }
 
 # Reporting Basic Sample Description
 if($verbose){ print "  Writing basic sample info...\n"; } open(OUT,">$basic_description");
+log_msg("Writing basic sample info to $basic_description");
 print OUT "Files   : $prefix-*\nSample  : $library\n#Reads  : $num_reads\nMin Len : $min_len\n";
 print OUT "Max Len : $max_len\nAvg Len : $avg_len\n"; close(OUT); `chmod 770 $basic_description`;
 
@@ -239,6 +253,7 @@ print OUT "Max Len : $max_len\nAvg Len : $avg_len\n"; close(OUT); `chmod 770 $ba
 
 # Extracting Statistics Per Bin
 if($verbose){ print "  Extracting stats per bin...\n"; } $num_BIN=$num_POS;
+log_msg("Extracting stats per bin...");
 while($num_BIN>$max_number_bins){ $BIN_len++; $num_BIN=$num_POS/$BIN_len; }
 $num_BIN=0; for(my $i=0;$i<$num_POS;$i++){ if($i==(($num_BIN+1)*$BIN_len)){
 $num_BIN++; } $BIN_ID[$num_BIN]=$POS_ID[$i]; $BIN_NUMSQ[$num_BIN]+=$POS_NUMSQ[$i];
@@ -249,6 +264,7 @@ foreach my $nt (@NTS){ $BIN_CALLS{"$num_BIN-$nt"}+=$POS_CALLS{"$i-$nt"}; } } $nu
 
 # Reporting Statistics Per Bin
 if(($verbose)&&($write_raw_stats_bin)){ print "  Writing stats per bin...\n"; } $sum_nocall=0;
+log_msg("Writing stats per bin to $raw_stats_bin_out");
 open(OUT,">$raw_stats_bin_out"); print OUT "Position\tNum Reads\tCumulated\tPHRED\tA\tC\tG\tT\tN\n";
 for(my $i=0;$i<$num_BIN;$i++){ $BIN_PHRED[$i]=sprintf("%.2f",$BIN_PHRED[$i]/$BIN_CUMUL[$i]);
 print OUT "$BIN_ID[$i]\t$BIN_NUMSQ[$i]\t$BIN_CUMUL[$i]\t$BIN_PHRED[$i]"; foreach my $nt (@NTS){
@@ -262,6 +278,7 @@ if($write_raw_stats_bin==0){ `rm -rf $raw_stats_bin_out`; }
 
 # Extracting Graph Features
 if($verbose){ print "  Extracting graph features...\n\n"; }
+log_msg("Extracting graph features...");
 $title_lane1="Sample '$library' - $num_reads Sequences"; $bin_min=$BIN_ID[0];
 $bin_max=$num_POS; $bin_xtics=best_interval_len($bin_max); $bin_max+=int($bin_xtics/5);
 while(($bin_max/$bin_xtics)>17){ $bin_xtics+=best_interval_len($bin_max); }
@@ -287,6 +304,7 @@ $stats_label.=format_int($max_len)."\\nAvg length = ".format_int(int($avg_len+0.
 
 # Generating Gnuplot Figure - PHRED Scores
 if($verbose){ print "  Generating plot for quality scores...\n"; } open(OUT,">$gnuplot_data");
+log_msg("Generating plot for quality scores: $gnuplot_phred_out");
 for(my $i=0;$i<$num_BIN;$i++){ print OUT "$BIN_ID[$i] $BIN_PHRED[$i]\n"; } close(OUT);
 $title_lane3="Sequencing Data Quality"; open(OUT,">$gnuplot_source");
 print OUT "set term png size $plot_width,$plot_height $plot_font\n";
@@ -311,6 +329,7 @@ print OUT "plot \"$gnuplot_data\" using 1:2 with lines $c_blue lw 2 notitle\n"; 
 
 # Generating Gnuplot Figure - Base Composition
 if($verbose){ print "  Generating plot for base composition...\n"; } open(OUT,">$gnuplot_data");
+log_msg("Generating plot for base composition: $gnuplot_calls_out");
 for(my $i=0;$i<$num_BIN;$i++){ print OUT "$BIN_ID[$i]"; foreach my $nt (@NTS){
 if(!(($sum_nocall==0)&&($nt eq "N"))){ print OUT " ".$BIN_CALLS{"$i-$nt"}; } }
 print OUT "\n"; } close(OUT); $title_lane3="Base Composition"; open(OUT,">$gnuplot_source");
@@ -341,6 +360,7 @@ else{ print OUT "\n"; } close(OUT);
 
 # Generating Gnuplot Figure - Read Length Distribution
 if($verbose){ print "  Generating plot for length distribution...\n\n"; }
+log_msg("Generating plot for length distribution: $gnuplot_reads_out");
 open(OUT,">$gnuplot_data"); for(my $i=0;$i<$num_BIN;$i++){
 print OUT "$BIN_ID[$i] $BIN_NUMSQ[$i] $BIN_CUMUL[$i]\n"; }
 close(OUT); $title_lane3="Sequence Length Distribution";
@@ -380,6 +400,8 @@ print OUT "\"$gnuplot_data\" using 1:3 with lines $c_red lw 2 notitle axis x1y2\
 
 # Reporting Statistics Per Position
 else{ if($verbose){ print "  CASE 3 detected (Others)\n  Writing stats per position...\n"; }
+log_msg("CASE 3 detected (Others)");
+log_msg("Writing stats per position to $raw_stats_pos_out");
 open(OUT,">$raw_stats_pos_out"); print OUT "Position\tNum Reads\tCumulated\tPHRED\tA\tC\tG\tT\tN\n";
 for(my $i=0;$i<=$#POS_NUMSQ;$i++){ $POS_PHRED[$i]=sprintf("%.2f",$POS_PHRED[$i]/$POS_CUMUL[$i]);
 print OUT "$POS_ID[$i]\t$POS_NUMSQ[$i]\t$POS_CUMUL[$i]\t$POS_PHRED[$i]"; foreach my $nt (@NTS){
@@ -390,6 +412,7 @@ print OUT "\t".$POS_CALLS{"$i-$nt"}; } print OUT "\n"; } close(OUT); `chmod 770 
 
 # Reporting Basic Sample Description
 if($verbose){ print "  Writing basic sample info...\n\n"; } open(OUT,">$basic_description");
+log_msg("Writing basic sample info to $basic_description");
 print OUT "Files   : $prefix-*\n"; if($multiplex){ print OUT "Library : $library\n";
 print OUT "Barcode : $barcode\n"; } else{ print OUT "Sample  : $library\n"; }
 print OUT "#Reads  : $num_reads\nMin Len : $min_len\nMax Len : $max_len\n";
@@ -422,4 +445,13 @@ if($n<=4000000){ return 250000; } if($n<=8000000){ return 500000; } return 10000
 # Returns appropriate label margin for a given number of sequences
 sub best_label_margin{ my $n=$_[0]; if($n<100){ return 7; } if($n<1000){ return 8; }
 if($n<10000){ return 9; } if($n<100000){ return 10; } return 11; }
+
+##########################################################################################
+
+sub log_msg {
+    my ($msg) = @_;
+    my $timestamp = strftime "%Y-%m-%d %H:%M:%S", localtime;
+    print "[$timestamp] $msg\n";
+}
+
 

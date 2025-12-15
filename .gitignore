@@ -5,3 +5,4 @@ data/
 md5sum*
 *.csv
 *.png
+Tools/*.storable

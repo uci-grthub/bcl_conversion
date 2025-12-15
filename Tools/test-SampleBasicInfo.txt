@@ -1,4 +1,0 @@
-Files   : test-*
-Sample  : test
-#Reads  : 13,402
-#Cycles : 26
