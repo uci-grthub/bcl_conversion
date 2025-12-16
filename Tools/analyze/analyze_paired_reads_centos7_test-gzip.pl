@@ -35,7 +35,7 @@ my $verbose=1;                 # Display messages or not (default on)
 my $workers=16;                 # default number of worker processes
 my $write_raw_stats_pos=0;     # Report raw statistics per position
 # Multi-process batch reader: children compute partial stats and write storable temp files.
-my $batch_size = 100000;   # number of read pairs per child batch
+my $batch_size = 1000000;   # number of read pairs per child batch
 my $batch_id = 0;
 
 ##########################################################################################

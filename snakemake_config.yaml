@@ -1,0 +1,12 @@
+# Snakemake configuration for postprocess workflow
+sample_sheet: "Tools/data/code/SampleSheet.csv"
+num_reads: 2
+library_name: "VilaE_WGS_Pool1"
+fastqdir: "output"
+start_s: 1
+dryrun: false
+script_dir: "Tools"
+script_path: "postprocess/postprocess_hiseq_lane_centos7_test_gzip.pl"
+lanes: [1,2,3,4,5,6,7,8]
+fastp_threads: 4
+fastp_outdir: "results/fastp"
