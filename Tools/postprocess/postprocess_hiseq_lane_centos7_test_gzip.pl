@@ -36,8 +36,8 @@ my $log_file = "$log_dir/${name}_${timestamp_fn}.log";
 open(our $LOG_FH, '>', $log_file) or die "Could not open log file $log_file: $!";
 log_msg("Log file created: $log_file");
 
-my $process_single="analyze/analyze_single_reads_centos7_test-gzip.pl";
-my $process_paired="analyze/analyze_paired_reads_centos7_test-gzip.pl";
+my $process_single="Tools/analyze/analyze_single_reads_centos7_test-gzip.pl";
+my $process_paired="Tools/analyze/analyze_paired_reads_centos7_test-gzip.pl";
 my $start_time = time();
 log_msg("Starting postprocess_hiseq_lane.pl with args: @ARGV");
 print "Start id S number =$start_s_id\n";
@@ -180,7 +180,7 @@ else{
   ##################################################################################################
   
   my @d=split("-",$prefixes[0]); my $prefix="$d[0]-$d[1]";
-  if($prefix!~/^(4R|mR|nR|xR|R)[0-9]{3}-L$lane$/){ print "Cannot process trash\n"; exit 1; }
+  if($prefix!~/^(4R|mR|nR|xR|R)[0-9]{3}-L$lane$/){ print "Cannot process trash\n"; exit 0; }
   $prefix="$prefix-PrNotRecog";
   print "  Processing Library \"$name\" - Barcode Not Recognized ($prefix)...\n";
   my $file_in_R1="${fastqdir}/Undetermined_S0_L00${lane}_R1_001.fastq.gz";

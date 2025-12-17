@@ -1,3 +1,14 @@
+# Steps
+
+1. run dragen bclconvert 
+src/run_bcl_conversion.sh
+
+2. run yuzo postprocessing
+
+
+
+
+
 Snakemake workflow to run post-processing scripts
 
 Files added:
