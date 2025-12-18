@@ -306,8 +306,64 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         ss_data['index'] = lane_df['index']
         ss_data['index2'] = lane_df['index2']
         
+        # Calculate OverrideCycles and Index flags
+        override_cycles = ""
+        has_index1 = False
+        has_index2 = False
+        
+        if masking:
+            # Masking format from metadata: "R1:151, I1:8, I2:8, R2:151"
+            # Target format: Y151;I8;I8;Y151
+            
+            try:
+                parts = [p.strip() for p in masking.split(',')]
+                cycles = []
+                for i, p in enumerate(parts):
+                    if ':' in p:
+                        type_, len_ = p.split(':')
+                        type_ = type_.strip().upper()
+                        len_ = len_.strip()
+                        specified_len = int(len_)
+                        
+                        if type_ == 'I1' and specified_len > 0:
+                            has_index1 = True
+                        if type_ == 'I2' and specified_len > 0:
+                            has_index2 = True
+                        
+                        cycle_str = ""
+                        
+                        # Get actual length from RunInfo if available
+                        actual_len = 0
+                        if run_reads and i < len(run_reads):
+                            actual_len = run_reads[i]['NumCycles']
+                        
+                        # Handle I0 case: replace with N{actual_len}
+                        if specified_len == 0 and type_.startswith('I') and actual_len > 0:
+                            cycle_str = f"N{actual_len}"
+                        else:
+                            if type_.startswith('R'):
+                                cycle_str = f"Y{len_}"
+                            elif type_.startswith('I'):
+                                cycle_str = f"I{len_}"
+                            elif type_.startswith('U'): # UMI?
+                                cycle_str = f"U{len_}"
+                            
+                            # Pad with N if needed
+                            if actual_len > 0 and specified_len > 0 and specified_len < actual_len:
+                                diff = actual_len - specified_len
+                                cycle_str += f"N{diff}"
+                        
+                        cycles.append(cycle_str)
+                
+                if cycles:
+                    override_cycles = ";".join(cycles)
+            except Exception as e:
+                print(f"Error parsing masking '{masking}' for lane {lane}: {e}")
+
+        ss_data['OverrideCycles'] = override_cycles
+
         # Reorder columns
-        cols = ['Project', 'Lane', 'Sample_ID', 'Sample_Name', 'index', 'index2', 'Sample_Project']
+        cols = ['Project', 'Lane', 'Sample_ID', 'Sample_Name', 'index', 'index2', 'Sample_Project', 'OverrideCycles']
         # Add missing cols if any
         for c in cols:
             if c not in ss_data.columns:
@@ -322,60 +378,6 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             
             # Add Settings block
             f.write("\n[Settings]\n")
-            
-            # Get masking for this lane to set OverrideCycles
-            # masking is already available from the loop
-            has_index1 = False
-            has_index2 = False
-            if masking:
-                # Masking format from metadata: "R1:151, I1:8, I2:8, R2:151"
-                # Target format: Y151;I8;I8;Y151
-                
-                try:
-                    parts = [p.strip() for p in masking.split(',')]
-                    cycles = []
-                    for i, p in enumerate(parts):
-                        if ':' in p:
-                            type_, len_ = p.split(':')
-                            type_ = type_.strip().upper()
-                            len_ = len_.strip()
-                            specified_len = int(len_)
-                            
-                            if type_ == 'I1' and specified_len > 0:
-                                has_index1 = True
-                            if type_ == 'I2' and specified_len > 0:
-                                has_index2 = True
-                            
-                            cycle_str = ""
-                            
-                            # Get actual length from RunInfo if available
-                            actual_len = 0
-                            if run_reads and i < len(run_reads):
-                                actual_len = run_reads[i]['NumCycles']
-                            
-                            # Handle I0 case: replace with N{actual_len}
-                            if specified_len == 0 and type_.startswith('I') and actual_len > 0:
-                                cycle_str = f"N{actual_len}"
-                            else:
-                                if type_.startswith('R'):
-                                    cycle_str = f"Y{len_}"
-                                elif type_.startswith('I'):
-                                    cycle_str = f"I{len_}"
-                                elif type_.startswith('U'): # UMI?
-                                    cycle_str = f"U{len_}"
-                                
-                                # Pad with N if needed
-                                if actual_len > 0 and specified_len > 0 and specified_len < actual_len:
-                                    diff = actual_len - specified_len
-                                    cycle_str += f"N{diff}"
-                            
-                            cycles.append(cycle_str)
-                    
-                    if cycles:
-                        override_cycles = ";".join(cycles)
-                        f.write(f"OverrideCycles,{override_cycles}\n")
-                except Exception as e:
-                    print(f"Error parsing masking '{masking}' for lane {lane}: {e}")
             
             # Check if any project in this lane contains "10x", "BD", "parse" or "Parse"
             create_fastq_for_index = "0"
@@ -610,9 +612,9 @@ rule flexbar_lane:
         bcl_dir = "output/{config_id}",
         # Expecting a barcode file named specifically for this config
         barcodes = "metadata/flexbar_barcodes_{config_id}.fasta",
-        adapter = "Tools/flexbar/adapter.3.fa"
+        adapter = "src/flexbar/adapter.3.fa"
     conda: "perl_env"
-    threads: 4
+    threads: 32
     output:
         touch("results/flexbar_{config_id}.done")
     log:
