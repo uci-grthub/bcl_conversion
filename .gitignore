@@ -6,3 +6,4 @@ md5sum*
 *.png
 Tools/*.storable
 .snakemake/
+src/flexbar/*.txt

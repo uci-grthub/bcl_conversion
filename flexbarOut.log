@@ -1,0 +1,32 @@
+
+               ________          __              
+              / ____/ /__  _  __/ /_  ____ ______
+             / /_  / / _ \| |/ / __ \/ __ `/ ___/
+            / __/ / /  __/>  </ /_/ / /_/ / /    
+           /_/   /_/\___/_/|_/_.___/\__._/_/     
+
+Flexbar - flexible barcode and adapter removal, version 3.5.0
+Developed with SeqAn, the library for sequence analysis
+
+Available on github.com/seqan/flexbar
+
+
+Local time:            Thu Dec 18 09:25:32 2025
+
+Number of threads:     1
+Bundled fragments:     256
+
+Target name:           flexbarOut
+File type:             fastq
+Reads file:            /staging/nextcloud/testing_illumina/novaseq/xR074_workflow/output/lane1_R1-151_I1-0_I2-6_R2-151/Undetermined_S0_L001_R1_001.fastq.gz
+Barcode file:          /staging/nextcloud/testing_illumina/novaseq/xR074_workflow/m
+
+max-uncalled:          0
+min-read-length:       18
+
+barcode-trim-end:      LTAIL
+barcode-error-rate:    0
+barcode-match:         1
+barcode-mismatch:     -1
+barcode-gap:          -9
+

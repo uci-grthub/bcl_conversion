@@ -1,0 +1,240 @@
+How to do a Nova Seq run example 4
+
+Make the Sample Sheets and processign scripts for 5 groups in one lane.
+
+Process each group then do renamin for group2. It could be that the naming could be done inte processing script, but did not reprogram the script to account for groups
+
+
+case was run xR074 lane8
+
+1. make the dual barcodes for each group. Here all the lengths are the same
+
+put index1 for group1 in
+
+8a-g1-bc.txt
+
+put index2 for group1 in 
+
+8b-g1-bc.txt
+
+
+construct 8-g1-dual-bc.txt via
+
+paste -d , 8a-g1-bc.txt 8b-g1-bc.txt > 8-g1-dual-bc.txt
+
+
+Do for the other 4 groups
+
+
+Construct the prefix file, I make a big one for all the barcodes.
+ 
+ 1 to 156
+ 
+using https://pinetools.com/generate-list-numbers
+ 
+prefix-8.txt
+
+
+then copy to each group and edit to match range
+
+cp prefix-8.txt prefix-8-g1.txt
+
+edit to be
+
+,8,xR074-L8-P001,,
+,8,xR074-L8-P002,,
+,8,xR074-L8-P003,,
+,8,xR074-L8-P004,,
+,8,xR074-L8-P005,,
+,8,xR074-L8-P006,,
+,8,xR074-L8-P007,,
+,8,xR074-L8-P008,,
+,8,xR074-L8-P009,,
+,8,xR074-L8-P010,,
+,8,xR074-L8-P011,,
+,8,xR074-L8-P012,,
+
+
+Construct each Sample Sheet and the combined total
+
+paste -d '\0' prefix-8-g1.txt 8-g1-dual-bc.txt > 8-g1.txt
+
+cat ../SampleSheet-header.csv 8-g1.txt > SampleSheetxR074-lane8-dual-bc-g1.csv
+
+etc for the groups then make the combined.
+
+cat ../SampleSheet-header.csv 8-g1.txt 8-g2.txt 8-g3.txt 8-g4.txt 8-g5.txt > SampleSheetxR074-lane8-dual-bc.csv
+
+
+
+Construct the bcl2fastq script for the lane
+
+new-command-bcl2fastq2-20-xR074-paired-dual-bc-processed-lane8.sh
+
+
+Construct teh processing script for each group:
+
+group1
+
+process-lane-8-xR074-paired-dual-bc-g1.sh
+
+is 
+
+echo $STY
+date
+echo ~/Facility/Tools/postprocess_hiseq_lane_dual_linux_os.pl SampleSheetxR074-lane8-dual-bc-g1.csv 2 8 \"CharR_ATACseq_12plex\" 1
+~/Facility/Tools/postprocess_hiseq_lane_dual_linux_os.pl SampleSheetxR074-lane8-dual-bc-g1.csv 2 8 "CharR_ATACseq_12plex" 1
+date
+
+
+
+group2 
+
+process-lane-8-xR074-paired-dual-bc-g2.sh
+
+is 
+
+echo $STY
+date
+echo ~/Facility/Tools/postprocess_hiseq_lane_dual_linux_os.pl SampleSheetxR074-lane8-dual-bc-g2.csv 2 8 \"CharR_Cut_Run_44plex\" 13
+~/Facility/Tools/postprocess_hiseq_lane_dual_linux_os.pl SampleSheetxR074-lane8-dual-bc-g2.csv 2 8 "CharR_Cut_Run_44plex" 13
+date
+
+
+
+2. run the lane then make groups and put appropriate files in the groups
+
+
+in Unaligned-xR074-dual-bc-lane8
+
+make
+
+mkdir group1
+
+mv xR074-L8-P001* group1
+
+to 
+
+mv xR074-L8-P012* group1
+
+
+The group1 size is
+
+45G     group1
+
+just run 
+
+process-lane-8-xR074-paired-dual-bc-g1.sh
+
+with 
+
+SampleSheetxR074-lane8-dual-bc-g1.csv 
+
+in the group directory
+
+
+At the end do renaming and make md5sum, size, and count files these files used for making notifications
+
+rename L8 L8-G1 xR074-L8-P*
+
+sed 's/L8/L8-G1/' md5sum_lane8.txt > md5sum_lane8-group1.txt
+
+du -h xR074-L8-G1-*.gz > size_lane8-group1.txt
+
+grep Read xR074-L8-G1-*.txt | cut -d : -f3 | sed 's/ //' > count-lane8-group1.txt
+
+also good to do
+
+ls xR074-L8-G1-*.png > image-list-lane8-group1.txt
+
+
+
+Save the data to the archives
+
+rsync -av xR074-L8-G1-* ~/Archives2/results/xR074-L8-G1
+
+
+3. collect the information in the lane and group see script
+
+results/script-get-lane8-g1.sh
+
+
+4. make notification html, see 
+
+emails/lane8-g1/
+
+note script.sh
+
+The information needed is
+
+files
+barcodes.txt                  image-list-lane8-group1.txt     script.sh
+count-lane8-group1.txt                md5sum_lane8-group1.txt         size_lane8-group1.txt
+
+group and run information
+
+CharR_ATACseq_12plex
+charney25120927
+rcharney@buffalo.edu
+
+
+Note that the lines here are uncommented
+
+# Lib name, barcodes, count neeeded
+sed 's/^/<br><br><b>Library "CharR_ATACseq_12plex" - Barcode "/' barcodes.txt > output1.txt
+sed 's/$/"<\/b> (/' output1.txt > output2.txt
+paste -d '\0' output2.txt count-lane8-group1.txt > output3.txt
+
+
+run script.sh
+
+./script.sh
+
+cp output6.html > xR074-L8-G1-Content-List.html
+
+
+
+5. construct output directory charney25120927 put xR074-L8-G1-Content-List.html there and link data there.
+
+
+6. construct notification email xR074-lane8-group1 dual bc rcharney@buffalo.edu.txt and send results with attached md5sum_lane8-group1.txt (do draft first)
+
+
+7. Send barcodes.txt and count-lane8-group1.txt to Seung-Ah formated as spreadsheet
+
+
+
+
+
+Note group2 was 91 GB os group2 used 2 batches
+
+49G     group2/batch-1
+45G     group2/batch-2
+94G     group2
+
+
+group3 used 8 batches
+
+42G     group3/batch-1
+34G     group3/batch-2
+35G     group3/batch-3
+41G     group3/batch-4
+41G     group3/batch-5
+35G     group3/batch-6
+43G     group3/batch-7
+33G     group3/batch-8
+
+
+construction and collection of data for the batches can eb tricky. Some times the distribution is not even, so batches may not have equal numbers of sequences in them. The goal is to have batch sizes to make for reasonable time lengths for completion
+
+
+
+
+
+
+
+
+
+
+
+ 

@@ -1,4 +1,7 @@
 import os
+import re
+import pandas as pd
+import xml.etree.ElementTree as ET
 
 configfile: "snakemake_config.yaml"
 
@@ -22,9 +25,416 @@ if os.path.exists(basecalls_path):
 
 print("detected_lanes:", detected_lanes)
 
+metadata = config.get("metadata", "metadata/251205_2333KHLT4_25B_PE151_xR074.xlsx")
 
+METADATA_FILE = config.get("metadata")
+LANE_CONFIGS = []
+PROJECT_LOOKUP = {}
+MASKING_LOOKUP = {}
 
-LANES = (detected_lanes if detected_lanes else [1,2,3,4,5,6,7,8])
+if METADATA_FILE and os.path.exists(METADATA_FILE):
+    try:
+        df = pd.read_excel(METADATA_FILE, sheet_name="Summary", header=2)
+        
+        # Build Project and Masking Lookups: (Lane, Group) -> Value
+        if 'Lane' in df.columns and 'Gr' in df.columns:
+             for index, row in df.iterrows():
+                 try:
+                     l = int(row['Lane'])
+                     g = int(row['Gr'])
+                     
+                     if 'Project Name' in df.columns:
+                        p = str(row['Project Name']).strip()
+                        PROJECT_LOOKUP[(l, g)] = p
+                     
+                     if 'Masking' in df.columns:
+                        m = str(row['Masking']).strip()
+                        MASKING_LOOKUP[(l, g)] = m
+                 except:
+                     pass
+        
+        if 'Lane' in df.columns and 'Masking' in df.columns:
+            # Collect unique (Lane, Masking) combinations
+            groups = df[['Lane', 'Masking']].drop_duplicates()
+            for index, row in groups.iterrows():
+                try:
+                    lane = int(row['Lane'])
+                    masking = str(row['Masking']).strip()
+                    # Sanitize masking for filename
+                    # Example: "R1:151, I1:8, I2:8, R2:151" -> "R1-151_I1-8_I2-8_R2-151"
+                    masking_sanitized = masking.replace(":", "-").replace(", ", "_").replace(",", "_").replace(" ", "")
+                    
+                    LANE_CONFIGS.append({
+                        'lane': lane,
+                        'masking': masking,
+                        'masking_sanitized': masking_sanitized,
+                        'id': f"lane{lane}_{masking_sanitized}"
+                    })
+                except ValueError:
+                    continue
+    except Exception as e:
+        print(f"Error reading metadata: {e}")
+
+print("LANE_CONFIGS:", LANE_CONFIGS)
+print("PROJECT_LOOKUP:", PROJECT_LOOKUP)
+print("MASKING_LOOKUP:", MASKING_LOOKUP)
+
+def get_run_read_lengths(run_info_path):
+    if not os.path.exists(run_info_path):
+        return []
+    try:
+        tree = ET.parse(run_info_path)
+        root = tree.getroot()
+        reads = []
+        for read in root.findall(".//Read"):
+            reads.append({
+                'Number': int(read.get('Number')),
+                'NumCycles': int(read.get('NumCycles')),
+                'IsIndexedRead': read.get('IsIndexedRead')
+            })
+        return sorted(reads, key=lambda x: x['Number'])
+    except Exception as e:
+        print(f"Error parsing RunInfo.xml: {e}")
+        return []
+
+def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, masking_lookup, out_dir):
+    if not metadata_file or not os.path.exists(metadata_file):
+        print("Metadata file not found.")
+        return {}
+        
+    print(f"Generating sample sheets from {metadata_file}")
+    
+    # Get actual run read lengths
+    run_info_path = "data/RunInfo.xml"
+    run_reads = get_run_read_lengths(run_info_path)
+    
+    all_samples = pd.DataFrame()
+    
+    try:
+        xl = pd.ExcelFile(metadata_file)
+        for sheet in xl.sheet_names:
+            if sheet == "Summary": continue
+            
+            print(f"Reading sheet: {sheet}")
+            try:
+                # Read raw to find header
+                df_raw = pd.read_excel(metadata_file, sheet_name=sheet, header=None)
+                
+                header_row = -1
+                for i, row in df_raw.iterrows():
+                    row_values = [str(x).strip() for x in row.values]
+                    # Heuristic to find header row
+                    if "Lane" in row_values and ("Sample_ID" in row_values or "Sample Name" in row_values or "Sample_Name" in row_values):
+                        header_row = i
+                        break
+                
+                if header_row == -1:
+                    print(f"Could not find header in sheet {sheet}, skipping.")
+                    continue
+                    
+                df = pd.read_excel(metadata_file, sheet_name=sheet, header=header_row)
+                
+                # Remove NBSP characters
+                for col in df.select_dtypes(include=['object']).columns:
+                    df[col] = df[col].apply(lambda x: x.replace('\xa0', ' ') if isinstance(x, str) else x)
+                
+                # Normalize columns
+                sheet_samples = pd.DataFrame()
+                
+                # Lane
+                if 'Lane' in df.columns:
+                    df['Lane'] = df['Lane'].ffill()
+                    # Remove repeated headers or invalid rows
+                    df = df[pd.to_numeric(df['Lane'], errors='coerce').notnull()]
+                    sheet_samples['Lane'] = df['Lane'].astype(int)
+                else:
+                    print(f"No Lane column in {sheet}")
+                    continue
+                
+                # Group (for project lookup)
+                if 'Group' in df.columns:
+                    df['Group'] = df['Group'].ffill()
+                    sheet_samples['Group'] = df['Group']
+                elif 'group' in df.columns:
+                    df['group'] = df['group'].ffill()
+                    sheet_samples['Group'] = df['group']
+                else:
+                    sheet_samples['Group'] = pd.NA
+
+                # Project
+                if 'Project name' in df.columns:
+                    df['Project name'] = df['Project name'].ffill()
+                    sheet_samples['Project'] = df['Project name']
+                elif 'Sample_Project' in df.columns:
+                    df['Sample_Project'] = df['Sample_Project'].ffill()
+                    sheet_samples['Project'] = df['Sample_Project']
+                else:
+                    sheet_samples['Project'] = pd.NA
+                
+                # Fill missing Project from Lookup using Lane and Group
+                def fill_project(row):
+                    if pd.isna(row['Project']) or str(row['Project']).strip() == "" or str(row['Project']).lower() == 'nan':
+                        try:
+                            l = int(row['Lane'])
+                            g = int(row['Group'])
+                            return project_lookup.get((l, g), "")
+                        except:
+                            return row['Project']
+                    return row['Project']
+                
+                if not sheet_samples.empty:
+                    sheet_samples['Project'] = sheet_samples.apply(fill_project, axis=1)
+
+                # Sample Name / ID
+                # We want a single 'Sample_Name' column to use for ID generation later
+                if 'Sample Name' in df.columns:
+                    df['Sample Name'] = df['Sample Name'].ffill()
+                    sheet_samples['Sample_Name'] = df['Sample Name']
+                elif 'Sample_Name' in df.columns:
+                    df['Sample_Name'] = df['Sample_Name'].ffill()
+                    sheet_samples['Sample_Name'] = df['Sample_Name']
+                
+                # If Sample_Name is missing/NaN, try Sample_ID
+                if 'Sample_ID' in df.columns:
+                    if 'Sample_Name' not in sheet_samples.columns:
+                        sheet_samples['Sample_Name'] = df['Sample_ID']
+                    else:
+                        sheet_samples['Sample_Name'] = sheet_samples['Sample_Name'].fillna(df['Sample_ID'])
+                
+                # Indexes
+                if 'i7 Barcode Sequence' in df.columns:
+                    sheet_samples['index'] = df['i7 Barcode Sequence']
+                elif 'index' in df.columns:
+                    sheet_samples['index'] = df['index']
+                else:
+                    sheet_samples['index'] = ""
+                    
+                if 'i5 Barcode Sequence' in df.columns:
+                    sheet_samples['index2'] = df['i5 Barcode Sequence']
+                elif 'index2' in df.columns:
+                    sheet_samples['index2'] = df['index2']
+                else:
+                    sheet_samples['index2'] = ""
+                
+                all_samples = pd.concat([all_samples, sheet_samples], ignore_index=True)
+                
+            except Exception as e:
+                print(f"Error reading sheet {sheet}: {e}")
+                continue
+
+    except Exception as e:
+        print(f"Error reading metadata file: {e}")
+        return {}
+
+    if all_samples.empty:
+        print("No samples found in any sheet.")
+        return {}
+        
+    df = all_samples
+    
+    # Assign Masking to samples based on Lane and Group
+    def get_sample_masking(row):
+        try:
+            l = int(row['Lane'])
+            g = int(row['Group'])
+            return masking_lookup.get((l, g), "")
+        except:
+            return ""
+            
+    df['Masking'] = df.apply(get_sample_masking, axis=1)
+    
+    generated_files = {}
+    
+    # Ensure output directory exists
+    os.makedirs(out_dir, exist_ok=True)
+    
+    for config in lane_configs:
+        lane = config['lane']
+        masking = config['masking']
+        masking_sanitized = config['masking_sanitized']
+        
+        # Filter by Lane AND Masking
+        lane_df = df[(df['Lane'] == lane) & (df['Masking'] == masking)].copy()
+        
+        if lane_df.empty:
+            print(f"No samples found for lane {lane} with masking {masking}")
+            continue
+            
+        # Map columns
+        # Target: Project,Lane,Sample_ID,Sample_Name,index,index2,Sample_Project
+        
+        ss_data = pd.DataFrame()
+        
+        ss_data['Lane'] = lane_df['Lane']
+        ss_data['Project'] = lane_df['Project']
+        ss_data['Sample_Project'] = lane_df['Project']
+        
+        if 'Sample_Name' in lane_df.columns:
+            # Fill missing sample names with a default
+            lane_df['Sample_Name'] = lane_df['Sample_Name'].fillna("Sample")
+            
+            # Ensure uniqueness
+            final_names = []
+            seen = set()
+            for name in lane_df['Sample_Name']:
+                name = str(name).strip()
+                if not name or name.lower() == 'nan': name = "Sample"
+                
+                # Sanitize name: allow only alphanumeric, -, _
+                name = re.sub(r'[^a-zA-Z0-9\-_]', '_', name)
+                
+                # Prevent "Undetermined" as Sample_ID
+                if name.lower() == "undetermined":
+                    name = "Sample_Undetermined"
+                
+                candidate = name
+                counter = 1
+                while candidate in seen:
+                    candidate = f"{name}_{counter}"
+                    counter += 1
+                seen.add(candidate)
+                final_names.append(candidate)
+            
+            ss_data['Sample_ID'] = final_names
+            ss_data['Sample_Name'] = final_names
+        else:
+            # Generate generic names
+            names = [f"Sample_{i+1}" for i in range(len(lane_df))]
+            ss_data['Sample_ID'] = names
+            ss_data['Sample_Name'] = names
+            
+        ss_data['index'] = lane_df['index']
+        ss_data['index2'] = lane_df['index2']
+        
+        # Reorder columns
+        cols = ['Project', 'Lane', 'Sample_ID', 'Sample_Name', 'index', 'index2', 'Sample_Project']
+        # Add missing cols if any
+        for c in cols:
+            if c not in ss_data.columns:
+                ss_data[c] = ""
+                
+        ss_data = ss_data[cols]
+        
+        outfile = os.path.join(out_dir, f"SampleSheet_lane{lane}_{masking_sanitized}.csv")
+        with open(outfile, 'w') as f:
+            f.write("[Data],,,,,,\n")
+            ss_data.to_csv(f, index=False)
+            
+            # Add Settings block
+            f.write("\n[Settings]\n")
+            
+            # Get masking for this lane to set OverrideCycles
+            # masking is already available from the loop
+            has_index1 = False
+            has_index2 = False
+            if masking:
+                # Masking format from metadata: "R1:151, I1:8, I2:8, R2:151"
+                # Target format: Y151;I8;I8;Y151
+                
+                try:
+                    parts = [p.strip() for p in masking.split(',')]
+                    cycles = []
+                    for i, p in enumerate(parts):
+                        if ':' in p:
+                            type_, len_ = p.split(':')
+                            type_ = type_.strip().upper()
+                            len_ = len_.strip()
+                            specified_len = int(len_)
+                            
+                            if type_ == 'I1' and specified_len > 0:
+                                has_index1 = True
+                            if type_ == 'I2' and specified_len > 0:
+                                has_index2 = True
+                            
+                            cycle_str = ""
+                            
+                            # Get actual length from RunInfo if available
+                            actual_len = 0
+                            if run_reads and i < len(run_reads):
+                                actual_len = run_reads[i]['NumCycles']
+                            
+                            # Handle I0 case: replace with N{actual_len}
+                            if specified_len == 0 and type_.startswith('I') and actual_len > 0:
+                                cycle_str = f"N{actual_len}"
+                            else:
+                                if type_.startswith('R'):
+                                    cycle_str = f"Y{len_}"
+                                elif type_.startswith('I'):
+                                    cycle_str = f"I{len_}"
+                                elif type_.startswith('U'): # UMI?
+                                    cycle_str = f"U{len_}"
+                                
+                                # Pad with N if needed
+                                if actual_len > 0 and specified_len > 0 and specified_len < actual_len:
+                                    diff = actual_len - specified_len
+                                    cycle_str += f"N{diff}"
+                            
+                            cycles.append(cycle_str)
+                    
+                    if cycles:
+                        override_cycles = ";".join(cycles)
+                        f.write(f"OverrideCycles,{override_cycles}\n")
+                except Exception as e:
+                    print(f"Error parsing masking '{masking}' for lane {lane}: {e}")
+            
+            # Check if any project in this lane contains "10x", "BD", "parse" or "Parse"
+            create_fastq_for_index = "0"
+            if 'Project' in ss_data.columns:
+                for proj in ss_data['Project'].unique():
+                    proj_str = str(proj)
+                    if any(keyword in proj_str for keyword in ["10x", "BD", "parse", "Parse"]):
+                        create_fastq_for_index = "1"
+                        break
+            
+            f.write(f"CreateFastqForIndexReads,{create_fastq_for_index}\n")
+            f.write("MinimumTrimmedReadLength,8\n")
+            f.write("MaskShortReads,8\n")
+            if has_index1:
+                f.write("BarcodeMismatchesIndex1,1\n")
+            if has_index2:
+                f.write("BarcodeMismatchesIndex2,1\n")
+            f.write("FastqCompressionFormat,gzip\n")
+            
+        generated_files[config['id']] = outfile
+        print(f"Generated {outfile}")
+        
+        # Check for Flexbar projects and generate barcode file
+        flexbar_samples = []
+        if 'Project' in ss_data.columns:
+            for idx, row in ss_data.iterrows():
+                proj = str(row['Project'])
+                if "flexbar" in proj.lower():
+                    s_name = row['Sample_Name']
+                    s_index = row['index']
+                    
+                    # Fallback to index2 if index is missing/nan
+                    if pd.isna(s_index) or str(s_index).strip() == "" or str(s_index).lower() == "nan":
+                        s_index = row['index2']
+                    
+                    # Check validity of the selected index
+                    if not (pd.isna(s_index) or str(s_index).strip() == "" or str(s_index).lower() == "nan"):
+                        if s_name:
+                            flexbar_samples.append((s_name, s_index))
+        
+        if flexbar_samples:
+            barcode_file = os.path.join("metadata", f"flexbar_barcodes_{config['id']}.fasta")
+            os.makedirs("metadata", exist_ok=True)
+            with open(barcode_file, 'w') as bf:
+                for name, idx in flexbar_samples:
+                    bf.write(f">{name}\n{idx}\n")
+            print(f"Generated {barcode_file}")
+        
+    return generated_files
+
+SAMPLE_SHEETS_DICT = generate_lane_samplesheets(METADATA_FILE, LANE_CONFIGS, PROJECT_LOOKUP, MASKING_LOOKUP, "src")
+
+print(SAMPLE_SHEETS_DICT)
+
+CONFIG_IDS = [c['id'] for c in LANE_CONFIGS] if LANE_CONFIGS else []
+# Fallback if no metadata
+if not CONFIG_IDS and detected_lanes:
+    CONFIG_IDS = [f"lane{l}_default" for l in detected_lanes]
+
 FASTP_THREADS = config.get("fastp_threads", 4)
 FASTP_OUTDIR = config.get("fastp_outdir", "results/fastp")
 FASTP_PLOTS_OUTDIR = config.get("fastp_plots_outdir", "results/fastp_plots")
@@ -65,16 +475,28 @@ PROJECTS = get_projects(SAMPLE_SHEET)
 
 print("PROJECTS found in SampleSheet:", PROJECTS)
 
+# Identify configs that require Flexbar processing
+FLEXBAR_CONFIGS = []
+for config in LANE_CONFIGS:
+    # Only include configs for which a barcode file was generated
+    # This avoids scheduling flexbar for lanes/maskings without flexbar samples
+    barcode_path = os.path.join("metadata", f"flexbar_barcodes_{config['id']}.fasta")
+    if os.path.exists(barcode_path):
+        FLEXBAR_CONFIGS.append(config['id'])
+
+print("FLEXBAR_CONFIGS:", FLEXBAR_CONFIGS)
+
 rule all:
     input:
-        expand("results/postprocess_lane{lane}.done", lane=LANES),
-        expand("results/fastp_plots_lane{lane}.done", lane=LANES),
-        expand("Reports/{project}/index.html", project=PROJECTS)
+        expand("results/postprocess_{config_id}.done", config_id=CONFIG_IDS),
+        expand("results/fastp_plots_{config_id}.done", config_id=CONFIG_IDS),
+        expand("Reports/{project}/index.html", project=PROJECTS),
+        expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS)
 
 rule report_project:
     input:
-        postprocess = expand("results/postprocess_lane{lane}.done", lane=LANES),
-        fastp_plots = expand("results/fastp_plots_lane{lane}.done", lane=LANES)
+        postprocess = expand("results/postprocess_{config_id}.done", config_id=CONFIG_IDS),
+        fastp_plots = expand("results/fastp_plots_{config_id}.done", config_id=CONFIG_IDS)
     output:
         "Reports/{project}/index.html"
     params:
@@ -87,43 +509,44 @@ rule report_project:
 
 rule postprocess_lane:
     input:
-        "output"
+        "output/{config_id}"
     output:
-        touch("results/postprocess_lane{lane}.done")
+        touch("results/postprocess_{config_id}.done")
     params:
         scriptdir = SCRIPTDIR,
         script = SCRIPT,
-        sample_sheet = SAMPLE_SHEET,
+        sample_sheet = lambda wildcards: f"src/SampleSheet_{wildcards.config_id}.csv",
         num_reads = NUM_READS,
         library = LIBRARY,
-        fastqdir = FASTQDIR,
+        fastqdir = "output/{config_id}",
         start_s = START_S,
-        dryflag = "--dryrun" if DRYRUN else ""
-    threads: 1
+        dryflag = "--dryrun" if DRYRUN else "",
+        lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', '')
+    threads: 4
     conda: "perl_env"
     shell:
         """
         mkdir -p results
-        perl {params.script} {params.sample_sheet} {params.num_reads} {wildcards.lane} "{params.library}" {params.fastqdir} {params.start_s} {params.dryflag}
+        perl {params.script} {params.sample_sheet} {params.num_reads} {params.lane} "{params.library}" {params.fastqdir} {params.start_s} {params.dryflag}
         touch {output}
         """
 
 rule fastp_lane:
     input:
-        "output"
+        "output/{config_id}"
     output:
-        touch("results/fastp_lane{lane}.done")
+        touch("results/fastp_{config_id}.done")
     params:
-        fastqdir = FASTQDIR,
+        fastqdir = "output/{config_id}",
         outdir = FASTP_OUTDIR,
         threads = FASTP_THREADS,
-        lane = "{lane}"
-    threads: 1
+        lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', '')
+    threads: 4
     shell:
         """
-        mkdir -p {params.outdir}/lane{wildcards.lane}
+        mkdir -p {params.outdir}/{wildcards.config_id}
         # Find R1 files for this lane and run fastp on each pair
-        for r1 in $(find {params.fastqdir} -type f -name "*_L00{wildcards.lane}_R1_001.fastq.gz" 2>/dev/null); do
+        for r1 in $(find {params.fastqdir} -type f -name "*_L00{params.lane}_R1_001.fastq.gz" 2>/dev/null); do
             r2=${{r1/_R1_/_R2_}}
             sample=$(basename "$r1" | sed -E 's/_S[0-9]+_L00[0-9]+_R1_001.fastq.gz//')
             
@@ -131,17 +554,17 @@ rule fastp_lane:
             r1_dir=$(dirname "$r1")
             rel_dir=${{r1_dir#{params.fastqdir}}}
             rel_dir=${{rel_dir#/}}
-            target_dir="{params.outdir}/lane{wildcards.lane}/$rel_dir"
+            target_dir="{params.outdir}/{wildcards.config_id}/$rel_dir"
             mkdir -p "$target_dir"
             
             out_prefix="$target_dir/${{sample}}"
             
             if [ -f "$r2" ]; then
                 echo "fastp (paired): $r1 & $r2 -> ${{out_prefix}}_R1.fastq.gz"
-                fastp -i "$r1" -I "$r2" --json "${{out_prefix}}.json" -w {params.threads} || true
+                fastp -i "$r1" -I "$r2" --json "${{out_prefix}}.json" --html "${{out_prefix}}.html" -w {params.threads} > "${{out_prefix}}.log" 2>&1 || true
             else
                 echo "fastp (single): $r1 -> ${{out_prefix}}_R1.fastq.gz"
-                fastp -i "$r1" --json "${{out_prefix}}.json" -w {params.threads} || true
+                fastp -i "$r1" --json "${{out_prefix}}.json" --html "${{out_prefix}}.html" -w {params.threads} > "${{out_prefix}}.log" 2>&1 || true
             fi
         done
         touch {output}
@@ -149,31 +572,31 @@ rule fastp_lane:
 
 rule fastp_plots_lane:
     input:
-        "results/fastp_lane{lane}.done"
+        "results/fastp_{config_id}.done"
     output:
-        touch("results/fastp_plots_lane{lane}.done")
+        touch("results/fastp_plots_{config_id}.done")
     params:
         fastp_outdir = FASTP_OUTDIR,
         plots_outdir = FASTP_PLOTS_OUTDIR,
         scripts_dir = SCRIPTDIR + "/analyze",
-        lane = "{lane}"
-    threads: 1
+        lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', '')
+    threads: 4
     shell:
         """
-        mkdir -p {params.plots_outdir}/lane{wildcards.lane}
+        mkdir -p {params.plots_outdir}/{wildcards.config_id}
         # Find all json files
-        for json in $(find {params.fastp_outdir}/lane{wildcards.lane} -type f -name "*.json" 2>/dev/null); do
+        for json in $(find {params.fastp_outdir}/{wildcards.config_id} -type f -name "*.json" 2>/dev/null); do
             # Extract relative path to preserve project structure
             # json path: .../laneX/Project/Sample.json
             # rel_path: Project/Sample.json
-            rel_path=${{json#{params.fastp_outdir}/lane{wildcards.lane}/}}
+            rel_path=${{json#{params.fastp_outdir}/{wildcards.config_id}/}}
             rel_dir=$(dirname "$rel_path")
             
-            mkdir -p "{params.plots_outdir}/lane{wildcards.lane}/$rel_dir"
+            mkdir -p "{params.plots_outdir}/{wildcards.config_id}/$rel_dir"
             
             sample=$(basename "$json" .json)
-            out_mean="{params.plots_outdir}/lane{wildcards.lane}/$rel_dir/${{sample}}-mean_phred.png"
-            out_base="{params.plots_outdir}/lane{wildcards.lane}/$rel_dir/${{sample}}-base_comp.png"
+            out_mean="{params.plots_outdir}/{wildcards.config_id}/$rel_dir/${{sample}}-mean_phred.png"
+            out_base="{params.plots_outdir}/{wildcards.config_id}/$rel_dir/${{sample}}-base_comp.png"
             
             echo "Plotting $json -> $out_mean, $out_base"
             python3 {params.scripts_dir}/mean_phred_plot_fastp.py "$json" --out "$out_mean" || true
@@ -182,20 +605,98 @@ rule fastp_plots_lane:
         touch {output}
         """
 
-rule bcl_convert:
+rule flexbar_lane:
     input:
-        sample_sheet="src/SampleSheet.csv",
-        data_dir=directory("data")
+        bcl_dir = "output/{config_id}",
+        # Expecting a barcode file named specifically for this config
+        barcodes = "metadata/flexbar_barcodes_{config_id}.fasta",
+        adapter = "Tools/flexbar/adapter.3.fa"
+    conda: "perl_env"
+    threads: 4
     output:
-        directory("output")
+        touch("results/flexbar_{config_id}.done")
+    log:
+        "logs/flexbar_{config_id}.log"
+    params:
+        outdir = "output/{config_id}/flexbar",
+        lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', ''),
+        r1 = lambda wildcards: f"output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R1_001.fastq.gz",
+        r2 = lambda wildcards: f"output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R2_001.fastq.gz",
+        barcodes_abs = lambda wildcards, input: os.path.abspath(input.barcodes),
+        adapter_abs = lambda wildcards, input: os.path.abspath(input.adapter),
+        r1_abs = lambda wildcards, input: os.path.abspath(f"output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R1_001.fastq.gz")
     shell:
         """
+        (
+        mkdir -p {params.outdir}
+        
+        echo "Starting Flexbar processing for {wildcards.config_id}"
+        
+        # 1. Run Flexbar on R1
+        # Note: Assuming flexbar is installed and available in path
+        # Using generic flexbar command structure based on description
+        
+        flexbar -r {params.r1_abs} -b {params.barcodes_abs} -a {params.adapter_abs} \
+            --target {params.outdir}/flexbarOut -n {threads} --zip-output GZ
+            
+        # 2. Process R2 based on R1 results using seqtk
+        # Iterate over generated R1 files
+        for r1_out in {params.outdir}/flexbarOut_barcode_*.fastq.gz; do
+            [ -e "$r1_out" ] || continue
+            
+            base_name=$(basename "$r1_out" .fastq.gz)
+            # Example base_name: flexbarOut_barcode_L-0-1
+            
+            echo "Processing R2 for $base_name..."
+            
+            # Extract headers from R1
+            # Logic: zcat | grep " 1:N" | remove @ | take ID
+            zcat "$r1_out" | grep " 1:N" | sed 's/^@//' | cut -d ' ' -f1 > "{params.outdir}/${{base_name}}_headers.txt"
+            
+            # Subseq R2
+            # Logic: seqtk subseq R2 headers | gzip > R2_out
+            if [ -s "{params.outdir}/${{base_name}}_headers.txt" ]; then
+                seqtk subseq {params.r2} "{params.outdir}/${{base_name}}_headers.txt" | gzip > "{params.outdir}/${{base_name}}_R2.fastq.gz"
+            else
+                echo "No reads found for $base_name"
+            fi
+            
+            rm "{params.outdir}/${{base_name}}_headers.txt"
+        done
+        
+        # 3. Collect stats
+        curr_dir=$PWD
+        cd {params.outdir}
+        md5sum *.fastq.gz > md5sum.txt
+        du -h *.fastq.gz > size.txt
+        cd $curr_dir
+        ) > {log} 2>&1
+        
+        touch {output}
+        """
+
+rule bcl_convert:
+    input:
+        sample_sheet=lambda wildcards: f"src/SampleSheet_{wildcards.config_id}.csv",
+        data_dir="data"
+    output:
+        directory("output/{config_id}")
+    resources:
+        serial_operation=1
+    threads: 1
+    params:
+        lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', '')
+    shell:
+        """
+        # Masking is now handled by OverrideCycles in the sample sheet
+        
         dragen --bcl-conversion-only true \
         --bcl-input-directory {input.data_dir} \
         --output-directory {output} \
         --force \
         --bcl-sampleproject-subdirectories true \
         --sample-sheet {input.sample_sheet} \
-        --strict-mode false
+        --strict-mode false \
+        --bcl-only-lane {params.lane}
         """
 

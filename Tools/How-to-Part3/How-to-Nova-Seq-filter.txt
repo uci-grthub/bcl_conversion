@@ -1,0 +1,219 @@
+How to do a Nova Seq run example 5
+
+
+How to "filter" barcodes.
+
+In some runs, a single index is in the list of dual barcodes. So need to "filter" out the results with each barcode from the Unrecognized
+
+Alternative:
+
+- Running bcl2fastq for the masking for the single index alone may not get all the data correctly because doing that greatly increases the odds that you collect the data from the other dual index groups.
+
+
+
+Example case xR074 lane 7 group 10
+
+
+
+So very reasonable to filter out the single index from the unrecognized because the size of the left-overs are:
+
+62G     Undetermined_S0_L007_R1_001.fastq.gz
+60G     Undetermined_S0_L007_R2_001.fastq.gz
+
+
+
+
+1. construct the filtering scripts in a special directory lane7-filter
+
+copy the barcodes into the directory
+
+cp lane7/7a-g10-bc.txt lane7-filter/barcodes.txt
+
+now make two files used later
+
+in lane7-filter
+
+cp ../lane7/prefix-7-g1.txt . 
+cut -d , -f3 prefix-7-g1.txt | cut -d P -f2 > seq-list.txt
+
+seq 1 8 > seq-list-nopad.txt
+
+These are the numbers for teh libraries by the prefix numbering and the S number (we start at 1)
+
+
+make files
+
+lane1-read1-unrec-name.txt
+lane1-read2-unrec-name.txt
+
+
+
+Here are the steps to make the Read 1 filter script
+
+ Start with  name of the Unrecognized.
+
+
+
+For paired you need 2 names.
+
+Put each name in a file like:
+
+lane1-read1-unrec-name.txt
+
+cat lane1-read1-unrec-name.txt
+Undetermined_S0_L007_R1_001.fastq.gz
+
+
+lane1-read2-unrec-name.txt
+
+cat lane1-read2-unrec-name.txt
+Undetermined_S0_L007_R2_001.fastq.gz
+
+(just used the naming lane1 here for lane7, used to do for each lane but since copy paste is easier just used until end steps)
+
+
+
+
+=========================================================
+
+For read 1:
+
+
+
+Generate the prefix line:
+
+sed 's/^/zcat /' lane1-read1-unrec-name.txt  | sed 's/$/ | grep 1:N:0:/' > prefix-lane1-read1.txt
+
+
+Have the barcodes to filter in a list:
+
+
+barcodes.txt
+
+
+E.g.:
+
+more barcodes.txt
+GTAGAG
+ATGAGC
+CAGGCG
+CTATAC
+TCGGCA
+GGTAGC
+CACCGG
+TAATCG
+TCATTC
+AGGATAGC
+CCTTCCAT
+
+
+Count the lines needed for the prefix, match to the number of lines in the barcode file:
+
+wc -l prefix-lane1-read1.txt
+      11 prefix-lane1-read1.txt
+
+
+Use vi to duplicate the single line:
+
+vi prefix-lane1-read1.txt
+
+yy (the line)
+10p paste word count lines minus 1 with p paste
+
+
+Combine with the barcodes.txt
+
+
+paste -d '\0' prefix-lane1-read1.txt barcodes.txt
+
+
+paste -d '\0' prefix-lane1-read1.txt barcodes.txt > main-lane1-read1.txt
+
+
+
+Make list for positions P for the sequences if not made before:
+
+cut -d , -f3 prefix-1-g8.txt | cut -d P -f2 > seq-list.txt
+
+make list of S sequences
+
+seq 1 11 > seq-list-nopad.txt
+
+Be careful for padding
+
+
+
+Now make the output lines for the filter
+
+sed 's/$/ -A 3 --no-group-separator > xR074-L7-P/' main-lane1-read1.txt  > next-lane1-read1.txt
+
+
+ add the position sequence list and the suffix for Illumina S coumnt:
+
+
+
+paste -d '\0' next-lane1-read1.txt seq-list.txt  | sed 's/$/_S/' > later-lane1-read1.txt
+
+
+Need sequence list with no pad again for Illumina S format sequence count
+
+
+paste -d '\0' later-lane1-read1.txt seq-list-nopad.txt  > file-lane1-read1.txt
+
+
+
+Need to add fastq file name:
+
+paste -d '\0' file-lane1-read1.txt | sed 's/$/_L001_R1_001.fastq/' > near-last-lane1-read1.txt
+
+
+
+The script
+
+
+
+paste -d '\n' near-last-lane1-read1.txt > filter-script-lane7-read1.sh
+
+
+then setup for pigz (pigz is parrallel gzip so faster and compressed. pigz  must be installed on host)
+
+mkdir pigz 
+
+cp filter-script-lane7-read1.sh pigz/ 
+
+cd pigz/
+
+cut -d '>' -f2 filter-script-lane7-read1.sh pigz  > tmp1.txt
+
+sed 's/^/zcat/' tmp1.txt > pigz1.txt
+
+
+paste -d '\n' filter-script-lane7-read1.sh pigz1.txt > filter-script-lane7-read1-with-pigz.sh
+
+
+
+
+=========================================================
+
+
+Do the same for read 2, just change file names from 1 to 2
+
+
+=========================================================
+
+
+
+run the scripts on the Unrecognized sequences
+
+filter-script-lane7-read1-with-pigz.sh
+filter-script-lane7-read2-with-pigz.sh
+
+Run both scripts in a directory containing the Unrecognized files
+
+
+make sure unrecognized are not in the directory when running the processing script. The processing script looks for the Unrecognized to process which what you do not want here.
+
+
+
+
+

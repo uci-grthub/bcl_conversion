@@ -24,16 +24,19 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, report_dir):
     """
     html_content += f"<h1>Report for Project: {project}</h1>"
     
-    project_output_dir = os.path.join(output_base_dir, project)
+    # project_output_dir = os.path.join(output_base_dir, project)
+    lane_output_dirs = sorted(glob.glob(os.path.join(output_base_dir, "lane*")))
     
     # Collect all sample IDs
     samples = set()
     
     # From SampleBasicInfo
-    if os.path.exists(project_output_dir):
-        for f in os.listdir(project_output_dir):
-            if f.endswith("-SampleBasicInfo.txt"):
-                samples.add(f[:-20]) # Remove -SampleBasicInfo.txt
+    for lane_dir in lane_output_dirs:
+        project_lane_dir = os.path.join(lane_dir, project)
+        if os.path.exists(project_lane_dir):
+            for f in os.listdir(project_lane_dir):
+                if f.endswith("-SampleBasicInfo.txt"):
+                    samples.add(f[:-20]) # Remove -SampleBasicInfo.txt
     
     # From Plots
     lane_dirs = glob.glob(os.path.join(fastp_plots_base_dir, "lane*"))
@@ -53,16 +56,26 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, report_dir):
         
         # 1. Basic Info
         info_file = f"{sample}-SampleBasicInfo.txt"
-        src_info = os.path.join(project_output_dir, info_file)
-        if os.path.exists(src_info):
-            dst_info = os.path.join(report_dir, info_file)
-            shutil.copy2(src_info, dst_info)
-            try:
-                with open(src_info, 'r') as f:
-                    content = f.read()
-                html_content += f"<div class='basic-info'><h3>Basic Info</h3><pre>{content}</pre></div>"
-            except Exception as e:
-                html_content += f"<p>Error reading info: {e}</p>"
+        
+        # Find info file in any lane
+        found_info = False
+        for lane_dir in lane_output_dirs:
+            src_info = os.path.join(lane_dir, project, info_file)
+            if os.path.exists(src_info):
+                dst_info = os.path.join(report_dir, info_file)
+                shutil.copy2(src_info, dst_info)
+                try:
+                    with open(src_info, 'r') as f:
+                        content = f.read()
+                    html_content += f"<div class='basic-info'><h3>Basic Info ({os.path.basename(lane_dir)})</h3><pre>{content}</pre></div>"
+                    found_info = True
+                except Exception as e:
+                    html_content += f"<p>Error reading info: {e}</p>"
+                # If we want to show info from all lanes, remove break. For now, show all if multiple exist.
+                # break 
+        
+        if not found_info:
+             html_content += "<p>No Basic Info found.</p>"
         
         # 2. Plots (per lane)
         html_content += "<div class='plots-container'>"

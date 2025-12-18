@@ -5,4 +5,4 @@ dragen --bcl-conversion-only true \
     --output-directory output \
     --force \
     --sample-sheet code/SampleSheetxR074-lane2-dual-bc.csv \
-    --strict-mode true
+    --strict-mode false

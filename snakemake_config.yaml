@@ -1,6 +1,6 @@
 # Snakemake configuration for postprocess workflow
-sample_sheet: "/staging/nextcloud/testing_illumina/miseq/igb_transition/src/SampleSheet.csv"
-num_reads: 1
+sample_sheet: "src/SampleSheet_ahubn.csv"
+num_reads: 2
 library_name: "VilaE_WGS_Pool1"
 fastqdir: "output"
 start_s: 1
@@ -10,3 +10,4 @@ script_path: "Tools/postprocess/postprocess_hiseq_lane_centos7_test_gzip.pl"
 lanes: [1,2,3,4,5,6,7,8]
 fastp_threads: 4
 fastp_outdir: "results/fastp"
+metadata: "metadata/251205_2333KHLT4_25B_PE151_xR074.xlsx"
