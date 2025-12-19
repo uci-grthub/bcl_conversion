@@ -116,8 +116,8 @@ else{
           } else {
               log_msg("Input $file_in_R1 missing, using existing $file_out");
           }
-          log_msg("Running process_single: perl $process_single $file_out ${fastqdir}/${project}/${prefix}-${barcode} \"$name\"");
-          `perl $process_single $file_out ${fastqdir}/${project}/${prefix}-${barcode} \"$name\"`;
+          # log_msg("Running process_single: perl $process_single $file_out ${fastqdir}/${project}/${prefix}-${barcode} \"$name\"");
+          # `perl $process_single $file_out ${fastqdir}/${project}/${prefix}-${barcode} \"$name\"`;
           log_msg("Changing permissions for $prefix* and $file_out");
           `chmod 770 ${fastqdir}/${project}/$prefix*`; `chmod 770 $file_out`;
           print "case A $file_out ";
@@ -165,8 +165,8 @@ else{
           } else {
               log_msg("Input $file_in_R2 missing, using existing $file_out_R2");
           }
-          log_msg("Running process_paired: perl $process_paired $file_out_R1 $file_out_R2 ${fastqdir}/${project}/${prefix}-${barcode} \"$name\"");
-          `perl $process_paired $file_out_R1 $file_out_R2 ${fastqdir}/${project}/${prefix}-${barcode} \"$name\"`;
+          # log_msg("Running process_paired: perl $process_paired $file_out_R1 $file_out_R2 ${fastqdir}/${project}/${prefix}-${barcode} \"$name\"");
+          # `perl $process_paired $file_out_R1 $file_out_R2 ${fastqdir}/${project}/${prefix}-${barcode} \"$name\"`;
           log_msg("Changing permissions for ${fastqdir}/${project}/$prefix*, $file_out_R1, $file_out_R2");
           `chmod 770 ${fastqdir}/${project}/$prefix*`; 
           `chmod 770 $file_out_R1`;
@@ -216,8 +216,8 @@ else{
         } else {
             log_msg("Input $file_in_R1 missing, using existing $file_out");
         }
-        log_msg("Running process_single: perl $process_single $file_out ${prefix} \"$name\"");
-        `perl $process_single $file_out ${prefix} \"$name\"`;
+        # log_msg("Running process_single: perl $process_single $file_out ${prefix} \"$name\"");
+        # `perl $process_single $file_out ${prefix} \"$name\"`;
         log_msg("Changing permissions for $prefix* and $file_out");
         `chmod 770 ${fastqdir}/${project}/$prefix*`; `chmod 770 $file_out`;
         print "case B $file_out ";
@@ -265,8 +265,8 @@ else{
         } else {
             log_msg("Input $file_in_R2 missing, using existing $file_out_R2");
         }
-        log_msg("Running process_paired: perl $process_paired $file_out_R1 $file_out_R2 ${prefix} \"$name\"");
-        `perl $process_paired $file_out_R1 $file_out_R2 ${prefix} \"$name\"`;
+        # log_msg("Running process_paired: perl $process_paired $file_out_R1 $file_out_R2 ${prefix} \"$name\"");
+        # `perl $process_paired $file_out_R1 $file_out_R2 ${prefix} \"$name\"`;
         log_msg("Changing permissions for $prefix*, $file_out_R1, $file_out_R2");
         `chmod 770 $prefix*`; 
         `chmod 770 $file_out_R1`;

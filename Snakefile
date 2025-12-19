@@ -2,6 +2,7 @@ import os
 import re
 import pandas as pd
 import xml.etree.ElementTree as ET
+from io import StringIO
 
 configfile: "snakemake_config.yaml"
 
@@ -373,11 +374,12 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         
         outfile = os.path.join(out_dir, f"SampleSheet_lane{lane}_{masking_sanitized}.csv")
         with open(outfile, 'w') as f:
-            f.write("[Data],,,,,,\n")
-            ss_data.to_csv(f, index=False)
+            f.write("[Header]\n")
+            f.write("FileFormatVersion,2\n")
+            f.write("\n")
             
             # Add Settings block
-            f.write("\n[Settings]\n")
+            f.write("[BCLConvert_Settings]\n")
             
             # Check if any project in this lane contains "10x", "BD", "parse" or "Parse"
             create_fastq_for_index = "0"
@@ -396,6 +398,10 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             if has_index2:
                 f.write("BarcodeMismatchesIndex2,1\n")
             f.write("FastqCompressionFormat,gzip\n")
+            f.write("\n")
+            
+            f.write("[BCLConvert_Data]\n")
+            ss_data.to_csv(f, index=False)
             
         generated_files[config['id']] = outfile
         print(f"Generated {outfile}")
@@ -456,7 +462,7 @@ def get_projects(sample_sheet_path):
             line = line.strip()
             if not line: continue
             
-            if line.startswith('[Data]'):
+            if line.startswith('[Data]') or line.startswith('[BCLConvert_Data]'):
                 in_data = True
                 continue
             
@@ -493,7 +499,8 @@ rule all:
         expand("results/postprocess_{config_id}.done", config_id=CONFIG_IDS),
         expand("results/fastp_plots_{config_id}.done", config_id=CONFIG_IDS),
         expand("Reports/{project}/index.html", project=PROJECTS),
-        expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS)
+        expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
+        expand("results/fastp_plots_summary_lane{lane}.done", lane=detected_lanes),
 
 rule report_project:
     input:
@@ -533,81 +540,186 @@ rule postprocess_lane:
         touch {output}
         """
 
-rule fastp_lane:
+def read_sample_sheet(config_id):
+    sheet_path = f"src/SampleSheet_{config_id}.csv"
+    if not os.path.exists(sheet_path):
+        return None
+    
+    with open(sheet_path, 'r') as f:
+        lines = f.readlines()
+    
+    header_row_idx = -1
+    for i, line in enumerate(lines):
+        if line.strip().startswith("[BCLConvert_Data]") or line.strip().startswith("[Data]"):
+            header_row_idx = i + 1
+            break
+            
+    if header_row_idx == -1 or header_row_idx >= len(lines):
+        return None
+        
+    data_str = "".join(lines[header_row_idx:])
+    try:
+        return pd.read_csv(StringIO(data_str))
+    except:
+        return None
+
+def get_fastp_targets(wildcards):
+    config_id = wildcards.config_id
+    df = read_sample_sheet(config_id)
+    if df is None: return []
+    
+    targets = []
+    for idx, row in df.iterrows():
+        project = str(row.get('Sample_Project', '')).strip()
+        sample = str(row.get('Sample_Name', row.get('Sample_ID', ''))).strip()
+        
+        if not sample or sample.lower() == 'nan': continue
+
+        if project and project.lower() != 'nan':
+            path = f"{project}/{sample}"
+        else:
+            path = sample
+        targets.append(f"results/fastp/{config_id}/{path}.json")
+    return targets
+
+def get_fastp_sample_input(wildcards):
+    config_id = wildcards.config_id
+    sample_path = wildcards.sample_path
+    
+    df = read_sample_sheet(config_id)
+    if df is None:
+        raise ValueError(f"Failed to read sample sheet for config_id='{config_id}'")
+    
+    for idx, row in df.iterrows():
+        project = str(row.get('Sample_Project', '')).strip()
+        sample = str(row.get('Sample_Name', row.get('Sample_ID', ''))).strip()
+        
+        if not sample or sample.lower() == 'nan': continue
+
+        if project and project.lower() != 'nan':
+            path = f"{project}/{sample}"
+        else:
+            path = sample
+        
+        if path == sample_path:
+            s_idx = idx + 1
+            lane = row.get('Lane', '')
+            
+            prefix = f"output/{config_id}"
+            if project and project.lower() != 'nan':
+                prefix = f"{prefix}/{project}"
+            
+            r1 = f"{prefix}/{sample}_S{s_idx}_L00{lane}_R1_001.fastq.gz"
+            
+            if NUM_READS > 1:
+                r2 = f"{prefix}/{sample}_S{s_idx}_L00{lane}_R2_001.fastq.gz"
+                return [r1, r2]
+            else:
+                return [r1]
+    
+    # If we get here, we didn't find the sample
+    # This should not happen if get_fastp_targets is consistent
+    # But if it does, raising an error is better than returning empty list
+    raise ValueError(f"Could not find sample for config_id='{config_id}' and sample_path='{sample_path}' in sample sheet.")
+
+rule fastp_sample:
     input:
         "output/{config_id}"
     output:
-        touch("results/fastp_{config_id}.done")
+        json = "results/fastp/{config_id}/{sample_path}.json",
+        html = "results/fastp/{config_id}/{sample_path}.html"
+    wildcard_constraints:
+        config_id = "[^/]+",
+        sample_path = ".*"
     params:
-        fastqdir = "output/{config_id}",
-        outdir = FASTP_OUTDIR,
         threads = FASTP_THREADS,
-        lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', '')
+        inputs = get_fastp_sample_input
     threads: 4
     shell:
         """
-        mkdir -p {params.outdir}/{wildcards.config_id}
-        # Find R1 files for this lane and run fastp on each pair
-        for r1 in $(find {params.fastqdir} -type f -name "*_L00{params.lane}_R1_001.fastq.gz" 2>/dev/null); do
-            r2=${{r1/_R1_/_R2_}}
-            sample=$(basename "$r1" | sed -E 's/_S[0-9]+_L00[0-9]+_R1_001.fastq.gz//')
-            
-            # Preserve project subdirectory structure
-            r1_dir=$(dirname "$r1")
-            rel_dir=${{r1_dir#{params.fastqdir}}}
-            rel_dir=${{rel_dir#/}}
-            target_dir="{params.outdir}/{wildcards.config_id}/$rel_dir"
-            mkdir -p "$target_dir"
-            
-            out_prefix="$target_dir/${{sample}}"
-            
-            if [ -f "$r2" ]; then
-                echo "fastp (paired): $r1 & $r2 -> ${{out_prefix}}_R1.fastq.gz"
-                fastp -i "$r1" -I "$r2" --json "${{out_prefix}}.json" --html "${{out_prefix}}.html" -w {params.threads} > "${{out_prefix}}.log" 2>&1 || true
-            else
-                echo "fastp (single): $r1 -> ${{out_prefix}}_R1.fastq.gz"
-                fastp -i "$r1" --json "${{out_prefix}}.json" --html "${{out_prefix}}.html" -w {params.threads} > "${{out_prefix}}.log" 2>&1 || true
-            fi
-        done
-        touch {output}
+        mkdir -p $(dirname {output.json})
+        
+        files=({params.inputs})
+        r1="${{files[0]}}"
+        
+        if [ ${{#files[@]}} -gt 1 ]; then
+            r2="${{files[1]}}"
+            fastp -i "$r1" -I "$r2" --json "{output.json}" --html "{output.html}" -w {params.threads}
+        else
+            fastp -i "$r1" --json "{output.json}" --html "{output.html}" -w {params.threads}
+        fi
         """
+
+rule fastp_per_config:
+    input:
+        get_fastp_targets
+    output:
+        touch("results/fastp_{config_id}.done")
+    wildcard_constraints:
+        config_id = "lane.*"
+
+def get_fastp_plots_targets(wildcards):
+    config_id = wildcards.config_id
+    df = read_sample_sheet(config_id)
+    if df is None: return []
+    
+    targets = []
+    for idx, row in df.iterrows():
+        project = str(row.get('Sample_Project', '')).strip()
+        sample = str(row.get('Sample_Name', row.get('Sample_ID', ''))).strip()
+        
+        if not sample or sample.lower() == 'nan': continue
+
+        if project and project.lower() != 'nan':
+            path = f"{project}/{sample}"
+        else:
+            path = sample
+        targets.append(f"results/fastp_plots/{config_id}/{path}-mean_phred.png")
+        targets.append(f"results/fastp_plots/{config_id}/{path}-base_comp.png")
+    return targets
+
+rule fastp_plots_sample:
+    input:
+        json = "results/fastp/{config_id}/{sample_path}.json"
+    output:
+        mean = "results/fastp_plots/{config_id}/{sample_path}-mean_phred.png",
+        base = "results/fastp_plots/{config_id}/{sample_path}-base_comp.png"
+    wildcard_constraints:
+        config_id = "[^/]+",
+        sample_path = ".*"
+    params:
+        scripts_dir = SCRIPTDIR + "/analyze"
+    threads: 1
+    shell:
+        """
+        mkdir -p $(dirname {output.mean})
+        python3 {params.scripts_dir}/mean_phred_plot_fastp.py "{input.json}" --out "{output.mean}" || true
+        python3 {params.scripts_dir}/base_composition_plot_fastp.py "{input.json}" --out "{output.base}" || true
+        """
+
+rule fastp_plots_per_config:
+    input:
+        get_fastp_plots_targets
+    output:
+        touch("results/fastp_plots_{config_id}.done")
+    wildcard_constraints:
+        config_id = "lane.*"
+
+def get_fastp_plots_lane_inputs(wildcards):
+    lane = wildcards.lane
+    prefix = f"lane{lane}_"
+    relevant_configs = [cid for cid in CONFIG_IDS if cid.startswith(prefix)]
+    return [f"results/fastp_plots_{cid}.done" for cid in relevant_configs]
 
 rule fastp_plots_lane:
     input:
-        "results/fastp_{config_id}.done"
+        get_fastp_plots_lane_inputs
     output:
-        touch("results/fastp_plots_{config_id}.done")
-    params:
-        fastp_outdir = FASTP_OUTDIR,
-        plots_outdir = FASTP_PLOTS_OUTDIR,
-        scripts_dir = SCRIPTDIR + "/analyze",
-        lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', '')
-    threads: 4
-    shell:
-        """
-        mkdir -p {params.plots_outdir}/{wildcards.config_id}
-        # Find all json files
-        for json in $(find {params.fastp_outdir}/{wildcards.config_id} -type f -name "*.json" 2>/dev/null); do
-            # Extract relative path to preserve project structure
-            # json path: .../laneX/Project/Sample.json
-            # rel_path: Project/Sample.json
-            rel_path=${{json#{params.fastp_outdir}/{wildcards.config_id}/}}
-            rel_dir=$(dirname "$rel_path")
-            
-            mkdir -p "{params.plots_outdir}/{wildcards.config_id}/$rel_dir"
-            
-            sample=$(basename "$json" .json)
-            out_mean="{params.plots_outdir}/{wildcards.config_id}/$rel_dir/${{sample}}-mean_phred.png"
-            out_base="{params.plots_outdir}/{wildcards.config_id}/$rel_dir/${{sample}}-base_comp.png"
-            
-            echo "Plotting $json -> $out_mean, $out_base"
-            python3 {params.scripts_dir}/mean_phred_plot_fastp.py "$json" --out "$out_mean" || true
-            python3 {params.scripts_dir}/base_composition_plot_fastp.py "$json" --out "$out_base" || true
-        done
-        touch {output}
-        """
+        touch("results/fastp_plots_summary_lane{lane}.done")
+    wildcard_constraints:
+        lane = "\d+"
 
-rule flexbar_lane:
+rule flexbar_per_config:
     input:
         bcl_dir = "output/{config_id}",
         # Expecting a barcode file named specifically for this config
@@ -683,6 +795,8 @@ rule bcl_convert:
         data_dir="data"
     output:
         directory("output/{config_id}")
+    wildcard_constraints:
+        config_id = "[^/]+"
     resources:
         serial_operation=1
     threads: 1
