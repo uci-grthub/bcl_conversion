@@ -105,6 +105,17 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         
     print(f"Generating sample sheets from {metadata_file}")
     
+    # Extract run name from metadata filename
+    run_name = "Run"
+    try:
+        base = os.path.basename(metadata_file)
+        name_part = os.path.splitext(base)[0]
+        parts = name_part.split('_')
+        if parts:
+            run_name = parts[-1]
+    except:
+        pass
+    
     # Get actual run read lengths
     run_info_path = "data/RunInfo.xml"
     run_reads = get_run_read_lengths(run_info_path)
@@ -406,6 +417,29 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         generated_files[config['id']] = outfile
         print(f"Generated {outfile}")
         
+        # Generate renaming map
+        try:
+            map_df = pd.DataFrame()
+            map_df['Sample_Name'] = ss_data['Sample_Name']
+            map_df['Sample_Project'] = ss_data['Sample_Project']
+            map_df['Lane'] = ss_data['Lane']
+            map_df['index'] = ss_data['index']
+            map_df['index2'] = ss_data['index2']
+            map_df['Run'] = run_name
+            
+            # Add Group from lane_df
+            # ss_data was constructed from lane_df, so indices should match
+            map_df['Group'] = lane_df['Group'].values
+            
+            # Add Position (P001, P002, etc.)
+            map_df['Position'] = [f"P{i+1:03d}" for i in range(len(ss_data))]
+            
+            map_file = os.path.join(out_dir, f"renaming_map_{config['id']}.csv")
+            map_df.to_csv(map_file, index=False)
+            print(f"Generated {map_file}")
+        except Exception as e:
+            print(f"Error generating renaming map for {config['id']}: {e}")
+        
         # Check for Flexbar projects and generate barcode file
         flexbar_samples = []
         if 'Sample_Project' in ss_data.columns:
@@ -586,6 +620,55 @@ def get_fastp_sample_input(wildcards):
     config_id = wildcards.config_id
     sample_path = wildcards.sample_path
     
+    # Try to use renaming map first
+    map_path = f"src/renaming_map_{config_id}.csv"
+    if os.path.exists(map_path):
+        try:
+            df = pd.read_csv(map_path)
+            for idx, row in df.iterrows():
+                project = str(row.get('Sample_Project', '')).strip()
+                sample = str(row.get('Sample_Name', '')).strip()
+                
+                if not sample or sample.lower() == 'nan': continue
+                
+                if project and project.lower() != 'nan':
+                    path = f"{project}/{sample}"
+                else:
+                    path = sample
+                
+                if path == sample_path:
+                    run = str(row.get('Run', '')).strip()
+                    lane = int(row.get('Lane', 0))
+                    group = str(row.get('Group', '')).strip()
+                    if group.lower() == 'nan': group = "Undetermined"
+                    
+                    index1 = str(row.get('index', '')).strip()
+                    if index1.lower() == 'nan': index1 = ""
+                    index2 = str(row.get('index2', '')).strip()
+                    if index2.lower() == 'nan': index2 = ""
+                    
+                    if index2:
+                        barcode = f"{index1}-{index2}"
+                    else:
+                        barcode = index1
+                        
+                    position = str(row.get('Position', f"P{idx+1:03d}")).strip()
+                        
+                    prefix = f"output/{config_id}"
+                    if project and project.lower() != 'nan':
+                        prefix = f"{prefix}/{project}"
+                    
+                    r1 = f"{prefix}/{run}-L{lane}-G{group}-{position}-{barcode}-R1.fastq.gz"
+                    
+                    if NUM_READS > 1:
+                        r2 = f"{prefix}/{run}-L{lane}-G{group}-{position}-{barcode}-R2.fastq.gz"
+                        return [r1, r2]
+                    else:
+                        return [r1]
+        except Exception as e:
+            print(f"Error reading map file {map_path}: {e}")
+
+    # Fallback to SampleSheet (old naming)
     df = read_sample_sheet(config_id)
     if df is None:
         raise ValueError(f"Failed to read sample sheet for config_id='{config_id}'")
@@ -814,5 +897,8 @@ rule bcl_convert:
         --sample-sheet {input.sample_sheet} \
         --strict-mode false \
         --bcl-only-lane {params.lane}
+        
+        # Rename FASTQ files
+        python3 src/rename_fastqs.py {wildcards.config_id} {output} src/renaming_map_{wildcards.config_id}.csv
         """
 

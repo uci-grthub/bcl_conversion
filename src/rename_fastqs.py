@@ -1,0 +1,101 @@
+import os
+import sys
+import pandas as pd
+import glob
+
+def rename_fastqs(config_id, output_dir, map_file):
+    if not os.path.exists(map_file):
+        print(f"Map file {map_file} not found.")
+        return
+
+    try:
+        df = pd.read_csv(map_file)
+    except Exception as e:
+        print(f"Error reading map file: {e}")
+        return
+
+    print(f"Renaming files in {output_dir} using {map_file}")
+
+    for i, row in df.iterrows():
+        sample_name = str(row['Sample_Name']).strip()
+        project = str(row['Sample_Project']).strip()
+        try:
+            lane = int(row['Lane'])
+        except:
+            lane = 0
+            
+        group = str(row['Group']).strip()
+        if group.lower() == 'nan': group = "Undetermined"
+        
+        run = str(row['Run']).strip()
+        
+        index1 = str(row['index']).strip()
+        if index1.lower() == 'nan': index1 = ""
+        
+        index2 = str(row['index2']).strip()
+        if index2.lower() == 'nan': index2 = ""
+        
+        if index2:
+            barcode = f"{index1}-{index2}"
+        else:
+            barcode = index1
+            
+        position = str(row.get('Position', f"P{i+1:03d}")).strip()
+            
+        # Construct old filename pattern
+        # {Sample_Name}_S{i+1}_L{Lane:03d}_R{Read}_001.fastq.gz
+        s_num = i + 1
+        
+        # Determine project subdirectory
+        project_dir = output_dir
+        if project and project.lower() != 'nan':
+            project_dir = os.path.join(output_dir, project)
+            
+        if not os.path.exists(project_dir):
+            # It might be that bcl-convert didn't create project subdir if sample sheet didn't specify it correctly?
+            # But we set --bcl-sampleproject-subdirectories true
+            # If project is empty, it goes to root.
+            if not project or project.lower() == 'nan':
+                project_dir = output_dir
+            else:
+                print(f"Project directory {project_dir} not found.")
+                continue
+            
+        for read in [1, 2]:
+            old_name = f"{sample_name}_S{s_num}_L{lane:03d}_R{read}_001.fastq.gz"
+            old_path = os.path.join(project_dir, old_name)
+            
+            if not os.path.exists(old_path):
+                # Check if it's single read run?
+                # If R2 doesn't exist, maybe it's single read.
+                if read == 2:
+                    continue
+                print(f"File not found: {old_path}")
+                continue
+                
+            new_name = f"{run}-L{lane}-G{group}-{position}-{barcode}-R{read}.fastq.gz"
+            new_path = os.path.join(project_dir, new_name)
+            
+            print(f"Renaming {old_name} -> {new_name}")
+            try:
+                if os.path.exists(new_path):
+                    os.remove(new_path)
+                os.rename(old_path, new_path)
+                # Create symlink for backward compatibility
+                # Symlink should be relative or absolute? Relative is better.
+                # os.symlink(src, dst) -> dst points to src.
+                # We want old_path -> new_name
+                os.symlink(new_name, old_path)
+            except Exception as e:
+                print(f"Error renaming {old_path}: {e}")
+
+if __name__ == "__main__":
+    if len(sys.argv) != 4:
+        print("Usage: python rename_fastqs.py <config_id> <output_dir> <map_file>")
+        sys.exit(1)
+        
+    config_id = sys.argv[1]
+    output_dir = sys.argv[2]
+    map_file = sys.argv[3]
+    
+    rename_fastqs(config_id, output_dir, map_file)
