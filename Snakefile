@@ -364,7 +364,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         ss_data['OverrideCycles'] = override_cycles
 
         # Reorder columns
-        cols = ['Project', 'Lane', 'Sample_ID', 'Sample_Name', 'index', 'index2', 'Sample_Project', 'OverrideCycles']
+        cols = ['Lane', 'Sample_ID', 'Sample_Name', 'index', 'index2', 'Sample_Project', 'OverrideCycles']
         # Add missing cols if any
         for c in cols:
             if c not in ss_data.columns:
@@ -383,8 +383,8 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             
             # Check if any project in this lane contains "10x", "BD", "parse" or "Parse"
             create_fastq_for_index = "0"
-            if 'Project' in ss_data.columns:
-                for proj in ss_data['Project'].unique():
+            if 'Sample_Project' in ss_data.columns:
+                for proj in ss_data['Sample_Project'].unique():
                     proj_str = str(proj)
                     if any(keyword in proj_str for keyword in ["10x", "BD", "parse", "Parse"]):
                         create_fastq_for_index = "1"
@@ -408,9 +408,9 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         
         # Check for Flexbar projects and generate barcode file
         flexbar_samples = []
-        if 'Project' in ss_data.columns:
+        if 'Sample_Project' in ss_data.columns:
             for idx, row in ss_data.iterrows():
-                proj = str(row['Project'])
+                proj = str(row['Sample_Project'])
                 if "flexbar" in proj.lower():
                     s_name = row['Sample_Name']
                     s_index = row['index']
