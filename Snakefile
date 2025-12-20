@@ -6,11 +6,11 @@ from io import StringIO
 
 configfile: "snakemake_config.yaml"
 
-SCRIPTDIR = config.get("script_dir", "Tools")
-SCRIPT = config.get("script_path", "Tools/postprocess/postprocess_hiseq_lane_centos7_test_gzip.pl")
-SAMPLE_SHEET = config.get("sample_sheet", "src/SampleSheet.csv")
+SCRIPTDIR = config.get("script_dir", "src/Tools")
+SCRIPT = config.get("script_path", "src/Tools/postprocess/postprocess_hiseq_lane_centos7_test_gzip.pl")
+SAMPLE_SHEET = config.get("sample_sheet", "src/SampleSheet_default.csv")
 NUM_READS = config.get("num_reads", 2)
-LIBRARY = config.get("library_name", "VilaE_WGS_Pool1")
+LIBRARY = config.get("library_name", "xR077")
 FASTQDIR = config.get("fastqdir", "output")
 START_S = config.get("start_s", 1)
 DRYRUN = config.get("dryrun", False)
@@ -26,7 +26,7 @@ if os.path.exists(basecalls_path):
 
 print("detected_lanes:", detected_lanes)
 
-metadata = config.get("metadata", "metadata/251205_2333KHLT4_25B_PE151_xR074.xlsx")
+metadata = config.get("metadata", "metadata/251219_23G5F2LT3_10B_PE151_xR077.xlsx")
 
 METADATA_FILE = config.get("metadata")
 LANE_CONFIGS = []
