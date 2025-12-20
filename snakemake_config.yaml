@@ -2,6 +2,7 @@
 sample_sheet: "src/SampleSheet_default.csv"
 num_reads: 2
 library_name: "xR077"
+run: "xR077"
 fastqdir: "output"
 start_s: 1
 dryrun: false
@@ -10,4 +11,4 @@ script_path: "src/Tools/postprocess/postprocess_hiseq_lane_centos7_test_gzip.pl"
 lanes: [1,2,3,4,5,6,7,8]
 fastp_threads: 4
 fastp_outdir: "results/fastp"
-metadata: "metadata/251219_23G5F2LT3_10B_PE151_xR077.xlsx"
+metadata: "metadata/251205_2333KHLT4_25B_PE151_xR074.xlsx"

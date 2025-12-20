@@ -26,7 +26,7 @@ if os.path.exists(basecalls_path):
 
 print("detected_lanes:", detected_lanes)
 
-metadata = config.get("metadata", "metadata/251219_23G5F2LT3_10B_PE151_xR077.xlsx")
+metadata = config.get("metadata", "metadata/SampleSheet.xlsx")
 
 METADATA_FILE = config.get("metadata")
 LANE_CONFIGS = []
