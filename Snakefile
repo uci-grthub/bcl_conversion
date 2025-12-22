@@ -14,8 +14,9 @@ LIBRARY = config.get("library_name", "xR077")
 FASTQDIR = config.get("fastqdir", "output")
 START_S = config.get("start_s", 1)
 DRYRUN = config.get("dryrun", False)
-RUN_INFO_PATH = config.get("run_info_path", "/staging/nextcloud/NovaseqX/20251219_LH00626_0085_A23G5F2LT3/RunInfo.xml")
+RUN_INFO_PATH = config.get("run_info_path", "src/RunInfo.xml")
 DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20251219_LH00626_0085_A23G5F2LT3")
+TILES = config.get("tiles", "1_1101")
 
 # Auto-detect lanes from data/Data/Intensities/BaseCalls
 detected_lanes = []
@@ -553,6 +554,7 @@ rule all:
         expand("Reports/{project}/index.html", project=PROJECTS),
         expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
         expand("results/fastp_plots_summary_lane{lane}.done", lane=detected_lanes),
+        expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
 
 rule report_project:
     input:
@@ -904,10 +906,17 @@ rule bcl_convert:
         serial_operation=1
     threads: 1
     params:
-        lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', '')
+        lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', ''),
+        run_info_path = RUN_INFO_PATH,
+        tiles = TILES
     shell:
         """
         # Masking is now handled by OverrideCycles in the sample sheet
+        
+        tiles_arg=""
+        if [ ! -z "{params.tiles}" ]; then
+            tiles_arg="--tiles {params.tiles}"
+        fi
         
         dragen --bcl-conversion-only true \
         --bcl-input-directory {input.data_dir} \
@@ -916,10 +925,26 @@ rule bcl_convert:
         --bcl-sampleproject-subdirectories true \
         --sample-sheet {input.sample_sheet} \
         --strict-mode false \
-        --bcl-only-lane {params.lane}
+        --bcl-only-lane {params.lane} \
+        --run-info {params.run_info_path} \
+        $tiles_arg
         
         # Rename FASTQ files
-        python3 src/rename_fastqs.py {wildcards.config_id} {output.output_dir} src/renaming_map_{wildcards.config_id}.csv
+        # python3 src/rename_fastqs.py {wildcards.config_id} {output.output_dir} src/renaming_map_{wildcards.config_id}.csv
+        src/run_rename.sh {wildcards.config_id} {output.output_dir} src/renaming_map_{wildcards.config_id}.csv
         touch {output.done_file}
+        """
+
+rule analyze_undetermined:
+    input:
+        done = "output/{config_id}/.done"
+    output:
+        csv = "results/undetermined_indices/{config_id}.csv"
+    params:
+        script = "src/analyze_undetermined_indices.py",
+        input_pattern = lambda wildcards: f"output/{wildcards.config_id}/Undetermined_S0_*.fastq.gz"
+    shell:
+        """
+        python3 {params.script} "{params.input_pattern}" --output {output.csv}
         """
 

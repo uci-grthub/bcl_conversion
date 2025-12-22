@@ -7,3 +7,4 @@ md5sum*
 Tools/*.storable
 .snakemake/
 src/flexbar/*.txt
+*.xml

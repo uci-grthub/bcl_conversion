@@ -283,7 +283,7 @@ def main():
         if args.ylim:
             plt.ylim(args.ylim[0], args.ylim[1])
         else:
-            plt.ylim(35, 41)
+            plt.ylim(25, 41)
 
         plt.legend(loc='upper right', frameon=False, prop={'family': 'serif', 'weight': 'bold'})
         plt.tick_params(direction='in')

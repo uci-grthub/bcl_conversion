@@ -65,7 +65,15 @@ def rename_fastqs(config_id, output_dir, map_file):
             old_name = f"{sample_name}_S{s_num}_L{lane:03d}_{read_type}_001.fastq.gz"
             old_path = os.path.join(project_dir, old_name)
             
+            new_name = f"{run}-L{lane}-G{group}-{position}-{barcode}-{read_type}.fastq.gz"
+            new_path = os.path.join(project_dir, new_name)
+            
             if not os.path.exists(old_path):
+                # Check if already renamed
+                if os.path.exists(new_path):
+                    # print(f"File already renamed: {new_name}")
+                    continue
+                    
                 # Check if it's single read run?
                 # If R2 doesn't exist, maybe it's single read.
                 if read_type in ['R2', 'I1', 'I2']:
@@ -73,9 +81,6 @@ def rename_fastqs(config_id, output_dir, map_file):
                 print(f"File not found: {old_path}")
                 continue
                 
-            new_name = f"{run}-L{lane}-G{group}-{position}-{barcode}-{read_type}.fastq.gz"
-            new_path = os.path.join(project_dir, new_name)
-            
             print(f"Renaming {old_name} -> {new_name}")
             try:
                 if os.path.exists(new_path):

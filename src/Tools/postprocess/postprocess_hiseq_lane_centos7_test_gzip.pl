@@ -112,7 +112,7 @@ else{
       } else {
           if (-f "$file_in_R1") {
               log_msg("Moving $file_in_R1 to $file_out");
-              `mv $file_in_R1 $file_out`;
+            #   `mv $file_in_R1 $file_out`;
           } else {
               log_msg("Input $file_in_R1 missing, using existing $file_out");
           }
@@ -155,13 +155,13 @@ else{
       } else {
           if (-f "$file_in_R1") {
               log_msg("Moving $file_in_R1 to $file_out_R1");
-              `mv $file_in_R1 $file_out_R1`;
+            #   `mv $file_in_R1 $file_out_R1`;
           } else {
               log_msg("Input $file_in_R1 missing, using existing $file_out_R1");
           }
           if (-f "$file_in_R2") {
               log_msg("Moving $file_in_R2 to $file_out_R2");
-              `mv $file_in_R2 $file_out_R2`;
+            #   `mv $file_in_R2 $file_out_R2`;
           } else {
               log_msg("Input $file_in_R2 missing, using existing $file_out_R2");
           }
@@ -212,7 +212,7 @@ else{
     } else {
         if (-f "$file_in_R1") {
             log_msg("Moving $file_in_R1 to $file_out");
-            `mv $file_in_R1 $file_out`;
+            # `mv $file_in_R1 $file_out`;
         } else {
             log_msg("Input $file_in_R1 missing, using existing $file_out");
         }
@@ -255,13 +255,13 @@ else{
     } else {
         if (-f "$file_in_R1") {
             log_msg("Moving $file_in_R1 to $file_out_R1");
-            `mv $file_in_R1 $file_out_R1`;
+            # `mv $file_in_R1 $file_out_R1`;
         } else {
             log_msg("Input $file_in_R1 missing, using existing $file_out_R1");
         }
         if (-f "$file_in_R2") {
             log_msg("Moving $file_in_R2 to $file_out_R2");
-            `mv $file_in_R2 $file_out_R2`;
+            # `mv $file_in_R2 $file_out_R2`;
         } else {
             log_msg("Input $file_in_R2 missing, using existing $file_out_R2");
         }

@@ -193,7 +193,7 @@ def plot_composition(ax, df, title):
     ax.set_title(title, fontsize=14, fontweight='bold', fontname='serif')
     ax.set_ylabel("Base Call Frequency", fontsize=12, fontweight='bold', fontname='serif')
     ax.grid(True, linestyle='--', alpha=0.7)
-    ax.set_ylim(0, 0.5)
+    ax.set_ylim(0, 1)
     ax.set_xlim(left=0)
     
     # Legend settings
