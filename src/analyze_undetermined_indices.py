@@ -48,25 +48,25 @@ def get_top_indices(file_pattern, top_n=20, output_file=None, limit=None):
                     
                     # FASTQ format: 4 lines per record. Header is the 1st line (index 0, 4, 8...)
                     if i % 4 == 0:
-                        line = line.strip()
                         # Illumina header format usually ends with index info
                         # Example: @... 1:N:0:ATGC+ATGC
-                        try:
-                            # Split by space to get the comment part (1:N:0:INDEX)
-                            parts = line.split(' ')
-                            if len(parts) > 1:
-                                # The index is usually the last field in the comment, separated by ':'
-                                index_info = parts[-1]
-                                index_sequence = index_info.split(':')[-1]
-                                index_counter[index_sequence] += 1
-                                total_reads += 1
-                                
-                                if total_reads % 100000 == 0:
-                                    print(f"Processed {total_reads} clusters. Current index: {index_sequence}. Count: {index_counter[index_sequence]}")
-                        except Exception:
-                            continue
+                        # Optimization: rsplit is faster if we look from the end
+                        # Optimization: avoid strip() if we know the structure
+                        
+                        # Find the last colon
+                        last_colon_idx = line.rfind(':')
+                        if last_colon_idx != -1:
+                            # The index sequence is everything after the last colon, but we need to be careful about newlines
+                            index_sequence = line[last_colon_idx+1:].rstrip()
+                            index_counter[index_sequence] += 1
+                            total_reads += 1
+                            
+                            if total_reads % 1000000 == 0:
+                                print(f"Processed {total_reads} clusters...", end='\r')
         except Exception as e:
             print(f"Error reading {file_path}: {e}")
+            
+    print(f"\nProcessed {total_reads} total clusters.")
 
     print(f"\nTop {top_n} detected index sequences:")
     print(f"{'Count':<10} {'Type':<10} {'Index Sequence'}")
