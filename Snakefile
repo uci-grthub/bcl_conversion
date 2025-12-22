@@ -271,7 +271,14 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         lane_df = df[(df['Lane'] == lane) & (df['Masking'] == masking)].copy()
         
         # Remove rows with empty index if there are other rows with index
-        valid_indices = lane_df['index'].fillna("").astype(str).str.strip() != ""
+        def is_valid_index(val):
+            if pd.isna(val): return False
+            s = str(val).strip()
+            if not s: return False
+            if s.lower() == 'nan': return False
+            return True
+
+        valid_indices = lane_df['index'].apply(is_valid_index)
         if valid_indices.any():
             lane_df = lane_df[valid_indices]
         
@@ -422,10 +429,10 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             f.write(f"CreateFastqForIndexReads,{create_fastq_for_index}\n")
             f.write("MinimumTrimmedReadLength,8\n")
             f.write("MaskShortReads,8\n")
-            if has_index1:
-                f.write("BarcodeMismatchesIndex1,1\n")
-            if has_index2:
-                f.write("BarcodeMismatchesIndex2,1\n")
+            # if has_index1:
+            #     f.write("BarcodeMismatchesIndex1,1\n")
+            # if has_index2:
+            #     f.write("BarcodeMismatchesIndex2,1\n")
             f.write("FastqCompressionFormat,gzip\n")
             f.write("\n")
             
