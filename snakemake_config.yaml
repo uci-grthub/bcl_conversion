@@ -11,4 +11,7 @@ script_path: "src/Tools/postprocess/postprocess_hiseq_lane_centos7_test_gzip.pl"
 lanes: [1,2,3,4,5,6,7,8]
 fastp_threads: 4
 fastp_outdir: "results/fastp"
-metadata: "metadata/251205_2333KHLT4_25B_PE151_xR074.xlsx"
+metadata: "metadata/251219_23G5F2LT3_10B_PE151_xR077.xlsx"
+run_info_path: "/staging/nextcloud/NovaseqX/20251219_LH00626_0085_A23G5F2LT3/RunInfo.xml"
+basecalls_path: "/staging/nextcloud/NovaseqX/20251219_LH00626_0085_A23G5F2LT3/Data/Intensities/BaseCalls"
+data_dir: "/staging/nextcloud/NovaseqX/20251219_LH00626_0085_A23G5F2LT3"

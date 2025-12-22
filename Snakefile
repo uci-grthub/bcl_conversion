@@ -14,10 +14,12 @@ LIBRARY = config.get("library_name", "xR077")
 FASTQDIR = config.get("fastqdir", "output")
 START_S = config.get("start_s", 1)
 DRYRUN = config.get("dryrun", False)
+RUN_INFO_PATH = config.get("run_info_path", "/staging/nextcloud/NovaseqX/20251219_LH00626_0085_A23G5F2LT3/RunInfo.xml")
+DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20251219_LH00626_0085_A23G5F2LT3")
 
 # Auto-detect lanes from data/Data/Intensities/BaseCalls
 detected_lanes = []
-basecalls_path = "data/Data/Intensities/BaseCalls"
+basecalls_path = config.get("basecalls_path", "data/Data/Intensities/BaseCalls")
 if os.path.exists(basecalls_path):
     detected_lanes = sorted([
         int(d[1:]) for d in os.listdir(basecalls_path) 
@@ -98,7 +100,7 @@ def get_run_read_lengths(run_info_path):
         print(f"Error parsing RunInfo.xml: {e}")
         return []
 
-def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, masking_lookup, out_dir):
+def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, masking_lookup, out_dir, run_info_path=None):
     if not metadata_file or not os.path.exists(metadata_file):
         print("Metadata file not found.")
         return {}
@@ -117,7 +119,6 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         pass
     
     # Get actual run read lengths
-    run_info_path = "data/RunInfo.xml"
     run_reads = get_run_read_lengths(run_info_path)
     
     all_samples = pd.DataFrame()
@@ -268,6 +269,11 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         # Filter by Lane AND Masking
         lane_df = df[(df['Lane'] == lane) & (df['Masking'] == masking)].copy()
         
+        # Remove rows with empty index if there are other rows with index
+        valid_indices = lane_df['index'].fillna("").astype(str).str.strip() != ""
+        if valid_indices.any():
+            lane_df = lane_df[valid_indices]
+        
         if lane_df.empty:
             print(f"No samples found for lane {lane} with masking {masking}")
             continue
@@ -346,12 +352,23 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                         
                         # Get actual length from RunInfo if available
                         actual_len = 0
+                        is_indexed_read = False
                         if run_reads and i < len(run_reads):
                             actual_len = run_reads[i]['NumCycles']
+                            is_indexed_read = run_reads[i].get('IsIndexedRead') == 'Y'
                         
-                        # Handle I0 case: replace with N{actual_len}
-                        if specified_len == 0 and type_.startswith('I') and actual_len > 0:
-                            cycle_str = f"N{actual_len}"
+                        # Handle Y2 case: treat as UMI (U) matching actual length
+                        if type_ == 'Y2':
+                            if actual_len > 0:
+                                cycle_str = f"U{actual_len}"
+                            else:
+                                cycle_str = f"U{specified_len}"
+                        # Handle 0 length case: replace with I0N{actual_len} for index reads, N{actual_len} for data reads
+                        elif specified_len == 0 and actual_len > 0:
+                            if is_indexed_read:
+                                cycle_str = f"I0N{actual_len}"
+                            else:
+                                cycle_str = f"N{actual_len}"
                         else:
                             if type_.startswith('R'):
                                 cycle_str = f"Y{len_}"
@@ -468,9 +485,10 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         
     return generated_files
 
-SAMPLE_SHEETS_DICT = generate_lane_samplesheets(METADATA_FILE, LANE_CONFIGS, PROJECT_LOOKUP, MASKING_LOOKUP, "src")
+SAMPLE_SHEETS_DICT = generate_lane_samplesheets(METADATA_FILE, LANE_CONFIGS, PROJECT_LOOKUP, MASKING_LOOKUP, "src", RUN_INFO_PATH)
 
 print(SAMPLE_SHEETS_DICT)
+print(RUN_INFO_PATH)
 
 CONFIG_IDS = [c['id'] for c in LANE_CONFIGS] if LANE_CONFIGS else []
 # Fallback if no metadata
@@ -707,7 +725,8 @@ def get_fastp_sample_input(wildcards):
 
 rule fastp_sample:
     input:
-        "output/{config_id}"
+        "output/{config_id}",
+        "output/{config_id}/.done"
     output:
         json = "results/fastp/{config_id}/{sample_path}.json",
         html = "results/fastp/{config_id}/{sample_path}.html"
@@ -875,9 +894,10 @@ rule flexbar_per_config:
 rule bcl_convert:
     input:
         sample_sheet=lambda wildcards: f"src/SampleSheet_{wildcards.config_id}.csv",
-        data_dir="data"
+        data_dir=DATA_DIR
     output:
-        directory("output/{config_id}")
+        output_dir = directory("output/{config_id}"),
+        done_file = touch("output/{config_id}/.done")
     wildcard_constraints:
         config_id = "[^/]+"
     resources:
@@ -891,7 +911,7 @@ rule bcl_convert:
         
         dragen --bcl-conversion-only true \
         --bcl-input-directory {input.data_dir} \
-        --output-directory {output} \
+        --output-directory {output.output_dir} \
         --force \
         --bcl-sampleproject-subdirectories true \
         --sample-sheet {input.sample_sheet} \
@@ -899,6 +919,7 @@ rule bcl_convert:
         --bcl-only-lane {params.lane}
         
         # Rename FASTQ files
-        python3 src/rename_fastqs.py {wildcards.config_id} {output} src/renaming_map_{wildcards.config_id}.csv
+        python3 src/rename_fastqs.py {wildcards.config_id} {output.output_dir} src/renaming_map_{wildcards.config_id}.csv
+        touch {output.done_file}
         """
 
