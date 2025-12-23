@@ -568,7 +568,8 @@ rule all:
         expand("Reports/{project}/md5sums.txt", project=PROJECTS),
         # expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
         expand("results/fastp_plots_summary_lane{lane}.done", lane=detected_lanes),
-        # expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
+        expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
+        expand("results/read_counts_{project}.csv", project=PROJECTS),
 
 rule report_project:
     input:
@@ -893,6 +894,96 @@ rule fastp_plots_per_config:
     wildcard_constraints:
         config_id = "lane.*"
 
+def get_project_fastp_targets(wildcards):
+    project = wildcards.project
+    targets = []
+    
+    for config_id in CONFIG_IDS:
+        map_path = f"src/renaming_map_{config_id}.csv"
+        if os.path.exists(map_path):
+            try:
+                df = pd.read_csv(map_path)
+                # Ensure string type for comparison
+                df['Sample_Project'] = df['Sample_Project'].astype(str)
+                
+                # Filter for this project
+                project_samples = df[df['Sample_Project'] == project]
+                
+                for idx, row in project_samples.iterrows():
+                    run = str(row.get('Run', '')).strip()
+                    lane = int(row.get('Lane', 0))
+                    try:
+                        group = str(int(float(row.get('Group', 0))))
+                    except:
+                        group = str(row.get('Group', '')).strip()
+                    if group.lower() == 'nan' or not group: group = "Undetermined"
+                    
+                    index1 = str(row.get('index', '')).strip()
+                    if index1.lower() == 'nan': index1 = ""
+                    index2 = str(row.get('index2', '')).strip()
+                    if index2.lower() == 'nan': index2 = ""
+                    
+                    if index2:
+                        barcode = f"{index1}-{index2}"
+                    else:
+                        barcode = index1
+                        
+                    position = str(row.get('Position', f"P{idx+1:03d}")).strip()
+                    
+                    stem = f"{run}-L{lane}-G{group}-{position}-{barcode}"
+                    path = f"{project}/{stem}"
+                    
+                    targets.append(f"results/fastp/{config_id}/{path}.json")
+            except Exception as e:
+                print(f"Error reading map file {map_path}: {e}")
+    return targets
+
+rule summarize_project_reads:
+    input:
+        get_project_fastp_targets
+    output:
+        "results/read_counts_{project}.csv"
+    run:
+        import json
+        import pandas as pd
+        import os
+        
+        data = []
+        for json_file in input:
+            try:
+                with open(json_file, 'r') as f:
+                    j = json.load(f)
+                
+                # Extract info from path or json
+                # Path: results/fastp/{config_id}/{project}/{stem}.json
+                parts = json_file.split('/')
+                # parts[-1] is filename (stem.json)
+                # parts[-2] is project
+                # parts[-3] is config_id
+                
+                config_id = parts[-3]
+                filename = parts[-1]
+                sample_name = os.path.splitext(filename)[0]
+                
+                # Get read counts
+                total_reads = j.get('summary', {}).get('before_filtering', {}).get('total_reads', 0)
+                passed_reads = j.get('summary', {}).get('after_filtering', {}).get('total_reads', 0)
+                
+                data.append({
+                    'Config': config_id,
+                    'Project': wildcards.project,
+                    'Sample': sample_name,
+                    'Total_Reads': total_reads,
+                    'Passed_Reads': passed_reads
+                })
+            except Exception as e:
+                print(f"Error processing {json_file}: {e}")
+        
+        df = pd.DataFrame(data)
+        if not df.empty:
+            df = df.sort_values(['Config', 'Sample'])
+        df.to_csv(output[0], index=False)
+
 def get_fastp_plots_lane_inputs(wildcards):
     lane = wildcards.lane
     prefix = f"lane{lane}_"
@@ -1030,5 +1121,29 @@ rule analyze_undetermined:
     shell:
         """
         python3 {params.script} "{params.input_pattern}" --output {output.csv}
+        """
+
+rule project_link:
+    input:
+        "output/{config_id}",
+        fastq_dir = directory("output/{config_id}/{project}")
+    output:
+        log = "logs/project_link_{config_id}_{project}.log"
+    wildcard_constraints:
+        config_id = "[^/]+",
+        project = "[^/]+"
+    shell:
+        """
+        # Resolve absolute path and strip the mount prefix to get Nextcloud-relative path
+        ABS_PATH=$(readlink -f "{input.fastq_dir}")
+        # Assuming /staging/nextcloud is the root of the Nextcloud storage
+        NC_PATH=${{ABS_PATH#/staging/nextcloud/}}
+        
+        curl -X POST -u "kstachel:ucightf2025" \
+            -H "OCS-APIRequest: true" \
+            -d "path=$NC_PATH" \
+            -d "shareType=3" \
+            "https://precision.biochem.uci.edu/ocs/v2.php/apps/files_sharing/api/v1/shares" \
+            -o {output.log}
         """
 
