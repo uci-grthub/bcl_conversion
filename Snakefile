@@ -570,6 +570,7 @@ rule all:
         expand("results/fastp_plots_summary_lane{lane}.done", lane=detected_lanes),
         expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
         expand("results/read_counts_{project}.csv", project=PROJECTS),
+        expand("Reports/{project}/email_sent.done", project=PROJECTS),
 
 rule report_project:
     input:
@@ -585,6 +586,19 @@ rule report_project:
         report_dir = "Reports/{project}"
     shell:
         "python3 src/generate_report.py {params.project} {params.output_base} {params.fastp_plots_base} {params.fastp_base} {params.report_dir}"
+
+rule send_project_email:
+    input:
+        html = "Reports/{project}/index.html"
+    output:
+        touch("Reports/{project}/email_sent.done")
+    params:
+        script = "src/send_email.py",
+        sender = "kstachel@uci.edu",
+        receiver = "kstachel@uci.edu",
+        subject = lambda wildcards: f"Sequencing Report for Project {wildcards.project}"
+    shell:
+        "python3 {params.script} {params.sender} {params.receiver} \"{params.subject}\" {input.html}"
 
 rule postprocess_lane:
     input:
@@ -1120,7 +1134,7 @@ rule analyze_undetermined:
         input_pattern = lambda wildcards: f"output/{wildcards.config_id}/Undetermined_S0_*.fastq.gz"
     shell:
         """
-        python3 {params.script} "{params.input_pattern}" --output {output.csv}
+        python3 {params.script} "{params.input_pattern}" --output {output.csv} --limit 15000000
         """
 
 rule project_link:

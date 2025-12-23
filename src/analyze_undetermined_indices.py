@@ -79,6 +79,12 @@ def get_top_indices(file_pattern, top_n=20, output_file=None, limit=None):
     if output_file:
         try:
             with open(output_file, 'w', newline='') as f:
+                if limit:
+                    pct = round((limit / 1.5e9) * 100)
+                    f.write(f"Surveyed {pct}% of reads\n")
+                else:
+                    f.write("Surveyed 100% of reads\n")
+
                 writer = csv.writer(f)
                 writer.writerow(['Count', 'Type', 'Index Sequence'])
                 for index, count in index_counter.most_common(top_n):
