@@ -262,6 +262,8 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
     # Ensure output directory exists
     os.makedirs(out_dir, exist_ok=True)
     
+    global_position_counter = 1
+
     for config in lane_configs:
         lane = config['lane']
         masking = config['masking']
@@ -454,10 +456,19 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             
             # Add Group from lane_df
             # ss_data was constructed from lane_df, so indices should match
-            map_df['Group'] = lane_df['Group'].values
+            def format_group(val):
+                try:
+                    return str(int(float(val)))
+                except:
+                    return str(val)
+            map_df['Group'] = lane_df['Group'].apply(format_group).values
             
             # Add Position (P001, P002, etc.)
-            map_df['Position'] = [f"P{i+1:03d}" for i in range(len(ss_data))]
+            positions = []
+            for _ in range(len(ss_data)):
+                positions.append(f"P{global_position_counter:03d}")
+                global_position_counter += 1
+            map_df['Position'] = positions
             
             map_file = os.path.join(out_dir, f"renaming_map_{config['id']}.csv")
             map_df.to_csv(map_file, index=False)
