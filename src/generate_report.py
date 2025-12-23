@@ -2,8 +2,29 @@ import os
 import sys
 import glob
 import shutil
+import json
+import re
+import base64
+import subprocess
 
-def generate_report(project, output_base_dir, fastp_plots_base_dir, report_dir):
+def get_image_base64(path):
+    if os.path.exists(path):
+        with open(path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode('utf-8')
+    return None
+
+def get_file_size(path):
+    if os.path.exists(path):
+        size_bytes = os.path.getsize(path)
+        # Convert to human readable
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size_bytes < 1024.0:
+                return f"{size_bytes:.2f} {unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.2f} PB"
+    return "N/A"
+
+def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_dir, report_dir):
     os.makedirs(report_dir, exist_ok=True)
     
     html_content = f"<html><head><title>Report for {project}</title>"
@@ -19,106 +40,198 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, report_dir):
         .lane-header { font-weight: bold; margin-top: 10px; }
         .plots-row { display: flex; gap: 10px; width: 100%; }
         .plot-img { flex: 1; min-width: 0; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
     </style>
     </head><body>
     """
     html_content += f"<h1>Report for Project: {project}</h1>"
     
-    # project_output_dir = os.path.join(output_base_dir, project)
-    lane_output_dirs = sorted(glob.glob(os.path.join(output_base_dir, "lane*")))
+    # Find all samples from fastp JSONs
+    # Structure: results/fastp/{config_id}/{project}/{stem}.json
+    # We need to iterate over config_ids (lanes)
     
-    # Collect all sample IDs
-    samples = set()
+    # We can glob: results/fastp/*/{project}/*.json
+    json_pattern = os.path.join(fastp_base_dir, "*", project, "*.json")
+    print(f"Searching for JSONs with pattern: {json_pattern}")
+    json_files = glob.glob(json_pattern)
+    print(f"Found {len(json_files)} JSON files.")
     
-    # From SampleBasicInfo
-    for lane_dir in lane_output_dirs:
-        project_lane_dir = os.path.join(lane_dir, project)
-        if os.path.exists(project_lane_dir):
-            for f in os.listdir(project_lane_dir):
-                if f.endswith("-SampleBasicInfo.txt"):
-                    samples.add(f[:-20]) # Remove -SampleBasicInfo.txt
+    samples = {} # stem -> { 'lanes': { lane_id: { info... } } }
+    md5_lines = []
     
-    # From Plots
-    lane_dirs = glob.glob(os.path.join(fastp_plots_base_dir, "lane*"))
-    for lane_dir in lane_dirs:
-        project_lane_dir = os.path.join(lane_dir, project)
-        if os.path.exists(project_lane_dir):
-            for f in os.listdir(project_lane_dir):
-                if f.endswith("-mean_phred.png"):
-                    samples.add(f[:-15])
-                elif f.endswith("-base_comp.png"):
-                    samples.add(f[:-14])
-
-    sorted_samples = sorted(list(samples))
-    
-    for sample in sorted_samples:
-        html_content += f"<div class='sample-section'><h2>Sample: {sample}</h2>"
-        
-        # 1. Basic Info
-        info_file = f"{sample}-SampleBasicInfo.txt"
-        
-        # Find info file in any lane
-        found_info = False
-        for lane_dir in lane_output_dirs:
-            src_info = os.path.join(lane_dir, project, info_file)
-            if os.path.exists(src_info):
-                dst_info = os.path.join(report_dir, info_file)
-                shutil.copy2(src_info, dst_info)
+    for json_file in json_files:
+        # Extract config_id (lane)
+        # path: .../results/fastp/{config_id}/{project}/{stem}.json
+        parts = json_file.split(os.sep)
+        # Assuming standard structure
+        try:
+            # Find 'fastp' in path to locate config_id
+            # It should be the parent of the parent of the file
+            # .../fastp/lane1_.../project/file.json
+            # So config_id is parts[-3] if file is parts[-1]
+            config_id = parts[-3]
+            stem = os.path.splitext(os.path.basename(json_file))[0]
+        except:
+            print(f"Could not parse path: {json_file}")
+            continue
+            
+        # Parse JSON
+        try:
+            with open(json_file, 'r') as f:
+                data = json.load(f)
+            
+            summary = data.get('summary', {}).get('before_filtering', {})
+            total_reads = summary.get('total_reads', 0)
+            read1_len = summary.get('read1_mean_length', 0)
+            read2_len = summary.get('read2_mean_length', 0)
+            
+            is_paired = read2_len > 0
+            
+            if is_paired:
+                paired_reads = total_reads // 2
+            else:
+                paired_reads = total_reads
+            
+            # Extract Barcode from stem
+            # stem format: {run}-L{lane}-G{group}-{position}-{barcode}
+            # Find P\d{3}
+            match = re.search(r'-(P\d{3})-(.+)$', stem)
+            if match:
+                position = match.group(1)
+                barcode = match.group(2)
+            else:
+                barcode = "Unknown"
+                
+            # File Size
+            # Look in output/{config_id}/{project}/{stem}-R1.fastq.gz
+            r1_path = os.path.join(output_base_dir, config_id, project, f"{stem}-R1.fastq.gz")
+            r1_size = get_file_size(r1_path)
+            
+            r1_md5 = "N/A"
+            if os.path.exists(r1_path):
                 try:
-                    with open(src_info, 'r') as f:
-                        content = f.read()
-                    html_content += f"<div class='basic-info'><h3>Basic Info ({os.path.basename(lane_dir)})</h3><pre>{content}</pre></div>"
-                    found_info = True
+                    cmd = ['md5sum', r1_path]
+                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    if result.returncode == 0:
+                        hash_val = result.stdout.split()[0]
+                        md5_lines.append(f"{hash_val}  {os.path.basename(r1_path)}")
+                        r1_md5 = hash_val
                 except Exception as e:
-                    html_content += f"<p>Error reading info: {e}</p>"
-                # If we want to show info from all lanes, remove break. For now, show all if multiple exist.
-                # break 
+                    print(f"Error calculating md5 for {r1_path}: {e}")
+            
+            r2_size = "N/A"
+            r2_md5 = "N/A"
+            if is_paired:
+                r2_path = os.path.join(output_base_dir, config_id, project, f"{stem}-R2.fastq.gz")
+                r2_size = get_file_size(r2_path)
+                
+                if os.path.exists(r2_path):
+                    try:
+                        cmd = ['md5sum', r2_path]
+                        result = subprocess.run(cmd, capture_output=True, text=True)
+                        if result.returncode == 0:
+                            hash_val = result.stdout.split()[0]
+                            md5_lines.append(f"{hash_val}  {os.path.basename(r2_path)}")
+                            r2_md5 = hash_val
+                    except Exception as e:
+                        print(f"Error calculating md5 for {r2_path}: {e}")
+            
+            info = {
+                'barcode': barcode,
+                'paired_reads': paired_reads,
+                'is_paired': is_paired,
+                'r1_size': r1_size,
+                'r2_size': r2_size,
+                'r1_md5': r1_md5,
+                'r2_md5': r2_md5,
+                'json_path': json_file
+            }
+            
+            if stem not in samples:
+                samples[stem] = {}
+            samples[stem][config_id] = info
+            
+        except Exception as e:
+            print(f"Error processing {json_file}: {e}")
+            
+    sorted_stems = sorted(samples.keys())
+    
+    for stem in sorted_stems:
+        html_content += f"<div class='sample-section'><h2>Sample: {stem}</h2>"
         
-        if not found_info:
-             html_content += "<p>No Basic Info found.</p>"
+        # Basic Info Table
+        html_content += "<div class='basic-info'><h3>Basic Info</h3>"
+        html_content += "<table><thead><tr><th>Lane Config</th><th>Barcode</th><th>Paired Reads</th><th>Type</th><th>R1 Size</th><th>R1 MD5</th><th>R2 Size</th><th>R2 MD5</th></tr></thead><tbody>"
         
-        # 2. Plots (per lane)
+        lane_configs = sorted(samples[stem].keys())
+        for config_id in lane_configs:
+            info = samples[stem][config_id]
+            type_str = "Paired" if info['is_paired'] else "Single"
+            html_content += f"<tr><td>{config_id}</td><td>{info['barcode']}</td><td>{info['paired_reads']}</td><td>{type_str}</td><td>{info['r1_size']}</td><td>{info['r1_md5']}</td><td>{info['r2_size']}</td><td>{info['r2_md5']}</td></tr>"
+        html_content += "</tbody></table></div>"
+        
+        # Plots
         html_content += "<div class='plots-container'>"
-        for lane_dir in sorted(lane_dirs):
-            lane_name = os.path.basename(lane_dir)
-            project_lane_dir = os.path.join(lane_dir, project)
+        for config_id in lane_configs:
+            # Look for plots in fastp_plots_base_dir/{config_id}/{project}/{stem}-*.png
+            plot_dir = os.path.join(fastp_plots_base_dir, config_id, project)
+            mean_plot = f"{stem}-mean_phred.png"
+            base_plot = f"{stem}-base_comp.png"
             
-            mean_plot = f"{sample}-mean_phred.png"
-            base_plot = f"{sample}-base_comp.png"
+            src_mean = os.path.join(plot_dir, mean_plot)
+            src_base = os.path.join(plot_dir, base_plot)
             
-            src_mean = os.path.join(project_lane_dir, mean_plot)
-            src_base = os.path.join(project_lane_dir, base_plot)
+            print(f"Checking for plots in {plot_dir} for {stem}")
+            if os.path.exists(src_mean):
+                print(f"Found mean plot: {src_mean}")
+            else:
+                print(f"Missing mean plot: {src_mean}")
+                
+            if os.path.exists(src_base):
+                print(f"Found base plot: {src_base}")
+            else:
+                print(f"Missing base plot: {src_base}")
             
             if os.path.exists(src_mean) or os.path.exists(src_base):
-                html_content += f"<div class='plot-pair'><div class='lane-header'>{lane_name}</div><div class='plots-row'>"
+                html_content += f"<div class='plot-pair'><div class='lane-header'>{config_id}</div><div class='plots-row'>"
                 
                 if os.path.exists(src_mean):
-                    dst_mean = f"{lane_name}_{mean_plot}"
-                    shutil.copy2(src_mean, os.path.join(report_dir, dst_mean))
-                    html_content += f"<div class='plot-img'><img src='{dst_mean}' title='Mean Phred'></div>"
+                    b64_mean = get_image_base64(src_mean)
+                    if b64_mean:
+                        html_content += f"<div class='plot-img'><img src='data:image/png;base64,{b64_mean}' title='Mean Phred'></div>"
                 
                 if os.path.exists(src_base):
-                    dst_base = f"{lane_name}_{base_plot}"
-                    shutil.copy2(src_base, os.path.join(report_dir, dst_base))
-                    html_content += f"<div class='plot-img'><img src='{dst_base}' title='Base Composition'></div>"
+                    b64_base = get_image_base64(src_base)
+                    if b64_base:
+                        html_content += f"<div class='plot-img'><img src='data:image/png;base64,{b64_base}' title='Base Composition'></div>"
                 
                 html_content += "</div></div>"
         
-        html_content += "</div></div>" # End plots-container and sample-section
-
+        html_content += "</div></div>"
+        
     html_content += "</body></html>"
     
-    with open(os.path.join(report_dir, "index.html"), "w") as f:
+    with open(os.path.join(report_dir, "index.html"), 'w') as f:
         f.write(html_content)
 
+    # Write md5sums.txt
+    md5_file_path = os.path.join(report_dir, "md5sums.txt")
+    with open(md5_file_path, 'w') as f:
+        for line in sorted(list(set(md5_lines))):
+            f.write(line + "\n")
+    print(f"Generated {md5_file_path}")
+
 if __name__ == "__main__":
-    # Usage: python generate_report.py <project> <output_base> <fastp_plots_base> <report_dir>
-    if len(sys.argv) < 5:
-        print("Usage: python generate_report.py <project> <output_base> <fastp_plots_base> <report_dir>")
+    if len(sys.argv) < 6:
+        print("Usage: generate_report.py <project> <output_base> <fastp_plots_base> <fastp_base> <report_dir>")
         sys.exit(1)
         
     project = sys.argv[1]
     output_base = sys.argv[2]
     fastp_plots_base = sys.argv[3]
-    report_dir = sys.argv[4]
-    generate_report(project, output_base, fastp_plots_base, report_dir)
+    fastp_base = sys.argv[4]
+    report_dir = sys.argv[5]
+    
+    generate_report(project, output_base, fastp_plots_base, fastp_base, report_dir)

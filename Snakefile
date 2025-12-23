@@ -44,8 +44,8 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
         if 'Lane' in df.columns and 'Gr' in df.columns:
              for index, row in df.iterrows():
                  try:
-                     l = int(row['Lane'])
-                     g = int(row['Gr'])
+                     l = int(float(row['Lane']))
+                     g = int(float(row['Gr']))
                      
                      if 'Project Name' in df.columns:
                         p = str(row['Project Name']).strip()
@@ -62,7 +62,7 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
             groups = df[['Lane', 'Masking']].drop_duplicates()
             for index, row in groups.iterrows():
                 try:
-                    lane = int(row['Lane'])
+                    lane = int(float(row['Lane']))
                     masking = str(row['Masking']).strip()
                     # Sanitize masking for filename
                     # Example: "R1:151, I1:8, I2:8, R2:151" -> "R1-151_I1-8_I2-8_R2-151"
@@ -189,8 +189,8 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 def fill_project(row):
                     if pd.isna(row['Project']) or str(row['Project']).strip() == "" or str(row['Project']).lower() == 'nan':
                         try:
-                            l = int(row['Lane'])
-                            g = int(row['Group'])
+                            l = int(float(row['Lane']))
+                            g = int(float(row['Group']))
                             return project_lookup.get((l, g), "")
                         except:
                             return row['Project']
@@ -249,8 +249,8 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
     # Assign Masking to samples based on Lane and Group
     def get_sample_masking(row):
         try:
-            l = int(row['Lane'])
-            g = int(row['Group'])
+            l = int(float(row['Lane']))
+            g = int(float(row['Group']))
             return masking_lookup.get((l, g), "")
         except:
             return ""
@@ -507,39 +507,34 @@ FASTP_THREADS = config.get("fastp_threads", 4)
 FASTP_OUTDIR = config.get("fastp_outdir", "results/fastp")
 FASTP_PLOTS_OUTDIR = config.get("fastp_plots_outdir", "results/fastp_plots")
 
-# Retrieve project names from SampleSheet
-def get_projects(sample_sheet_path):
+# Retrieve project names from all generated SampleSheets
+def get_all_projects(sample_sheets_dict):
     projects = set()
-    if os.path.exists(sample_sheet_path):
-        with open(sample_sheet_path, 'r') as f:
-            lines = f.readlines()
-        
-        in_data = False
-        header = None
-        project_idx = -1
-        
-        for line in lines:
-            line = line.strip()
-            if not line: continue
-            
-            if line.startswith('[Data]') or line.startswith('[BCLConvert_Data]'):
-                in_data = True
-                continue
-            
-            if in_data:
-                parts = line.split(',')
-                if header is None:
-                    header = [h.strip() for h in parts]
-                    if 'Sample_Project' in header:
-                        project_idx = header.index('Sample_Project')
-                elif project_idx != -1:
-                    if len(parts) > project_idx:
-                        p = parts[project_idx].strip()
-                        if p:
-                            projects.add(p)
+    for config_id, sheet_path in sample_sheets_dict.items():
+        if os.path.exists(sheet_path):
+            try:
+                with open(sheet_path, 'r') as f:
+                    lines = f.readlines()
+                
+                header_row = -1
+                for i, line in enumerate(lines):
+                    if line.strip().startswith("[BCLConvert_Data]") or line.strip().startswith("[Data]"):
+                        header_row = i + 1
+                        break
+                
+                if header_row != -1 and header_row < len(lines):
+                    data_str = "".join(lines[header_row:])
+                    df = pd.read_csv(StringIO(data_str))
+                    if 'Sample_Project' in df.columns:
+                        projs = df['Sample_Project'].dropna().astype(str).unique()
+                        # Filter out 'nan' and empty strings
+                        projs = [p for p in projs if p.lower() != 'nan' and p.strip() != '']
+                        projects.update(projs)
+            except Exception as e:
+                print(f"Error reading projects from {sheet_path}: {e}")
     return sorted(list(projects))
 
-PROJECTS = get_projects(SAMPLE_SHEET)
+PROJECTS = get_all_projects(SAMPLE_SHEETS_DICT)
 
 print("PROJECTS found in SampleSheet:", PROJECTS)
 
@@ -556,26 +551,28 @@ print("FLEXBAR_CONFIGS:", FLEXBAR_CONFIGS)
 
 rule all:
     input:
-        expand("results/postprocess_{config_id}.done", config_id=CONFIG_IDS),
+        # expand("results/postprocess_{config_id}.done", config_id=CONFIG_IDS),
         expand("results/fastp_plots_{config_id}.done", config_id=CONFIG_IDS),
         expand("Reports/{project}/index.html", project=PROJECTS),
-        expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
+        expand("Reports/{project}/md5sums.txt", project=PROJECTS),
+        # expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
         expand("results/fastp_plots_summary_lane{lane}.done", lane=detected_lanes),
-        expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
+        # expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
 
 rule report_project:
     input:
-        postprocess = expand("results/postprocess_{config_id}.done", config_id=CONFIG_IDS),
         fastp_plots = expand("results/fastp_plots_{config_id}.done", config_id=CONFIG_IDS)
     output:
-        "Reports/{project}/index.html"
+        html = "Reports/{project}/index.html",
+        md5 = "Reports/{project}/md5sums.txt"
     params:
         project = "{project}",
         output_base = "output",
         fastp_plots_base = FASTP_PLOTS_OUTDIR,
+        fastp_base = FASTP_OUTDIR,
         report_dir = "Reports/{project}"
     shell:
-        "python3 src/generate_report.py {params.project} {params.output_base} {params.fastp_plots_base} {params.report_dir}"
+        "python3 src/generate_report.py {params.project} {params.output_base} {params.fastp_plots_base} {params.fastp_base} {params.report_dir}"
 
 rule postprocess_lane:
     input:
@@ -585,7 +582,7 @@ rule postprocess_lane:
     params:
         scriptdir = SCRIPTDIR,
         script = SCRIPT,
-        sample_sheet = lambda wildcards: f"src/SampleSheet_{wildcards.config_id}.csv",
+        sample_sheet = lambda wildcards: f"src/renaming_map_{wildcards.config_id}.csv",
         num_reads = NUM_READS,
         library = LIBRARY,
         fastqdir = "output/{config_id}",
@@ -626,6 +623,51 @@ def read_sample_sheet(config_id):
 
 def get_fastp_targets(wildcards):
     config_id = wildcards.config_id
+    
+    # Use renaming map to define targets
+    map_path = f"src/renaming_map_{config_id}.csv"
+    if os.path.exists(map_path):
+        try:
+            df = pd.read_csv(map_path)
+            targets = []
+            for idx, row in df.iterrows():
+                project = str(row.get('Sample_Project', '')).strip()
+                
+                run = str(row.get('Run', '')).strip()
+                lane = int(row.get('Lane', 0))
+                try:
+                    group = str(int(float(row.get('Group', 0))))
+                except:
+                    group = str(row.get('Group', '')).strip()
+                if group.lower() == 'nan' or not group: group = "Undetermined"
+                
+                index1 = str(row.get('index', '')).strip()
+                if index1.lower() == 'nan': index1 = ""
+                index2 = str(row.get('index2', '')).strip()
+                if index2.lower() == 'nan': index2 = ""
+                
+                if index2:
+                    barcode = f"{index1}-{index2}"
+                else:
+                    barcode = index1
+                    
+                position = str(row.get('Position', f"P{idx+1:03d}")).strip()
+                
+                # Construct new filename stem
+                stem = f"{run}-L{lane}-G{group}-{position}-{barcode}"
+                
+                if project and project.lower() != 'nan':
+                    path = f"{project}/{stem}"
+                else:
+                    path = stem
+                    
+                targets.append(f"results/fastp/{config_id}/{path}.json")
+            return targets
+        except Exception as e:
+            print(f"Error reading map file {map_path}: {e}")
+            return []
+            
+    # Fallback to SampleSheet (old naming) - though we prefer map
     df = read_sample_sheet(config_id)
     if df is None: return []
     
@@ -649,83 +691,61 @@ def get_fastp_sample_input(wildcards):
     
     # Try to use renaming map first
     map_path = f"src/renaming_map_{config_id}.csv"
-    if os.path.exists(map_path):
-        try:
-            df = pd.read_csv(map_path)
-            for idx, row in df.iterrows():
-                project = str(row.get('Sample_Project', '')).strip()
-                sample = str(row.get('Sample_Name', '')).strip()
-                
-                if not sample or sample.lower() == 'nan': continue
-                
-                if project and project.lower() != 'nan':
-                    path = f"{project}/{sample}"
-                else:
-                    path = sample
-                
-                if path == sample_path:
-                    run = str(row.get('Run', '')).strip()
-                    lane = int(row.get('Lane', 0))
-                    group = str(row.get('Group', '')).strip()
-                    if group.lower() == 'nan': group = "Undetermined"
-                    
-                    index1 = str(row.get('index', '')).strip()
-                    if index1.lower() == 'nan': index1 = ""
-                    index2 = str(row.get('index2', '')).strip()
-                    if index2.lower() == 'nan': index2 = ""
-                    
-                    if index2:
-                        barcode = f"{index1}-{index2}"
-                    else:
-                        barcode = index1
-                        
-                    position = str(row.get('Position', f"P{idx+1:03d}")).strip()
-                        
-                    prefix = f"output/{config_id}"
-                    if project and project.lower() != 'nan':
-                        prefix = f"{prefix}/{project}"
-                    
-                    r1 = f"{prefix}/{run}-L{lane}-G{group}-{position}-{barcode}-R1.fastq.gz"
-                    
-                    if NUM_READS > 1:
-                        r2 = f"{prefix}/{run}-L{lane}-G{group}-{position}-{barcode}-R2.fastq.gz"
-                        return [r1, r2]
-                    else:
-                        return [r1]
-        except Exception as e:
-            print(f"Error reading map file {map_path}: {e}")
-
-    # Fallback to SampleSheet (old naming)
-    df = read_sample_sheet(config_id)
-    if df is None:
-        raise ValueError(f"Failed to read sample sheet for config_id='{config_id}'")
-    
-    for idx, row in df.iterrows():
-        project = str(row.get('Sample_Project', '')).strip()
-        sample = str(row.get('Sample_Name', row.get('Sample_ID', ''))).strip()
+    if not os.path.exists(map_path):
+        raise ValueError(f"Renaming map not found: {map_path}")
         
-        if not sample or sample.lower() == 'nan': continue
-
-        if project and project.lower() != 'nan':
-            path = f"{project}/{sample}"
-        else:
-            path = sample
-        
-        if path == sample_path:
-            s_idx = idx + 1
-            lane = row.get('Lane', '')
+    try:
+        df = pd.read_csv(map_path)
+        for idx, row in df.iterrows():
+            project = str(row.get('Sample_Project', '')).strip()
             
-            prefix = f"output/{config_id}"
-            if project and project.lower() != 'nan':
-                prefix = f"{prefix}/{project}"
+            run = str(row.get('Run', '')).strip()
+            lane = int(row.get('Lane', 0))
+            try:
+                group = str(int(float(row.get('Group', 0))))
+            except:
+                group = str(row.get('Group', '')).strip()
+            if group.lower() == 'nan' or not group: group = "Undetermined"
             
-            r1 = f"{prefix}/{sample}_S{s_idx}_L00{lane}_R1_001.fastq.gz"
+            index1 = str(row.get('index', '')).strip()
+            if index1.lower() == 'nan': index1 = ""
+            index2 = str(row.get('index2', '')).strip()
+            if index2.lower() == 'nan': index2 = ""
             
-            if NUM_READS > 1:
-                r2 = f"{prefix}/{sample}_S{s_idx}_L00{lane}_R2_001.fastq.gz"
-                return [r1, r2]
+            if index2:
+                barcode = f"{index1}-{index2}"
             else:
-                return [r1]
+                barcode = index1
+                
+            position = str(row.get('Position', f"P{idx+1:03d}")).strip()
+            
+            # Construct new filename stem
+            stem = f"{run}-L{lane}-G{group}-{position}-{barcode}"
+            
+            if project and project.lower() != 'nan':
+                path = f"{project}/{stem}"
+            else:
+                path = stem
+            
+            if path == sample_path:
+                prefix = f"output/{config_id}"
+                if project and project.lower() != 'nan':
+                    prefix = f"{prefix}/{project}"
+                
+                r1 = f"{prefix}/{stem}-R1.fastq.gz"
+                
+                if NUM_READS > 1:
+                    r2 = f"{prefix}/{stem}-R2.fastq.gz"
+                    return [r1, r2]
+                else:
+                    return [r1]
+    except Exception as e:
+        print(f"Error reading map file {map_path}: {e}")
+        raise e
+
+    # Fallback removed to ensure we use renamed files
+    # If we get here, we didn't find the sample in the map
+    raise ValueError(f"Could not find sample for config_id='{config_id}' and sample_path='{sample_path}' in renaming map.")
     
     # If we get here, we didn't find the sample
     # This should not happen if get_fastp_targets is consistent
@@ -771,6 +791,52 @@ rule fastp_per_config:
 
 def get_fastp_plots_targets(wildcards):
     config_id = wildcards.config_id
+    
+    # Use renaming map to define targets
+    map_path = f"src/renaming_map_{config_id}.csv"
+    if os.path.exists(map_path):
+        try:
+            df = pd.read_csv(map_path)
+            targets = []
+            for idx, row in df.iterrows():
+                project = str(row.get('Sample_Project', '')).strip()
+                
+                run = str(row.get('Run', '')).strip()
+                lane = int(row.get('Lane', 0))
+                try:
+                    group = str(int(float(row.get('Group', 0))))
+                except:
+                    group = str(row.get('Group', '')).strip()
+
+                if group.lower() == 'nan' or not group: group = "Undetermined"
+                
+                index1 = str(row.get('index', '')).strip()
+                if index1.lower() == 'nan': index1 = ""
+                index2 = str(row.get('index2', '')).strip()
+                if index2.lower() == 'nan': index2 = ""
+                
+                if index2:
+                    barcode = f"{index1}-{index2}"
+                else:
+                    barcode = index1
+                    
+                position = str(row.get('Position', f"P{idx+1:03d}")).strip()
+                
+                # Construct new filename stem
+                stem = f"{run}-L{lane}-G{group}-{position}-{barcode}"
+                
+                if project and project.lower() != 'nan':
+                    path = f"{project}/{stem}"
+                else:
+                    path = stem
+                    
+                targets.append(f"results/fastp_plots/{config_id}/{path}-mean_phred.png")
+                targets.append(f"results/fastp_plots/{config_id}/{path}-base_comp.png")
+            return targets
+        except Exception as e:
+            print(f"Error reading map file {map_path}: {e}")
+            return []
+
     df = read_sample_sheet(config_id)
     if df is None: return []
     

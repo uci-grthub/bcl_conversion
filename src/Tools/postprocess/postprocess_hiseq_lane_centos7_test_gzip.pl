@@ -46,27 +46,143 @@ print "Start id S number =$start_s_id\n";
 
 # Load Sample Information
 log_msg("Loading sample sheet: $sample_sheet");
-my $is_barcoded=0; my $num_barcodes=0; my @barcodes; my @prefixes; my @projects; open(IN,"$sample_sheet");
-if((my $l=<IN>)!~"Data"){ print "Incorrect file header"; exit 1; }
-if((my $l=<IN>)!~"Project,Lane,Sample_ID"){ print "Incorrect file header"; exit 1; }
-my $generic_sample_id="1"; my @generic;
-while(my $l=<IN>){
-  chomp($l); my @d=split(",",$l);
-  if($d[1]==$lane){
-    if($d[4] eq ""){ my $prefix=$d[2];
-      if(($is_barcoded!=0)||($num_barcodes!=0)){
-        print "Inconsistent sample sheet\n"; exit 1; }
-      if($prefix!~/^R[0-9]{3}-L$lane$/){
-        print "Inconsistent sample prefix.\n"; exit 1; }
-      push(@prefixes,"$prefix"); }
-    else{ $is_barcoded=1; $num_barcodes++;
-      if($d[5] eq ""){ push(@barcodes,"$d[4]"); }
-      else{ push(@barcodes,"$d[4]-$d[5]"); }
-      push(@prefixes,"$d[2]");
-      push(@projects,"$d[0]");
-      push(@generic,"$generic_sample_id"); } }
-      print "in check $d[2] \n";
-  $generic_sample_id++; } close(IN);
+my $is_barcoded=0; my $num_barcodes=0; my @barcodes; my @prefixes; my @projects; my @stems;
+open(IN,"$sample_sheet") or die "Cannot open $sample_sheet: $!";
+
+# Check if it's a renaming map (CSV) or SampleSheet
+my $first_line = <IN>;
+close(IN);
+
+my $use_renaming_map = 0;
+if ($first_line =~ /^Sample_Name,Sample_Project/) {
+    $use_renaming_map = 1;
+    log_msg("Detected renaming map CSV format");
+} else {
+    log_msg("Detected standard SampleSheet format");
+}
+
+open(IN,"$sample_sheet") or die "Cannot open $sample_sheet: $!";
+
+my $in_data = 0;
+my %col_map;
+my $header_processed = 0;
+my $generic_sample_id = 1;
+my @generic;
+
+if ($use_renaming_map) {
+    my $header = <IN>;
+    chomp($header);
+    $header =~ s/\r//g;
+    my @headers = split(",", $header);
+    for(my $i=0; $i<scalar(@headers); $i++){ $col_map{$headers[$i]} = $i; }
+    $header_processed = 1;
+    
+    while(my $l=<IN>){
+        chomp($l);
+        $l =~ s/\r//g;
+        next if $l =~ /^\s*$/;
+        my @d = split(",", $l);
+        
+        my $s_name = $d[$col_map{'Sample_Name'}];
+        my $s_proj = $d[$col_map{'Sample_Project'}];
+        my $s_lane = $d[$col_map{'Lane'}];
+        my $s_idx1 = $d[$col_map{'index'}];
+        my $s_idx2 = $d[$col_map{'index2'}];
+        my $s_run  = $d[$col_map{'Run'}];
+        my $s_grp  = $d[$col_map{'Group'}];
+        my $s_pos  = $d[$col_map{'Position'}];
+        
+        if ($s_lane == $lane) {
+            $is_barcoded = 1;
+            $num_barcodes++;
+            
+            # Clean Group
+            $s_grp =~ s/\.0$//;
+            
+            my $barcode = $s_idx1;
+            if ($s_idx2 && $s_idx2 ne "") {
+                $barcode .= "-$s_idx2";
+            }
+            
+            my $stem = "${s_run}-L${s_lane}-G${s_grp}-${s_pos}-${barcode}";
+            
+            push(@barcodes, $barcode);
+            push(@projects, $s_proj);
+            push(@prefixes, $s_name);
+            push(@stems, $stem);
+            push(@generic, $generic_sample_id);
+            $generic_sample_id++;
+        }
+    }
+} else {
+    while(my $l=<IN>){
+      chomp($l);
+      $l =~ s/\r//g; # Remove carriage returns
+      
+      # Check for section start
+      if($l =~ /^\[BCLConvert_Data\]/ || $l =~ /^\[Data\]/){
+        $in_data = 1;
+        next;
+      }
+      
+      if($in_data){
+        # First line after section tag is header
+        if(!$header_processed){
+          my @headers = split(",", $l);
+          for(my $i=0; $i<scalar(@headers); $i++){
+            $col_map{$headers[$i]} = $i;
+          }
+          $header_processed = 1;
+          next;
+        }
+        
+        # Process data rows
+        # Skip empty lines
+        next if $l =~ /^\s*$/;
+        
+        my @d = split(",", $l);
+        
+        # Extract fields using map
+        # Default to empty string if column not found
+        my $idx_lane = $col_map{'Lane'};
+        my $idx_proj = defined $col_map{'Sample_Project'} ? $col_map{'Sample_Project'} : $col_map{'Project'};
+        my $idx_id   = defined $col_map{'Sample_ID'} ? $col_map{'Sample_ID'} : $col_map{'Sample_Name'};
+        my $idx_i7   = defined $col_map{'index'} ? $col_map{'index'} : $col_map{'Index'};
+        my $idx_i5   = defined $col_map{'index2'} ? $col_map{'index2'} : $col_map{'Index2'};
+        
+        my $row_lane = defined $idx_lane ? $d[$idx_lane] : "";
+        my $row_proj = defined $idx_proj ? $d[$idx_proj] : "";
+        my $row_id   = defined $idx_id ? $d[$idx_id] : "";
+        my $row_i7   = defined $idx_i7 ? $d[$idx_i7] : "";
+        my $row_i5   = defined $idx_i5 ? $d[$idx_i5] : "";
+        
+        if($row_lane == $lane){
+          if($row_i7 eq ""){ 
+            my $prefix=$row_id;
+            if(($is_barcoded!=0)||($num_barcodes!=0)){
+              print "Inconsistent sample sheet\n"; exit 1; }
+            push(@prefixes,"$prefix"); 
+          }
+          else{ 
+            $is_barcoded=1; $num_barcodes++;
+            if($row_i5 eq ""){ push(@barcodes,"$row_i7"); }
+            else{ push(@barcodes,"$row_i7-$row_i5"); }
+            push(@prefixes,"$row_id");
+            push(@projects,"$row_proj");
+            push(@generic,"$generic_sample_id"); 
+          } 
+        }
+        print "in check $row_id \n";
+        $generic_sample_id++; 
+      }
+    } 
+}
+close(IN);
+
+if(!$header_processed){
+    print "Could not find Data section or Header in sample sheet/map\n";
+    exit 1;
+}
 
 ####################################################################################################
 
@@ -89,98 +205,123 @@ else{
     my $genid=$generic[$i] + $start_s_id - 1;
     print "  Processing Library \"$name\" - Barcode $barcode ($prefix)... genid=${genid} \n";
     log_msg("Processing Library \"$name\" - Barcode $barcode ($prefix)... genid=${genid}");
-    my $file_in_R1="${fastqdir}/${project}/${prefix}_S${genid}_L00${lane}_R1_001.fastq.gz";
-    my $file_in_R2="${fastqdir}/${project}/${prefix}_S${genid}_L00${lane}_R2_001.fastq.gz";
+    
+    my $file_in_R1;
+    my $file_in_R2;
+    
+    if ($use_renaming_map) {
+        my $stem = $stems[$i];
+        $file_in_R1 = "${fastqdir}/${project}/${stem}-R1.fastq.gz";
+        $file_in_R2 = "${fastqdir}/${project}/${stem}-R2.fastq.gz";
+    } else {
+        $file_in_R1="${fastqdir}/${project}/${prefix}_S${genid}_L00${lane}_R1_001.fastq.gz";
+        $file_in_R2="${fastqdir}/${project}/${prefix}_S${genid}_L00${lane}_R2_001.fastq.gz";
+    }
     
     ################################################################################################
     
     if($num_reads==1){
-      my $file_out="${fastqdir}/${project}/${prefix}-${barcode}_S${genid}_L00${lane}_R1_001.fastq.gz";
+      if (!$use_renaming_map) {
+          $file_in_R1="${fastqdir}/${project}/${prefix}-${barcode}_S${genid}_L00${lane}_R1_001.fastq.gz";
+      }
       
-      if(! -f "$file_in_R1" && ! -f "$file_out"){ print "Cannot find fastq file 1 $file_in_R1 or output $file_out \n"; exit 1; }
+      if(! -f "$file_in_R1" && ! -f "$file_in_R1"){ print "Cannot find fastq file 1 $file_in_R1 or output $file_in_R1 \n"; exit 1; }
 
       if($dryrun){
           if (-f "$file_in_R1") {
-             print "DRYRUN: mv $file_in_R1 $file_out\n";
+             print "DRYRUN: mv $file_in_R1 $file_in_R1\n";
           } else {
-             print "DRYRUN: Input $file_in_R1 missing, using existing $file_out\n";
+             print "DRYRUN: Input $file_in_R1 missing, using existing $file_in_R1\n";
           }
-          print "DRYRUN: perl $process_single $file_out ${prefix}-${barcode} \"$name\"\n";
+          print "DRYRUN: perl $process_single $file_in_R1 ${prefix}-${barcode} \"$name\"\n";
           print "DRYRUN: chmod 770 $prefix*\n";
-          print "DRYRUN: chmod 770 $file_out\n";
-          print "DRYRUN: md5sum $file_out >> md5sum_lane$lane.txt\n";
+          print "DRYRUN: chmod 770 $file_in_R1\n";
+          print "DRYRUN: md5sum $file_in_R1 >> md5sum_lane$lane.txt\n";
       } else {
           if (-f "$file_in_R1") {
-              log_msg("Moving $file_in_R1 to $file_out");
-            #   `mv $file_in_R1 $file_out`;
+              log_msg("Moving $file_in_R1 to $file_in_R1");
+            #   `mv $file_in_R1 $file_in_R1`;
           } else {
-              log_msg("Input $file_in_R1 missing, using existing $file_out");
+              log_msg("Input $file_in_R1 missing, using existing $file_in_R1");
           }
-          # log_msg("Running process_single: perl $process_single $file_out ${fastqdir}/${project}/${prefix}-${barcode} \"$name\"");
-          # `perl $process_single $file_out ${fastqdir}/${project}/${prefix}-${barcode} \"$name\"`;
-          log_msg("Changing permissions for $prefix* and $file_out");
-          `chmod 770 ${fastqdir}/${project}/$prefix*`; `chmod 770 $file_out`;
-          print "case A $file_out ";
-          log_msg("Calculating md5sum for $file_out");
-          `md5sum $file_out >> md5sum_lane$lane.txt`; 
+          # log_msg("Running process_single: perl $process_single $file_in_R1 ${fastqdir}/${project}/${prefix}-${barcode} \"$name\"");
+          # `perl $process_single $file_in_R1 ${fastqdir}/${project}/${prefix}-${barcode} \"$name\"`;
+          log_msg("Changing permissions for $prefix* and $file_in_R1");
+          `chmod 770 ${fastqdir}/${project}/$prefix*`; `chmod 770 $file_in_R1`;
+          print "case A $file_in_R1 ";
+          log_msg("Calculating md5sum for $file_in_R1");
+          `md5sum $file_in_R1 >> md5sum_lane$lane.txt`; 
       }
     }
     
     ################################################################################################
     
     elsif($num_reads==2){
-      my $file_out_R1="${fastqdir}/${project}/${prefix}-${barcode}_S${genid}_L00${lane}_R1_001.fastq.gz";
-      my $file_out_R2="${fastqdir}/${project}/${prefix}-${barcode}_S${genid}_L00${lane}_R2_001.fastq.gz";
+      if (!$use_renaming_map) {
+          $file_in_R1="${fastqdir}/${project}/${prefix}-${barcode}_S${genid}_L00${lane}_R1_001.fastq.gz";
+          $file_in_R2="${fastqdir}/${project}/${prefix}-${barcode}_S${genid}_L00${lane}_R2_001.fastq.gz";
+      }
 
-      if(! -f "$file_in_R1" && ! -f "$file_out_R1"){ print "Cannot find fastq file 1 $file_in_R1 or output $file_out_R1 \n"; exit 1; }
-      if(! -f "$file_in_R2" && ! -f "$file_out_R2"){ print "Cannot find fastq file 2 $file_in_R2 or output $file_out_R2 \n"; exit 1; }
+      if(! -f "$file_in_R1" && ! -f "$file_in_R1"){ print "Cannot find fastq file 1 $file_in_R1 or output $file_in_R1 \n"; exit 1; }
+      if(! -f "$file_in_R2" && ! -f "$file_in_R2"){ print "Cannot find fastq file 2 $file_in_R2 or output $file_in_R2 \n"; exit 1; }
 
       if($dryrun){
           if (-f "$file_in_R1") {
-              print "DRYRUN: mv $file_in_R1 $file_out_R1\n";
+              print "DRYRUN: mv $file_in_R1 $file_in_R1\n";
           } else {
-              print "DRYRUN: Input $file_in_R1 missing, using existing $file_out_R1\n";
+              print "DRYRUN: Input $file_in_R1 missing, using existing $file_in_R1\n";
           }
           if (-f "$file_in_R2") {
-              print "DRYRUN: mv $file_in_R2 $file_out_R2\n";
+              print "DRYRUN: mv $file_in_R2 $file_in_R2\n";
           } else {
-              print "DRYRUN: Input $file_in_R2 missing, using existing $file_out_R2\n";
+              print "DRYRUN: Input $file_in_R2 missing, using existing $file_in_R2\n";
           }
-          print "DRYRUN: perl $process_paired $file_out_R1 $file_out_R2 ${fastqdir}/${project}/${prefix}-${barcode} \"$name\"\n";
+          print "DRYRUN: perl $process_paired $file_in_R1 $file_in_R2 ${fastqdir}/${project}/${prefix}-${barcode} \"$name\"\n";
           print "DRYRUN: chmod 770 ${fastqdir}/${project}/$prefix*\n";
-          print "DRYRUN: chmod 770 $file_out_R1\n";
-          print "DRYRUN: chmod 770 $file_out_R2\n";
-          print "DRYRUN: md5sum $file_out_R1 >> md5sum_lane$lane.txt\n";
-          print "DRYRUN: md5sum $file_out_R2 >> md5sum_lane$lane.txt\n";
+          print "DRYRUN: chmod 770 $file_in_R1\n";
+          print "DRYRUN: chmod 770 $file_in_R2\n";
+          print "DRYRUN: md5sum $file_in_R1 >> md5sum_lane$lane.txt\n";
+          print "DRYRUN: md5sum $file_in_R2 >> md5sum_lane$lane.txt\n";
       } else {
           if (-f "$file_in_R1") {
-              log_msg("Moving $file_in_R1 to $file_out_R1");
-            #   `mv $file_in_R1 $file_out_R1`;
+              log_msg("Moving $file_in_R1 to $file_in_R1");
+            #   `mv $file_in_R1 $file_in_R1`;
           } else {
-              log_msg("Input $file_in_R1 missing, using existing $file_out_R1");
+              log_msg("Input $file_in_R1 missing, using existing $file_in_R1");
           }
           if (-f "$file_in_R2") {
-              log_msg("Moving $file_in_R2 to $file_out_R2");
-            #   `mv $file_in_R2 $file_out_R2`;
+              log_msg("Moving $file_in_R2 to $file_in_R2");
+            #   `mv $file_in_R2 $file_in_R2`;
           } else {
-              log_msg("Input $file_in_R2 missing, using existing $file_out_R2");
+              log_msg("Input $file_in_R2 missing, using existing $file_in_R2");
           }
-          # log_msg("Running process_paired: perl $process_paired $file_out_R1 $file_out_R2 ${fastqdir}/${project}/${prefix}-${barcode} \"$name\"");
-          # `perl $process_paired $file_out_R1 $file_out_R2 ${fastqdir}/${project}/${prefix}-${barcode} \"$name\"`;
-          log_msg("Changing permissions for ${fastqdir}/${project}/$prefix*, $file_out_R1, $file_out_R2");
+          # log_msg("Running process_paired: perl $process_paired $file_in_R1 $file_in_R2 ${fastqdir}/${project}/${prefix}-${barcode} \"$name\"");
+          # `perl $process_paired $file_in_R1 $file_in_R2 ${fastqdir}/${project}/${prefix}-${barcode} \"$name\"`;
+          log_msg("Changing permissions for ${fastqdir}/${project}/$prefix*, $file_in_R1, $file_in_R2");
           `chmod 770 ${fastqdir}/${project}/$prefix*`; 
-          `chmod 770 $file_out_R1`;
-          `chmod 770 $file_out_R2`;
-          log_msg("Calculating md5sum for $file_out_R1 and $file_out_R2");
-          `md5sum $file_out_R1 >> md5sum_lane$lane.txt`;
-          `md5sum $file_out_R2 >> md5sum_lane$lane.txt`; 
+          `chmod 770 $file_in_R1`;
+          `chmod 770 $file_in_R2`;
+          log_msg("Calculating md5sum for $file_in_R1 and $file_in_R2");
+          `md5sum $file_in_R1 >> md5sum_lane$lane.txt`;
+          `md5sum $file_in_R2 >> md5sum_lane$lane.txt`; 
       }
     } }
   
   ##################################################################################################
   
-  my @d=split("-",$prefixes[0]); my $prefix="$d[0]-$d[1]";
-  if($prefix!~/^(4R|mR|nR|xR|R)[0-9]{3}-L$lane$/){ print "Cannot process trash\n"; exit 0; }
+  my $prefix;
+  if ($use_renaming_map) {
+      if (@stems > 0) {
+          my @parts = split("-", $stems[0]);
+          $prefix = $parts[0] . "-" . $parts[1];
+      } else {
+          $prefix = "Run-L$lane";
+      }
+  } else {
+      my @d=split("-",$prefixes[0]); 
+      $prefix="$d[0]-$d[1]";
+      if($prefix!~/^(4R|mR|nR|xR|R)[0-9]{3}-L$lane$/){ print "Cannot process trash\n"; exit 0; }
+  }
   $prefix="$prefix-PrNotRecog";
   print "  Processing Library \"$name\" - Barcode Not Recognized ($prefix)...\n";
   my $file_in_R1="${fastqdir}/Undetermined_S0_L00${lane}_R1_001.fastq.gz";
@@ -190,90 +331,52 @@ else{
   
   ##################################################################################################
   
-  my $project="Undetermined_indices";
-  my $barcode="Undetermined";
-  my $genid="0";
-
-  if($num_reads==1){
-    my $file_out="${fastqdir}/${project}/${prefix}-${barcode}_S${genid}_L00${lane}_R1_001.fastq.gz";
-    
-    if(! -f "$file_in_R1" && ! -f "$file_out"){ print "Cannot find fastq file 1 $file_in_R1 or output $file_out \n"; exit 1; }
-
-    if($dryrun){
-        if (-f "$file_in_R1") {
-            print "DRYRUN: mv $file_in_R1 $file_out\n";
-        } else {
-            print "DRYRUN: Input $file_in_R1 missing, using existing $file_out\n";
-        }
-        print "DRYRUN: perl $process_single $file_out ${prefix} \"$name\"\n";
-        print "DRYRUN: chmod 770 $prefix*\n";
-        print "DRYRUN: chmod 770 $file_out\n";
-        print "DRYRUN: md5sum $file_out >> md5sum_lane$lane.txt\n";
-    } else {
-        if (-f "$file_in_R1") {
-            log_msg("Moving $file_in_R1 to $file_out");
-            # `mv $file_in_R1 $file_out`;
-        } else {
-            log_msg("Input $file_in_R1 missing, using existing $file_out");
-        }
-        # log_msg("Running process_single: perl $process_single $file_out ${prefix} \"$name\"");
-        # `perl $process_single $file_out ${prefix} \"$name\"`;
-        log_msg("Changing permissions for $prefix* and $file_out");
-        `chmod 770 ${fastqdir}/${project}/$prefix*`; `chmod 770 $file_out`;
-        print "case B $file_out ";
-        log_msg("Calculating md5sum for $file_out");
-        `md5sum $file_out >> md5sum_lane$lane.txt`; 
-    }
-  }
-  
-  ##################################################################################################
-  
   elsif($num_reads==2){
-    my $file_out_R1="${fastqdir}/${project}/${prefix}-${barcode}_S${genid}_L00${lane}_R1_001.fastq.gz";
-    my $file_out_R2="${fastqdir}/${project}/${prefix}-${barcode}_S${genid}_L00${lane}_R2_001.fastq.gz";
+    my $file_in_R1="${fastqdir}/${project}/${prefix}-${barcode}_S${genid}_L00${lane}_R1_001.fastq.gz";
+    my $file_in_R2="${fastqdir}/${project}/${prefix}-${barcode}_S${genid}_L00${lane}_R2_001.fastq.gz";
 
-    if(! -f "$file_in_R1" && ! -f "$file_out_R1"){ print "Cannot find fastq file 1 $file_in_R1 or output $file_out_R1 \n"; exit 1; }
-    if(! -f "$file_in_R2" && ! -f "$file_out_R2"){ print "Cannot find fastq file 2 $file_in_R2 or output $file_out_R2 \n"; exit 1; }
+    if(! -f "$file_in_R1" && ! -f "$file_in_R1"){ print "Cannot find fastq file 1 $file_in_R1 or output $file_in_R1 \n"; exit 1; }
+    if(! -f "$file_in_R2" && ! -f "$file_in_R2"){ print "Cannot find fastq file 2 $file_in_R2 or output $file_in_R2 \n"; exit 1; }
 
     if($dryrun){
         if (-f "$file_in_R1") {
-            print "DRYRUN: mv $file_in_R1 $file_out_R1\n";
+            print "DRYRUN: mv $file_in_R1 $file_in_R1\n";
         } else {
-            print "DRYRUN: Input $file_in_R1 missing, using existing $file_out_R1\n";
+            print "DRYRUN: Input $file_in_R1 missing, using existing $file_in_R1\n";
         }
         if (-f "$file_in_R2") {
-            print "DRYRUN: mv $file_in_R2 $file_out_R2\n";
+            print "DRYRUN: mv $file_in_R2 $file_in_R2\n";
         } else {
-            print "DRYRUN: Input $file_in_R2 missing, using existing $file_out_R2\n";
+            print "DRYRUN: Input $file_in_R2 missing, using existing $file_in_R2\n";
         }
-        print "DRYRUN: perl $process_paired $file_out_R1 $file_out_R2 ${prefix} \"$name\"\n";
+        print "DRYRUN: perl $process_paired $file_in_R1 $file_in_R2 ${prefix} \"$name\"\n";
         print "DRYRUN: chmod 770 $prefix*\n";
-        print "DRYRUN: chmod 770 $file_out_R1\n";
-        print "DRYRUN: chmod 770 $file_out_R2\n";
-        print "DRYRUN: md5sum $file_out_R1 >> md5sum_lane$lane.txt\n";
-        print "DRYRUN: md5sum $file_out_R2 >> md5sum_lane$lane.txt\n";
+        print "DRYRUN: chmod 770 $file_in_R1\n";
+        print "DRYRUN: chmod 770 $file_in_R2\n";
+        print "DRYRUN: md5sum $file_in_R1 >> md5sum_lane$lane.txt\n";
+        print "DRYRUN: md5sum $file_in_R2 >> md5sum_lane$lane.txt\n";
     } else {
         if (-f "$file_in_R1") {
-            log_msg("Moving $file_in_R1 to $file_out_R1");
-            # `mv $file_in_R1 $file_out_R1`;
+            log_msg("Moving $file_in_R1 to $file_in_R1");
+            # `mv $file_in_R1 $file_in_R1`;
         } else {
-            log_msg("Input $file_in_R1 missing, using existing $file_out_R1");
+            log_msg("Input $file_in_R1 missing, using existing $file_in_R1");
         }
         if (-f "$file_in_R2") {
-            log_msg("Moving $file_in_R2 to $file_out_R2");
-            # `mv $file_in_R2 $file_out_R2`;
+            log_msg("Moving $file_in_R2 to $file_in_R2");
+            # `mv $file_in_R2 $file_in_R2`;
         } else {
-            log_msg("Input $file_in_R2 missing, using existing $file_out_R2");
+            log_msg("Input $file_in_R2 missing, using existing $file_in_R2");
         }
-        # log_msg("Running process_paired: perl $process_paired $file_out_R1 $file_out_R2 ${prefix} \"$name\"");
-        # `perl $process_paired $file_out_R1 $file_out_R2 ${prefix} \"$name\"`;
-        log_msg("Changing permissions for $prefix*, $file_out_R1, $file_out_R2");
+        # log_msg("Running process_paired: perl $process_paired $file_in_R1 $file_in_R2 ${prefix} \"$name\"");
+        # `perl $process_paired $file_in_R1 $file_in_R2 ${prefix} \"$name\"`;
+        log_msg("Changing permissions for $prefix*, $file_in_R1, $file_in_R2");
         `chmod 770 $prefix*`; 
-        `chmod 770 $file_out_R1`;
-        `chmod 770 $file_out_R2`;
-        log_msg("Calculating md5sum for $file_out_R1 and $file_out_R2");
-        `md5sum $file_out_R1 >> md5sum_lane$lane.txt`;
-        `md5sum $file_out_R2 >> md5sum_lane$lane.txt`; 
+        `chmod 770 $file_in_R1`;
+        `chmod 770 $file_in_R2`;
+        log_msg("Calculating md5sum for $file_in_R1 and $file_in_R2");
+        `md5sum $file_in_R1 >> md5sum_lane$lane.txt`;
+        `md5sum $file_in_R2 >> md5sum_lane$lane.txt`; 
     }
   }
 }

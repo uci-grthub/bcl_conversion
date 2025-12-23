@@ -8,3 +8,4 @@ Tools/*.storable
 .snakemake/
 src/flexbar/*.txt
 *.xml
+*.html

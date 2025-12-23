@@ -24,8 +24,12 @@ def rename_fastqs(config_id, output_dir, map_file):
         except:
             lane = 0
             
-        group = str(row['Group']).strip()
-        if group.lower() == 'nan': group = "Undetermined"
+        try:
+            # Convert to float first to handle "1.0" or 1.0, then int to remove decimal
+            group = str(int(float(row['Group'])))
+        except:
+            group = str(row['Group']).strip()
+            if group.lower() == 'nan': group = "Undetermined"
         
         run = str(row['Run']).strip()
         
