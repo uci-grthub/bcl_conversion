@@ -11,8 +11,8 @@ subject = sys.argv[3]
 html_file_path = sys.argv[4]
 
 # SMTP server details (modify as needed for your server)
-smtp_server = "smtp.example.com"
-smtp_port = 587  # or 465 for SSL
+smtp_server = "smtp.uci.edu"
+smtp_port = 25  # or 465 for SSL
 # If authentication is needed, add username and password variables
 
 # Create the root message and set the headers

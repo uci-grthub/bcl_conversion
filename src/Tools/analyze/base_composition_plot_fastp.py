@@ -233,6 +233,7 @@ def main():
     parser = argparse.ArgumentParser(description='Plot base composition from FastQC or fastp reports')
     parser.add_argument('files', nargs='+', help='Input file(s). Either one fastp JSON (paired) or two files (R1 R2)')
     parser.add_argument('--out', '-o', help='Output PNG path (if not provided, the plot will be shown)')
+    parser.add_argument('--title', '-t', help='Sample name to display in plot title')
     args = parser.parse_args()
 
     df_r1 = None
@@ -274,12 +275,14 @@ def main():
         # Determine layout based on whether we have one or two datasets
         if df_r2 is not None:
             fig, axes = plt.subplots(2, 1, figsize=(10, 12))
-            plot_composition(axes[0], df_r1, "Base Composition (READ 1)")
-            plot_composition(axes[1], df_r2, "Base Composition (READ 2)")
+            title_prefix = args.title if args.title else "Base Composition"
+            plot_composition(axes[0], df_r1, f"{title_prefix} (READ 1)")
+            plot_composition(axes[1], df_r2, f"{title_prefix} (READ 2)")
             axes[1].set_xlabel("Sequence Position", fontsize=12, fontweight='bold', fontname='serif')
         else:
             fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-            plot_composition(ax, df_r1, "Base Composition")
+            title = args.title if args.title else "Base Composition"
+            plot_composition(ax, df_r1, title)
             ax.set_xlabel("Sequence Position", fontsize=12, fontweight='bold', fontname='serif')
 
         plt.tight_layout()

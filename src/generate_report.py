@@ -24,29 +24,48 @@ def get_file_size(path):
         return f"{size_bytes:.2f} PB"
     return "N/A"
 
-def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_dir, report_dir):
+def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_dir, report_dir, fastq_links_str):
     os.makedirs(report_dir, exist_ok=True)
     
-    html_content = f"<html><head><title>Report for {project}</title>"
-    html_content += """
-    <style>
-        body { font-family: sans-serif; margin: 20px; }
-        h1, h2, h3 { color: #333; }
-        img { max-width: 100%; border: 1px solid #ddd; }
-        .sample-section { border: 1px solid #ccc; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
-        .basic-info { background-color: #f9f9f9; padding: 10px; border: 1px solid #eee; overflow-x: auto; margin-bottom: 10px; }
-        .plots-container { display: flex; flex-wrap: wrap; gap: 20px; }
-        .plot-pair { display: flex; flex-direction: column; margin-bottom: 10px; width: 100%; }
-        .lane-header { font-weight: bold; margin-top: 10px; }
-        .plots-row { display: flex; gap: 10px; width: 100%; }
-        .plot-img { flex: 1; min-width: 0; }
-        table { border-collapse: collapse; width: 100%; }
-        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-        th { background-color: #f2f2f2; }
-    </style>
-    </head><body>
-    """
-    html_content += f"<h1>Report for Project: {project}</h1>"
+    # Parse fastq_links (semicolon-separated)
+    fastq_links = [link.strip() for link in fastq_links_str.split(';') if link.strip()]
+    
+    # Build download links section
+    download_links_html = ""
+    if fastq_links:
+        download_links_html = "<p style='margin: 0 0 10px 0; line-height: 1.6;'><strong>Files for downloading:</strong></p>"
+        download_links_html += "<ul style='margin: 5px 0 10px 20px; padding: 0;'>"
+        for link in fastq_links:
+            download_links_html += f"<li style='margin-bottom: 5px;'><a href='{link}' style='color: #0066cc;'>{link}</a></li>"
+        download_links_html += "</ul>"
+    
+    # Gmail-compatible HTML with inline styles and table-based layout
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Report for {project}</title>
+</head>
+<body style="font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 20px; background-color: #ffffff;">
+<table width="100%" cellpadding="0" cellspacing="0" style="max-width: 800px; margin: 0 auto;">
+<tr>
+<td>
+<h1 style="color: #333333; font-size: 24px; margin-bottom: 20px;">Report for Project: {project}</h1>
+
+<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 20px;">
+<tr>
+<td style="padding: 15px; background-color: #f9f9f9; border: 1px solid #e0e0e0;">
+<p style="margin: 0 0 10px 0; line-height: 1.6;">Dear GRTHub user,</p>
+<p style="margin: 0 0 10px 0; line-height: 1.6;">The sequencing data for the samples you submitted to the GRTHub has been processed and is now available for downloading in FastQ file format.</p>
+<p style="margin: 0 0 10px 0; line-height: 1.6;">Your fastq files will remain available for downloading during a period of 2 weeks only, via the links provided below. Please download your files immediately and verify their integrity using the provided md5sum values as soon as possible, and before the end of this period. At the end of the 2 week period, the fastq files will be deleted from our servers.</p>
+<p style="margin: 0 0 10px 0; line-height: 1.6;">Files can be downloaded either one at a time, or all at once following the instructions made available at this address: <a href="https://precision.biochem.uci.edu/s/SwN57HTNQDHsy58" style="color: #0066cc;">https://precision.biochem.uci.edu/s/SwN57HTNQDHsy58</a>.</p>
+{download_links_html}
+<p style="margin: 0; line-height: 1.6;"><strong>Notes:</strong><br>- A file containing the md5sum for the FastQ files is attached.</p>
+<p style="margin: 10px 0 0 0; line-height: 1.6;">Please let us know if you have any questions about these files.</p>
+</td>
+</tr>
+</table>
+"""
     
     # Find all samples from fastp JSONs
     # Structure: results/fastp/{config_id}/{project}/{stem}.json
@@ -137,6 +156,19 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                             r2_md5 = hash_val
                     except Exception as e:
                         print(f"Error calculating md5 for {r2_path}: {e}")
+
+            # Index reads (I1/I2) are optional; calculate md5 if present
+            for idx_read in ["I1", "I2"]:
+                idx_path = os.path.join(output_base_dir, config_id, project, f"{stem}-{idx_read}.fastq.gz")
+                if os.path.exists(idx_path):
+                    try:
+                        cmd = ['md5sum', idx_path]
+                        result = subprocess.run(cmd, capture_output=True, text=True)
+                        if result.returncode == 0:
+                            hash_val = result.stdout.split()[0]
+                            md5_lines.append(f"{hash_val}  {os.path.basename(idx_path)}")
+                    except Exception as e:
+                        print(f"Error calculating md5 for {idx_path}: {e}")
             
             info = {
                 'barcode': barcode,
@@ -159,21 +191,52 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
     sorted_stems = sorted(samples.keys())
     
     for stem in sorted_stems:
-        html_content += f"<div class='sample-section'><h2>Sample: {stem}</h2>"
+        # Sample Section
+        html_content += f"""
+<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 20px; border: 1px solid #cccccc;">
+<tr>
+<td style="padding: 15px;">
+<h2 style="color: #333333; font-size: 20px; margin: 0 0 15px 0;">Sample: {stem}</h2>
+"""
         
         # Basic Info Table
-        html_content += "<div class='basic-info'><h3>Basic Info</h3>"
-        html_content += "<table><thead><tr><th>Lane Config</th><th>Barcode</th><th>Paired Reads</th><th>Type</th><th>R1 Size</th><th>R1 MD5</th><th>R2 Size</th><th>R2 MD5</th></tr></thead><tbody>"
+        html_content += """
+<h3 style="color: #333333; font-size: 16px; margin: 0 0 10px 0;">Basic Info</h3>
+<table width="100%" cellpadding="8" cellspacing="0" style="border-collapse: collapse; margin-bottom: 15px;">
+<thead>
+<tr style="background-color: #f2f2f2;">
+<th style="border: 1px solid #dddddd; padding: 8px; text-align: left; font-weight: bold;">Barcode</th>
+<th style="border: 1px solid #dddddd; padding: 8px; text-align: left; font-weight: bold;">Paired Reads</th>
+<th style="border: 1px solid #dddddd; padding: 8px; text-align: left; font-weight: bold;">Type</th>
+<th style="border: 1px solid #dddddd; padding: 8px; text-align: left; font-weight: bold;">R1 Size</th>
+<th style="border: 1px solid #dddddd; padding: 8px; text-align: left; font-weight: bold;">R1 MD5</th>
+<th style="border: 1px solid #dddddd; padding: 8px; text-align: left; font-weight: bold;">R2 Size</th>
+<th style="border: 1px solid #dddddd; padding: 8px; text-align: left; font-weight: bold;">R2 MD5</th>
+</tr>
+</thead>
+<tbody>
+"""
         
         lane_configs = sorted(samples[stem].keys())
         for config_id in lane_configs:
             info = samples[stem][config_id]
             type_str = "Paired" if info['is_paired'] else "Single"
-            html_content += f"<tr><td>{config_id}</td><td>{info['barcode']}</td><td>{info['paired_reads']}</td><td>{type_str}</td><td>{info['r1_size']}</td><td>{info['r1_md5']}</td><td>{info['r2_size']}</td><td>{info['r2_md5']}</td></tr>"
-        html_content += "</tbody></table></div>"
+            html_content += f"""
+<tr>
+<td style="border: 1px solid #dddddd; padding: 8px;">{info['barcode']}</td>
+<td style="border: 1px solid #dddddd; padding: 8px;">{info['paired_reads']}</td>
+<td style="border: 1px solid #dddddd; padding: 8px;">{type_str}</td>
+<td style="border: 1px solid #dddddd; padding: 8px;">{info['r1_size']}</td>
+<td style="border: 1px solid #dddddd; padding: 8px; font-family: monospace; font-size: 11px;">{info['r1_md5']}</td>
+<td style="border: 1px solid #dddddd; padding: 8px;">{info['r2_size']}</td>
+<td style="border: 1px solid #dddddd; padding: 8px; font-family: monospace; font-size: 11px;">{info['r2_md5']}</td>
+</tr>
+"""
+        html_content += "</tbody></table>"
         
-        # Plots
-        html_content += "<div class='plots-container'>"
+        # Plots section using tables
+        html_content += "<h3 style='color: #333333; font-size: 16px; margin: 15px 0 10px 0;'>Quality Plots</h3>"
+        
         for config_id in lane_configs:
             # Look for plots in fastp_plots_base_dir/{config_id}/{project}/{stem}-*.png
             plot_dir = os.path.join(fastp_plots_base_dir, config_id, project)
@@ -195,23 +258,24 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                 print(f"Missing base plot: {src_base}")
             
             if os.path.exists(src_mean) or os.path.exists(src_base):
-                html_content += f"<div class='plot-pair'><div class='lane-header'>{config_id}</div><div class='plots-row'>"
+                html_content += f"<p style='font-weight: bold; margin: 10px 0 5px 0;'>{config_id}</p>"
+                html_content += "<table width='100%' cellpadding='0' cellspacing='0'><tr>"
                 
                 if os.path.exists(src_mean):
                     b64_mean = get_image_base64(src_mean)
                     if b64_mean:
-                        html_content += f"<div class='plot-img'><img src='data:image/png;base64,{b64_mean}' title='Mean Phred'></div>"
+                        html_content += f"<td style='padding: 5px; width: 50%;'><img src='data:image/png;base64,{b64_mean}' alt='Mean Phred' style='width: 100%; max-width: 100%; height: auto; border: 1px solid #dddddd;'></td>"
                 
                 if os.path.exists(src_base):
                     b64_base = get_image_base64(src_base)
                     if b64_base:
-                        html_content += f"<div class='plot-img'><img src='data:image/png;base64,{b64_base}' title='Base Composition'></div>"
+                        html_content += f"<td style='padding: 5px; width: 50%;'><img src='data:image/png;base64,{b64_base}' alt='Base Composition' style='width: 100%; max-width: 100%; height: auto; border: 1px solid #dddddd;'></td>"
                 
-                html_content += "</div></div>"
+                html_content += "</tr></table>"
         
-        html_content += "</div></div>"
+        html_content += "</td></tr></table>"
         
-    html_content += "</body></html>"
+    html_content += "</td></tr></table></body></html>"
     
     with open(os.path.join(report_dir, "index.html"), 'w') as f:
         f.write(html_content)
@@ -224,8 +288,9 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
     print(f"Generated {md5_file_path}")
 
 if __name__ == "__main__":
-    if len(sys.argv) < 6:
-        print("Usage: generate_report.py <project> <output_base> <fastp_plots_base> <fastp_base> <report_dir>")
+    if len(sys.argv) < 7:
+        print("Usage: generate_report.py <project> <output_base> <fastp_plots_base> <fastp_base> <report_dir> <fastq_links>")
+        print("  fastq_links: semicolon-separated list of download links")
         sys.exit(1)
         
     project = sys.argv[1]
@@ -233,5 +298,6 @@ if __name__ == "__main__":
     fastp_plots_base = sys.argv[3]
     fastp_base = sys.argv[4]
     report_dir = sys.argv[5]
+    fastq_links = sys.argv[6]
     
-    generate_report(project, output_base, fastp_plots_base, fastp_base, report_dir)
+    generate_report(project, output_base, fastp_plots_base, fastp_base, report_dir, fastq_links)

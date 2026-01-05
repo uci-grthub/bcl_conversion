@@ -35,6 +35,7 @@ METADATA_FILE = config.get("metadata")
 LANE_CONFIGS = []
 PROJECT_LOOKUP = {}
 MASKING_LOOKUP = {}
+PROJECT_LINKS = {}
 
 if METADATA_FILE and os.path.exists(METADATA_FILE):
     try:
@@ -50,6 +51,19 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
                      if 'Project Name' in df.columns:
                         p = str(row['Project Name']).strip()
                         PROJECT_LOOKUP[(l, g)] = p
+                        
+                        # Check for Fastq Link
+                        link_col = None
+                        for col in ['Fastq Link', 'fastq link', 'Fastq link', 'Download Link', 'download link']:
+                            if col in df.columns:
+                                link_col = col
+                                break
+                        
+                        if link_col:
+                             link = str(row[link_col]).strip()
+                             if link and link.lower() != 'nan':
+                                 # Accumulate multiple links per project (e.g., multiple lanes)
+                                 PROJECT_LINKS.setdefault(p, []).append(link)
                      
                      if 'Masking' in df.columns:
                         m = str(row['Masking']).strip()
@@ -570,11 +584,56 @@ rule all:
         expand("results/fastp_plots_summary_lane{lane}.done", lane=detected_lanes),
         expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
         expand("results/read_counts_{project}.csv", project=PROJECTS),
-        expand("Reports/{project}/email_sent.done", project=PROJECTS),
+        # expand("Reports/{project}/email_sent.done", project=PROJECTS),
+
+def get_project_plot_targets(wildcards):
+    project = wildcards.project
+    targets = []
+    
+    for config_id in CONFIG_IDS:
+        map_path = f"src/renaming_map_{config_id}.csv"
+        if os.path.exists(map_path):
+            try:
+                df = pd.read_csv(map_path)
+                # Ensure string type for comparison
+                df['Sample_Project'] = df['Sample_Project'].astype(str)
+                
+                # Filter for this project
+                project_samples = df[df['Sample_Project'] == project]
+                
+                for idx, row in project_samples.iterrows():
+                    run = str(row.get('Run', '')).strip()
+                    lane = int(row.get('Lane', 0))
+                    try:
+                        group = str(int(float(row.get('Group', 0))))
+                    except:
+                        group = str(row.get('Group', '')).strip()
+                    if group.lower() == 'nan' or not group: group = "Undetermined"
+                    
+                    index1 = str(row.get('index', '')).strip()
+                    if index1.lower() == 'nan': index1 = ""
+                    index2 = str(row.get('index2', '')).strip()
+                    if index2.lower() == 'nan': index2 = ""
+                    
+                    if index2:
+                        barcode = f"{index1}-{index2}"
+                    else:
+                        barcode = index1
+                        
+                    position = str(row.get('Position', f"P{idx+1:03d}")).strip()
+                    
+                    stem = f"{run}-L{lane}-G{group}-{position}-{barcode}"
+                    path = f"{project}/{stem}"
+                    
+                    targets.append(f"results/fastp_plots/{config_id}/{path}-mean_phred.png")
+                    targets.append(f"results/fastp_plots/{config_id}/{path}-base_comp.png")
+            except Exception as e:
+                print(f"Error reading map file {map_path}: {e}")
+    return targets
 
 rule report_project:
     input:
-        fastp_plots = expand("results/fastp_plots_{config_id}.done", config_id=CONFIG_IDS)
+        fastp_plots = get_project_plot_targets
     output:
         html = "Reports/{project}/index.html",
         md5 = "Reports/{project}/md5sums.txt"
@@ -583,9 +642,10 @@ rule report_project:
         output_base = "output",
         fastp_plots_base = FASTP_PLOTS_OUTDIR,
         fastp_base = FASTP_OUTDIR,
-        report_dir = "Reports/{project}"
+        report_dir = "Reports/{project}",
+        fastq_links = lambda wildcards: ";".join(PROJECT_LINKS.get(wildcards.project, ["https://precision.biochem.uci.edu/s/x8PGTAWcXbrRySG"])) if isinstance(PROJECT_LINKS.get(wildcards.project, ["https://precision.biochem.uci.edu/s/x8PGTAWcXbrRySG"]), list) else PROJECT_LINKS.get(wildcards.project, "https://precision.biochem.uci.edu/s/x8PGTAWcXbrRySG")
     shell:
-        "python3 src/generate_report.py {params.project} {params.output_base} {params.fastp_plots_base} {params.fastp_base} {params.report_dir}"
+        "python3 src/generate_report.py {params.project} {params.output_base} {params.fastp_plots_base} {params.fastp_base} {params.report_dir} \"{params.fastq_links}\""
 
 rule send_project_email:
     input:
@@ -891,13 +951,14 @@ rule fastp_plots_sample:
         config_id = "[^/]+",
         sample_path = ".*"
     params:
-        scripts_dir = SCRIPTDIR + "/analyze"
+        scripts_dir = SCRIPTDIR + "/analyze",
+        sample_name = lambda wildcards: wildcards.sample_path
     threads: 1
     shell:
         """
         mkdir -p $(dirname {output.mean})
-        python3 {params.scripts_dir}/mean_phred_plot_fastp.py "{input.json}" --out "{output.mean}" || true
-        python3 {params.scripts_dir}/base_composition_plot_fastp.py "{input.json}" --out "{output.base}" || true
+        python3 {params.scripts_dir}/mean_phred_plot_fastp.py "{input.json}" --out "{output.mean}" --title "{params.sample_name}" || true
+        python3 {params.scripts_dir}/base_composition_plot_fastp.py "{input.json}" --out "{output.base}" --title "{params.sample_name}" || true
         """
 
 rule fastp_plots_per_config:

@@ -233,6 +233,7 @@ def main():
     parser.add_argument('files', nargs='+', help='Input file(s). Either one fastp JSON (paired) or two files (R1 R2)')
     parser.add_argument('--out', '-o', help='Output PNG path (if not provided, the plot will be shown)')
     parser.add_argument('--ylim', nargs=2, type=float, metavar=('MIN', 'MAX'), help='Y-axis limits for PHRED scores')
+    parser.add_argument('--title', '-t', help='Sample name to display in plot title')
     args = parser.parse_args()
 
     df_r1 = None
@@ -275,7 +276,8 @@ def main():
         if df_r2 is not None:
             plt.plot(df_r2['Position'], df_r2['Mean_Phred'], label='READ 2', color='#e63939', linewidth=2)
 
-        plt.title("Sequencing Data Quality", fontsize=14, fontweight='bold', fontname='serif')
+        title = args.title if args.title else "Sequencing Data Quality"
+        plt.title(title, fontsize=14, fontweight='bold', fontname='serif')
         plt.xlabel("Sequence Position", fontsize=12, fontweight='bold', fontname='serif')
         plt.ylabel("Mean PHRED Quality Score", fontsize=12, fontweight='bold', fontname='serif')
         plt.grid(True, linestyle='--', alpha=0.7)
