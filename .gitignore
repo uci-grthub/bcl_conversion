@@ -9,3 +9,4 @@ Tools/*.storable
 src/flexbar/*.txt
 *.xml
 *.html
+*.pyc

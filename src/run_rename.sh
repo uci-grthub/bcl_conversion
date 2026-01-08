@@ -29,3 +29,10 @@ fi
 
 echo "Running renaming logic for config $CONFIG_ID..."
 python3 "$RENAME_SCRIPT" "$CONFIG_ID" "$OUTPUT_DIR" "$MAP_FILE"
+
+# Also rename downstream results (fastp outputs and plots) to match conventions
+PIPELINE_RENAME_SCRIPT="${SCRIPT_DIR}/rename_pipeline_outputs.py"
+if [ -f "$PIPELINE_RENAME_SCRIPT" ]; then
+    echo "Renaming downstream outputs for config $CONFIG_ID..."
+    python3 "$PIPELINE_RENAME_SCRIPT" "$CONFIG_ID" "$OUTPUT_DIR" "$MAP_FILE" --results-base results || true
+fi
