@@ -1226,13 +1226,17 @@ rule compile_read_counts:
                     print(f"Missing fastp json for {sample_path}")
                     continue
 
+
                 try:
                     with open(json_path, "r") as jf:
                         stats = json.load(jf)
+                    # fastp reports total_reads as the number of reads, not pairs
+                    # For paired-end data, number of pairs = total_reads // 2
                     reads = int(stats.get("summary", {}).get("before_filtering", {}).get("total_reads", 0))
+                    read_pairs = reads // 2
                 except Exception as e:
                     print(f"Error reading {json_path}: {e}")
-                    reads = 0
+                    read_pairs = 0
 
                 lane_counts.setdefault(lane, {})
 
@@ -1244,11 +1248,11 @@ rule compile_read_counts:
 
                 if sample_name not in lane_counts[lane]:
                     lane_counts[lane][sample_name] = [group_order, idx, 0]
-                # Keep earliest group/index seen; always accumulate reads
+                # Keep earliest group/index seen; always accumulate read pairs
                 existing = lane_counts[lane][sample_name]
                 existing[0] = min(existing[0], group_order)
                 existing[1] = min(existing[1], idx)
-                existing[2] += reads
+                existing[2] += read_pairs
 
         lanes_sorted = sorted(lane_counts.keys())
 
