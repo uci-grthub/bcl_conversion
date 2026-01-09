@@ -9,8 +9,6 @@ envvars:
 
 configfile: "snakemake_config.yaml"
 
-SCRIPTDIR = config.get("script_dir", "src/Tools")
-SCRIPT = config.get("script_path", "src/Tools/postprocess/postprocess_hiseq_lane_centos7_test_gzip.pl")
 SAMPLE_SHEET = config.get("sample_sheet", "src/SampleSheet_default.csv")
 NUM_READS = config.get("num_reads", 2)
 LIBRARY = config.get("library_name", "xR077")
@@ -18,7 +16,8 @@ FASTQDIR = config.get("fastqdir", "output")
 START_S = config.get("start_s", 1)
 DRYRUN = config.get("dryrun", False)
 RUN_INFO_PATH = config.get("run_info_path", "src/RunInfo.xml")
-DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20251219_LH00626_0085_A23G5F2LT3")
+SCRIPTDIR = config.get("script_dir", "src/Tools")
+DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20260107_LH00626_0087_A233TCJLT4")
 TILES = config.get("tiles", "1_1101")
 
 EMAIL_SENDER = config.get("email_sender", "kstachel@uci.edu")
@@ -643,7 +642,6 @@ print("FLEXBAR_CONFIGS:", FLEXBAR_CONFIGS)
 
 rule all:
     input:
-        # expand("results/postprocess_{config_id}.done", config_id=CONFIG_IDS),
         expand("results/fastp_plots_{config_id}.done", config_id=CONFIG_IDS),
         expand("output/{config_id}/.done", config_id=CONFIG_IDS),
         PROJECT_LANE_REPORTS,
@@ -904,9 +902,7 @@ def get_fastp_sample_input(wildcards):
 
 rule fastp_sample:
     input:
-        "output/{config_id}",
-        "output/{config_id}/.done",
-        fastqs = get_fastp_sample_input
+        done = "output/{config_id}/.done"
     output:
         json = "results/fastp/{config_id}/{sample_path}.json",
         html = "results/fastp/{config_id}/{sample_path}.html"
@@ -914,13 +910,14 @@ rule fastp_sample:
         config_id = "[^/]+",
         sample_path = ".*"
     params:
-        threads = FASTP_THREADS
+        threads = FASTP_THREADS,
+        fastqs = get_fastp_sample_input
     threads: 4
     shell:
         """
         mkdir -p $(dirname {output.json})
         
-        files=({input.fastqs})
+        files=({params.fastqs})
         r1="${{files[0]}}"
         
         if [ ${{#files[@]}} -gt 1 ]; then
@@ -1366,6 +1363,43 @@ rule flexbar_per_config:
         touch {output}
         """
 
+def get_bcl_convert_fastqs(wildcards):
+    import pandas as pd
+    import os
+    config_id = wildcards.config_id
+    map_path = f"src/renaming_map_{config_id}.csv"
+    if not os.path.exists(map_path):
+        return []
+    df = pd.read_csv(map_path)
+    fastqs = []
+    for idx, row in df.iterrows():
+        project = str(row.get('Sample_Project', '')).strip()
+        sample_name = str(row.get('Sample_Name', '')).strip()
+        run = str(row.get('Run', '')).strip()
+        lane = int(row.get('Lane', 0))
+        try:
+            group = str(int(float(row.get('Group', 0))))
+        except:
+            group = str(row.get('Group', '')).strip()
+        if group.lower() == 'nan' or not group: group = "Undetermined"
+        index1 = str(row.get('index', '')).strip()
+        if index1.lower() == 'nan': index1 = ""
+        index2 = str(row.get('index2', '')).strip()
+        if index2.lower() == 'nan': index2 = ""
+        if index2:
+            barcode = f"{index1}-{index2}"
+        else:
+            barcode = index1
+        position = str(row.get('Position', f"P{idx+1:03d}")).strip()
+        # Custom naming (default)
+        stem = f"{run}-L{lane}-G{group}-{position}-{barcode}"
+        fqdir = f"output/{config_id}"
+        if project and project.lower() != 'nan':
+            fqdir = f"{fqdir}/{project}"
+        for read in ['R1', 'R2']:
+            fastqs.append(f"{fqdir}/{stem}-{read}.fastq.gz")
+    return fastqs
+
 rule bcl_convert:
     input:
         sample_sheet=lambda wildcards: f"src/SampleSheet_{wildcards.config_id}.csv",
@@ -1406,8 +1440,8 @@ rule bcl_convert:
         # python3 src/rename_fastqs.py {wildcards.config_id} {output.output_dir} src/renaming_map_{wildcards.config_id}.csv
         src/run_rename.sh {wildcards.config_id} {output.output_dir} src/renaming_map_{wildcards.config_id}.csv
         
-        # Delete Undetermined FASTQ files to save space
-        find {output.output_dir} -name "Undetermined_S0*.fastq.gz" -delete || true
+        # Delete Undetermined FASTQ files to save space - DISABLED as they are needed for analysis
+        # find {output.output_dir} -name "Undetermined_S0*.fastq.gz" -delete || true
         
         touch {output.done_file}
         """
