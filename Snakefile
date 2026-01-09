@@ -736,30 +736,6 @@ rule send_project_email:
     shell:
         "python3 {params.script} {params.sender} {params.receiver} \"{params.subject}\" {input.html} {input.md5} {params.cc_email} && touch {output}"
 
-rule postprocess_lane:
-    input:
-        "output/{config_id}"
-    output:
-        touch("results/postprocess_{config_id}.done")
-    params:
-        scriptdir = SCRIPTDIR,
-        script = SCRIPT,
-        sample_sheet = lambda wildcards: f"src/renaming_map_{wildcards.config_id}.csv",
-        num_reads = NUM_READS,
-        library = LIBRARY,
-        fastqdir = "output/{config_id}",
-        start_s = START_S,
-        dryflag = "--dryrun" if DRYRUN else "",
-        lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', '')
-    threads: 4
-    conda: "perl_env"
-    shell:
-        """
-        mkdir -p results
-        perl {params.script} {params.sample_sheet} {params.num_reads} {params.lane} "{params.library}" {params.fastqdir} {params.start_s} {params.dryflag}
-        touch {output}
-        """
-
 def read_sample_sheet(config_id):
     sheet_path = f"src/SampleSheet_{config_id}.csv"
     if not os.path.exists(sheet_path):
