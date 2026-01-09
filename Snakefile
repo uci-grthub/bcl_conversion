@@ -11,7 +11,7 @@ configfile: "snakemake_config.yaml"
 
 SAMPLE_SHEET = config.get("sample_sheet", "src/SampleSheet_default.csv")
 NUM_READS = config.get("num_reads", 2)
-LIBRARY = config.get("library_name", "xR077")
+LIBRARY = config.get("library_name", "xR078")
 FASTQDIR = config.get("fastqdir", "output")
 START_S = config.get("start_s", 1)
 DRYRUN = config.get("dryrun", False)
@@ -425,12 +425,9 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                                 cycle_str = f"U{actual_len}"
                             else:
                                 cycle_str = f"U{specified_len}"
-                        # Handle 0 length case: replace with I0N{actual_len} for index reads, N{actual_len} for data reads
+                        # Handle 0 length case: replace with N{actual_len} (skips the read)
                         elif specified_len == 0 and actual_len > 0:
-                            if is_indexed_read:
-                                cycle_str = f"I0N{actual_len}"
-                            else:
-                                cycle_str = f"N{actual_len}"
+                            cycle_str = f"N{actual_len}"
                         else:
                             if type_.startswith('R'):
                                 cycle_str = f"Y{len_}"
@@ -644,8 +641,8 @@ rule all:
     input:
         expand("results/fastp_plots_{config_id}.done", config_id=CONFIG_IDS),
         expand("output/{config_id}/.done", config_id=CONFIG_IDS),
-        PROJECT_LANE_REPORTS,
-        PROJECT_LANE_MD5S,
+        # PROJECT_LANE_REPORTS,
+        # PROJECT_LANE_MD5S,
         # expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
         expand("results/fastp_plots_summary_lane{lane}.done", lane=detected_lanes),
         expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
@@ -709,6 +706,8 @@ rule report_project:
     output:
         html = "Reports/{project}/lane{lane}/index.html",
         md5 = "Reports/{project}/lane{lane}/md5sums.txt"
+    log:
+        "logs/report_project_{project}_lane{lane}.log"
     params:
         project = "{project}",
         lane = "{lane}",
@@ -718,7 +717,7 @@ rule report_project:
         report_dir = "Reports/{project}/lane{lane}",
         fastq_links = lambda wildcards: get_fastq_links_for_project_lane(wildcards.project, wildcards.lane)
     shell:
-        "python3 src/generate_report.py {params.project} {params.output_base} {params.fastp_plots_base} {params.fastp_base} {params.report_dir} \"{params.fastq_links}\" {params.lane}"
+        "python3 src/generate_report.py {params.project} {params.output_base} {params.fastp_plots_base} {params.fastp_base} {params.report_dir} \"{params.fastq_links}\" {params.lane} > {log} 2>&1"
 
 rule send_project_email:
     input:
@@ -726,13 +725,15 @@ rule send_project_email:
         md5 = "Reports/{project}/md5sums.txt"
     output:
         touch("Reports/{project}/email_sent.done")
+    log:
+        "logs/send_project_email_{project}.log"
     params:
         script = "src/send_email.py",
         sender = "kstachel@uci.edu",
         receiver = "kstachel@uci.edu",
         subject = lambda wildcards: f"Sequencing Report for Project {wildcards.project}"
     shell:
-        "python3 {params.script} {params.sender} {params.receiver} \"{params.subject}\" {input.html} {input.md5} {params.cc_email} && touch {output}"
+        "python3 {params.script} {params.sender} {params.receiver} \"{params.subject}\" {input.html} {input.md5} {params.cc_email} > {log} 2>&1 && touch {output}"
 
 def read_sample_sheet(config_id):
     sheet_path = f"src/SampleSheet_{config_id}.csv"
@@ -906,6 +907,8 @@ rule fastp_sample:
     output:
         json = "results/fastp/{config_id}/{sample_path}.json",
         html = "results/fastp/{config_id}/{sample_path}.html"
+    log:
+        "logs/fastp_sample/{config_id}/{sample_path}.log"
     wildcard_constraints:
         config_id = "[^/]+",
         sample_path = ".*"
@@ -915,6 +918,7 @@ rule fastp_sample:
     threads: 4
     shell:
         """
+        (
         mkdir -p $(dirname {output.json})
         
         files=({params.fastqs})
@@ -926,6 +930,7 @@ rule fastp_sample:
         else
             fastp -i "$r1" --json "{output.json}" --html "{output.html}" -w {params.threads}
         fi
+        ) > {log} 2>&1
         """
 
 rule fastp_per_config:
@@ -933,6 +938,8 @@ rule fastp_per_config:
         get_fastp_targets
     output:
         touch("results/fastp_{config_id}.done")
+    log:
+        "logs/fastp_per_config_{config_id}.log"
     wildcard_constraints:
         config_id = "lane.*"
 
@@ -1010,6 +1017,8 @@ rule fastp_plots_sample:
     output:
         mean = "results/fastp_plots/{config_id}/{sample_path}-mean_phred.png",
         base = "results/fastp_plots/{config_id}/{sample_path}-base_comp.png"
+    log:
+        "logs/fastp_plots_sample/{config_id}/{sample_path}.log"
     wildcard_constraints:
         config_id = "[^/]+",
         sample_path = ".*"
@@ -1020,8 +1029,10 @@ rule fastp_plots_sample:
     shell:
         """
         mkdir -p $(dirname {output.mean})
+        (
         python3 {params.scripts_dir}/mean_phred_plot_fastp.py "{input.json}" --out "{output.mean}" --title "{params.sample_name}" || true
         python3 {params.scripts_dir}/base_composition_plot_fastp.py "{input.json}" --out "{output.base}" --title "{params.sample_name}" || true
+        ) > {log} 2>&1
         """
 
 rule fastp_plots_per_config:
@@ -1029,6 +1040,8 @@ rule fastp_plots_per_config:
         get_fastp_plots_targets
     output:
         touch("results/fastp_plots_{config_id}.done")
+    log:
+        "logs/fastp_plots_per_config_{config_id}.log"
     wildcard_constraints:
         config_id = "lane.*"
 
@@ -1087,7 +1100,11 @@ rule summarize_project_reads:
         get_project_fastp_targets
     output:
         "results/read_counts_{project}.csv"
+    log:
+        "logs/summarize_project_reads_{project}.log"
     run:
+        import sys
+        sys.stderr = sys.stdout = open(log[0], 'w')
         import json
         import pandas as pd
         import os
@@ -1134,7 +1151,11 @@ rule compile_read_counts:
         maps = expand("src/renaming_map_{config_id}.csv", config_id=CONFIG_IDS)
     output:
         csv = f"results/{LIBRARY}-count.csv"
+    log:
+        "logs/compile_read_counts.log"
     run:
+        import sys
+        sys.stderr = sys.stdout = open(log[0], 'w')
         import csv
         import json
         import os
@@ -1269,6 +1290,8 @@ rule send_read_counts_email:
         csv = f"results/{LIBRARY}-count.csv"
     output:
         touch(f"Reports/{LIBRARY}_read_counts_email.done")
+    log:
+        f"logs/send_read_counts_email.log"
     params:
         script = "src/send_email.py",
         sender = EMAIL_SENDER,
@@ -1277,7 +1300,7 @@ rule send_read_counts_email:
         body = lambda wildcards: f"Attached: per-lane read counts for {LIBRARY}.",
         cc_email = EMAIL_CC
     shell:
-        "python3 {params.script} {params.sender} {params.receiver} \"{params.subject}\" \"{params.body}\" {input.csv} {params.cc_email}"
+        "python3 {params.script} {params.sender} {params.receiver} \"{params.subject}\" \"{params.body}\" {input.csv} {params.cc_email} > {log} 2>&1"
 
 def get_fastp_plots_lane_inputs(wildcards):
     lane = wildcards.lane
@@ -1290,6 +1313,8 @@ rule fastp_plots_lane:
         get_fastp_plots_lane_inputs
     output:
         touch("results/fastp_plots_summary_lane{lane}.done")
+    log:
+        "logs/fastp_plots_lane{lane}.log"
     wildcard_constraints:
         lane = "\d+"
 
@@ -1407,6 +1432,8 @@ rule bcl_convert:
     output:
         output_dir = directory("output/{config_id}"),
         done_file = touch("output/{config_id}/.done")
+    log:
+        "logs/bcl_convert_{config_id}.log"
     wildcard_constraints:
         config_id = "[^/]+"
     resources:
@@ -1418,6 +1445,7 @@ rule bcl_convert:
         tiles = TILES
     shell:
         """
+        (
         # Masking is now handled by OverrideCycles in the sample sheet
         
         tiles_arg=""
@@ -1444,6 +1472,7 @@ rule bcl_convert:
         # find {output.output_dir} -name "Undetermined_S0*.fastq.gz" -delete || true
         
         touch {output.done_file}
+        ) > {log} 2>&1
         """
 
 rule analyze_undetermined:
@@ -1451,12 +1480,14 @@ rule analyze_undetermined:
         done = "output/{config_id}/.done"
     output:
         csv = "results/undetermined_indices/{config_id}.csv"
+    log:
+        "logs/analyze_undetermined_{config_id}.log"
     params:
         script = "src/analyze_undetermined_indices.py",
         input_pattern = lambda wildcards: f"output/{wildcards.config_id}/Undetermined_S0_*.fastq.gz"
     shell:
         """
-        python3 {params.script} "{params.input_pattern}" --output {output.csv} --limit 15000000
+        python3 {params.script} "{params.input_pattern}" --output {output.csv} --limit 15000000 > {log} 2>&1
         """
 
 rule project_link:
