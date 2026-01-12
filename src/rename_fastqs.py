@@ -131,11 +131,6 @@ def rename_fastqs(config_id, output_dir, map_file):
                 if os.path.exists(new_path):
                     os.remove(new_path)
                 os.rename(old_path, new_path)
-                # Create symlink: old name points to new file for compatibility
-                try:
-                    os.symlink(new_name, old_path)
-                except FileExistsError:
-                    pass
             except Exception as e:
                 print(f"Error renaming {old_path}: {e}")
 
