@@ -10,3 +10,4 @@ src/flexbar/*.txt
 *.xml
 *.html
 *.pyc
+*.done

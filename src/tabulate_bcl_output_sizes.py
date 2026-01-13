@@ -22,6 +22,11 @@ def human_readable_size(num_bytes: int) -> str:
         size /= 1000
     return f"{num_bytes} B"
 
+def extract_lane(dirname: str) -> str:
+    """Extract lane identifier from directory name (e.g., 'lane1' from 'lane1_R1-151_I1-8...')."""
+    parts = dirname.split('_')
+    return parts[0] if parts else dirname
+
 def dir_size_bytes(path: str) -> int:
     """Recursively sum file sizes under a directory, excluding Undetermined*.fastq.gz files."""
     total = 0
@@ -73,22 +78,27 @@ def main(argv: Iterable[str]) -> int:
 
     project_sizes: Dict[str, int] = {}
 
-    for _, config_path in outputs:
+    for config_id, config_path in outputs:
+        lane = extract_lane(config_id)
         for entry in os.listdir(config_path):
+            # Skip Logs and Reports directories
+            if entry in ("Logs", "Reports"):
+                continue
             project_path = os.path.join(config_path, entry)
             if not os.path.isdir(project_path):
                 continue
             size_bytes = dir_size_bytes(project_path)
-            project_sizes[entry] = project_sizes.get(entry, 0) + size_bytes
+            key = (lane, entry)
+            project_sizes[key] = project_sizes.get(key, 0) + size_bytes
 
     if not project_sizes:
         print("No project subdirectories found under bcl_convert outputs", file=sys.stderr)
         return 1
 
-    print("Project\tSize_Bytes\tSize_Human")
-    for project in sorted(project_sizes):
-        size_bytes = project_sizes[project]
-        print(f"{project}\t{size_bytes}\t{human_readable_size(size_bytes)}")
+    print("Lane\tProject\tSize_Bytes\tSize_Human")
+    # Sort by size in descending order
+    for (lane, project), size_bytes in sorted(project_sizes.items(), key=lambda x: x[1], reverse=False):
+        print(f"{lane}\t{project}\t{size_bytes}\t{human_readable_size(size_bytes)}")
 
     return 0
 

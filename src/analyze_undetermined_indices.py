@@ -6,6 +6,19 @@ from collections import Counter
 import sys
 import csv
 import argparse
+import subprocess
+
+def count_total_clusters(files_to_process):
+    """Count total clusters in input files using zcat and wc for speed."""
+    try:
+        # Use zcat to pipe gzipped files through wc - much faster than Python
+        file_list = ' '.join(f'"{f}"' for f in files_to_process)
+        result = subprocess.run(f'pigz -dc {file_list} | awk \'{{c++}} END {{print c}}\'', shell=True, capture_output=True, text=True)
+        total_lines = int(result.stdout.strip())
+        return total_lines // 4  # Convert lines to clusters (4 lines per FASTQ record)
+    except Exception as e:
+        print(f"Warning: Could not count total clusters: {e}")
+        return None
 
 def get_top_indices(file_pattern, top_n=20, output_file=None, limit=None):
     index_counter = Counter()
@@ -28,6 +41,11 @@ def get_top_indices(file_pattern, top_n=20, output_file=None, limit=None):
         print(f"Found {len(r1_files)} R1 files. Processing as pairs...")
         files_to_process = r1_files
         paired_mode = True
+    
+    # Count total clusters in input files for accurate percentage
+    total_clusters = count_total_clusters(files_to_process[0] if not paired_mode else files_to_process)
+    if total_clusters:
+        print(f"Total clusters in input files: {total_clusters:,}")
     
     for file_path in files_to_process:
         if paired_mode:
@@ -79,11 +97,11 @@ def get_top_indices(file_pattern, top_n=20, output_file=None, limit=None):
     if output_file:
         try:
             with open(output_file, 'w', newline='') as f:
-                if limit:
-                    pct = round((limit / 1.5e9) * 100)
-                    f.write(f"Surveyed {pct}% of reads\n")
+                if total_clusters:
+                    pct = round((total_reads / total_clusters) * 100)
+                    f.write(f"Surveyed {total_reads:,} of {total_clusters:,} clusters ({pct}%)\n")
                 else:
-                    f.write("Surveyed 100% of reads\n")
+                    f.write(f"Surveyed {total_reads:,} clusters\n")
 
                 writer = csv.writer(f)
                 writer.writerow(['Count', 'Type', 'Index Sequence'])

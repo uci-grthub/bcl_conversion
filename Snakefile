@@ -641,8 +641,8 @@ rule all:
     input:
         expand("results/fastp_plots_{config_id}.done", config_id=CONFIG_IDS),
         expand("output/{config_id}/.done", config_id=CONFIG_IDS),
-        # PROJECT_LANE_REPORTS,
-        # PROJECT_LANE_MD5S,
+        PROJECT_LANE_REPORTS,
+        PROJECT_LANE_MD5S,
         # expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
         expand("results/fastp_plots_summary_lane{lane}.done", lane=detected_lanes),
         expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
@@ -1211,8 +1211,12 @@ rule compile_read_counts:
 
                 position = str(row.get("Position", f"P{idx + 1:03d}")).strip()
 
-                stem = f"{run_name}-L{lane}-G{group}-{position}-{barcode}"
-                sample_path = f"{project}/{stem}" if project and project.lower() != "nan" else stem
+                # Construct filename path based on convention (same as get_fastp_targets)
+                if is_parse_or_10x(project):
+                    sample_path = f"{project}/{sample_name}" if project and project.lower() != "nan" else sample_name
+                else:
+                    stem = f"{run_name}-L{lane}-G{group}-{position}-{barcode}"
+                    sample_path = f"{project}/{stem}" if project and project.lower() != "nan" else stem
 
                 json_path = os.path.join("results/fastp", config_id, f"{sample_path}.json")
 
