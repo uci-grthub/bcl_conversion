@@ -882,6 +882,8 @@ def get_fastp_sample_input(wildcards):
                     else:
                         return [r1]
                 else:
+                    # For non-10x/BD samples: use format {run}-L{lane}-G{group}-P{position}-{barcode}-R{read}.fastq.gz
+                    # Example: xR078-L1-G1-P001-GTAGAGGA-R1.fastq.gz
                     r1 = f"{prefix}/{stem}-R1.fastq.gz"
                     if NUM_READS > 1:
                         r2 = f"{prefix}/{stem}-R2.fastq.gz"
@@ -1214,9 +1216,13 @@ rule compile_read_counts:
                 # Construct filename path based on convention (same as get_fastp_targets)
                 if is_parse_or_10x(project):
                     sample_path = f"{project}/{sample_name}" if project and project.lower() != "nan" else sample_name
+                    # For 10x/BD/Parse, use sample_name for display
+                    display_name = sample_name
                 else:
                     stem = f"{run_name}-L{lane}-G{group}-{position}-{barcode}"
                     sample_path = f"{project}/{stem}" if project and project.lower() != "nan" else stem
+                    # For non-10x/BD samples, use the full stem for display
+                    display_name = stem
 
                 json_path = os.path.join("results/fastp", config_id, f"{sample_path}.json")
 
@@ -1244,13 +1250,15 @@ rule compile_read_counts:
                 except Exception:
                     group_order = float("inf")
 
-                if sample_name not in lane_counts[lane]:
-                    lane_counts[lane][sample_name] = [group_order, idx, 0]
+                if display_name not in lane_counts[lane]:
+                    lane_counts[lane][display_name] = [group_order, idx, 0, group]
                 # Keep earliest group/index seen; always accumulate read pairs
-                existing = lane_counts[lane][sample_name]
+                existing = lane_counts[lane][display_name]
                 existing[0] = min(existing[0], group_order)
                 existing[1] = min(existing[1], idx)
                 existing[2] += read_pairs
+                # Keep the group value
+                existing[3] = group
 
         lanes_sorted = sorted(lane_counts.keys())
 
@@ -1263,13 +1271,13 @@ rule compile_read_counts:
         for lane, samples in lane_counts.items():
             # sort by (group_order, row_index)
             ordered = sorted(samples.items(), key=lambda x: (x[1][0], x[1][1]))
-            per_lane[lane] = [(name, total) for name, (_, _, total) in ordered]
+            per_lane[lane] = [(name, total, group) for name, (_, _, total, group) in ordered]
 
         max_rows = max(len(v) for v in per_lane.values())
 
-        header = [""]
+        header = []
         for lane in lanes_sorted:
-            header.extend([f"lane{lane}", ""])
+            header.extend(["Lane", "Group", "Sample ID", "Read Count"])
 
         rows = []
         for i in range(max_rows):
@@ -1277,10 +1285,10 @@ rule compile_read_counts:
             for lane in lanes_sorted:
                 entries = per_lane.get(lane, [])
                 if i < len(entries):
-                    name, count = entries[i]
-                    row.extend([name, f"{int(count):,}"])
+                    name, count, group = entries[i]
+                    row.extend([lane, group, name, f"{int(count):,}"])
                 else:
-                    row.extend(["", ""])
+                    row.extend(["", "", "", ""])
             rows.append(row)
 
         os.makedirs(os.path.dirname(output.csv), exist_ok=True)
