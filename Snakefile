@@ -1,11 +1,12 @@
 import os
 import re
+import subprocess
+import yaml
 import pandas as pd
 import xml.etree.ElementTree as ET
 from io import StringIO
 
-envvars:
-    "GMAIL_APP_PASSWORD"
+envvars: "GMAIL_APP_PASSWORD"
 
 configfile: "snakemake_config.yaml"
 
@@ -33,7 +34,7 @@ if os.path.exists(basecalls_path):
         if d.startswith("L") and d[1:].isdigit() and os.path.isdir(os.path.join(basecalls_path, d))
     ])
 
-print("detected_lanes:", detected_lanes)
+# print("detected_lanes:", detected_lanes)
 
 metadata = config.get("metadata", "metadata/SampleSheet.xlsx")
 
@@ -43,6 +44,8 @@ PROJECT_LOOKUP = {}
 MASKING_LOOKUP = {}
 PROJECT_LINKS = {}
 PROJECT_LINKS_BY_LANE = {}
+ORDER_ID_LOOKUP = {}
+PROJECT_ORDER_ID = {}
 
 if METADATA_FILE and os.path.exists(METADATA_FILE):
     try:
@@ -77,6 +80,13 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
                      if 'Masking' in df.columns:
                         m = str(row['Masking']).strip()
                         MASKING_LOOKUP[(l, g)] = m
+                     
+                     if 'Order ID' in df.columns:
+                        order_id = str(row['Order ID']).strip()
+                        if order_id and order_id.lower() != 'nan':
+                            ORDER_ID_LOOKUP[(l, g)] = order_id
+                            if p and p.lower() != 'nan':
+                                PROJECT_ORDER_ID[p] = order_id
                  except:
                      pass
         
@@ -102,10 +112,12 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
     except Exception as e:
         print(f"Error reading metadata: {e}")
 
-print("LANE_CONFIGS:", LANE_CONFIGS)
-print("PROJECT_LOOKUP:", PROJECT_LOOKUP)
-print("MASKING_LOOKUP:", MASKING_LOOKUP)
-print("PROJECT_LINKS_BY_LANE:", PROJECT_LINKS_BY_LANE)
+# print("LANE_CONFIGS:", LANE_CONFIGS)
+# print("PROJECT_LOOKUP:", PROJECT_LOOKUP)
+# print("MASKING_LOOKUP:", MASKING_LOOKUP)
+# print("PROJECT_LINKS_BY_LANE:", PROJECT_LINKS_BY_LANE)
+# print("ORDER_ID_LOOKUP:", ORDER_ID_LOOKUP)
+# print("PROJECT_ORDER_ID:", PROJECT_ORDER_ID)
 
 # Helper to produce semicolon-separated fastq links for a given project+lane
 def get_fastq_links_for_project_lane(project, lane):
@@ -126,6 +138,56 @@ def get_fastq_links_for_project_lane(project, lane):
             seen.add(lk)
             unique.append(lk)
     return ";".join(unique)
+
+# Helper to get project links from the consolidated YAML file
+def get_project_links_from_yaml(yaml_path, project, lane=None, order_id=None):
+    try:
+        if not os.path.exists(yaml_path):
+            return "https://precision.biochem.uci.edu/s/x8PGTAWcXbrRySG"
+        
+        with open(yaml_path, 'r') as f:
+            links_data = yaml.safe_load(f)
+        
+        if not links_data or project not in links_data:
+            return "https://precision.biochem.uci.edu/s/x8PGTAWcXbrRySG"
+        
+        project_links = links_data[project]
+        lane_prefix = f"lane{lane}_" if lane is not None else None
+        
+        # Find all config_ids that match this lane (if specified) and optionally filter by order_id
+        urls = []
+        for config_id, config_data in project_links.items():
+            if lane_prefix is not None and not config_id.startswith(lane_prefix):
+                continue
+            # Check if config_data is a dict (new format with order_id) or string (old format)
+            if isinstance(config_data, dict):
+                # New nested format: {config_id: {order_id: url}}
+                if order_id is not None:
+                    # Filter by order_id
+                    if order_id in config_data:
+                        urls.append(config_data[order_id])
+                else:
+                    # No order_id filter, include all urls for this config
+                    urls.extend(config_data.values())
+            else:
+                # Old format: {config_id: url}
+                urls.append(config_data)
+        
+        if not urls:
+            return "https://precision.biochem.uci.edu/s/x8PGTAWcXbrRySG"
+        
+        # De-duplicate while preserving order
+        seen = set()
+        unique = []
+        for url in urls:
+            if url not in seen:
+                seen.add(url)
+                unique.append(url)
+        
+        return ";".join(unique)
+    except Exception as e:
+        print(f"Error reading project links from YAML: {e}")
+        return "https://precision.biochem.uci.edu/s/x8PGTAWcXbrRySG"
 
 # 10x/Parse/BD naming: keep Illumina default (<sample>_S<num>_L00<lane>_R<read>_001.fastq.gz)
 def is_parse_or_10x(project_name):
@@ -491,7 +553,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             ss_data.to_csv(f, index=False)
             
         generated_files[config['id']] = outfile
-        print(f"Generated {outfile}")
+        # print(f"Generated {outfile}")
         
         # Generate renaming map
         try:
@@ -521,7 +583,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             
             map_file = os.path.join(out_dir, f"renaming_map_{config['id']}.csv")
             map_df.to_csv(map_file, index=False)
-            print(f"Generated {map_file}")
+            # print(f"Generated {map_file}")
         except Exception as e:
             print(f"Error generating renaming map for {config['id']}: {e}")
         
@@ -555,8 +617,8 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
 
 SAMPLE_SHEETS_DICT = generate_lane_samplesheets(METADATA_FILE, LANE_CONFIGS, PROJECT_LOOKUP, MASKING_LOOKUP, "src", RUN_INFO_PATH)
 
-print(SAMPLE_SHEETS_DICT)
-print(RUN_INFO_PATH)
+# print(SAMPLE_SHEETS_DICT)
+# print(RUN_INFO_PATH)
 
 CONFIG_IDS = [c['id'] for c in LANE_CONFIGS] if LANE_CONFIGS else []
 # Fallback if no metadata
@@ -596,7 +658,41 @@ def get_all_projects(sample_sheets_dict):
 
 PROJECTS = get_all_projects(SAMPLE_SHEETS_DICT)
 
-print("PROJECTS found in SampleSheet:", PROJECTS)
+# print("PROJECTS found in SampleSheet:", PROJECTS)
+
+# Map order_id to list of projects
+def get_order_id_configs(sample_sheets_dict):
+    order_id_to_projects = {}
+    
+    for config_id in sample_sheets_dict:
+        map_path = f"src/renaming_map_{config_id}.csv"
+        if os.path.exists(map_path):
+            try:
+                df = pd.read_csv(map_path)
+                df['Sample_Project'] = df['Sample_Project'].astype(str)
+                
+                for project in df['Sample_Project'].unique():
+                    project = str(project).strip()
+                    if not project or project.lower() == 'nan':
+                        continue
+                    
+                    # Get order_id for this project
+                    order_id = PROJECT_ORDER_ID.get(project, "")
+                    
+                    if order_id:
+                        if order_id not in order_id_to_projects:
+                            order_id_to_projects[order_id] = set()
+                        order_id_to_projects[order_id].add(project)
+            except Exception as e:
+                print(f"Error reading map file {map_path}: {e}")
+    
+    return order_id_to_projects
+
+ORDER_ID_CONFIGS = get_order_id_configs(SAMPLE_SHEETS_DICT)
+ORDER_ID_REPORTS = [f"Reports/order_{oid}/index.html" for oid in ORDER_ID_CONFIGS.keys()]
+ORDER_ID_MD5S = [f"Reports/order_{oid}/md5sums.txt" for oid in ORDER_ID_CONFIGS.keys()]
+
+# print("ORDER_ID_CONFIGS:", {k: list(v) for k, v in ORDER_ID_CONFIGS.items()})
 
 # Map each project to the set of lanes it appears in so we can emit per-lane reports.
 def get_project_lane_pairs(sample_sheets_dict):
@@ -624,7 +720,7 @@ PROJECT_LANES = get_project_lane_pairs(SAMPLE_SHEETS_DICT)
 PROJECT_LANE_REPORTS = [f"Reports/{p}/lane{l}/index.html" for p, l in PROJECT_LANES]
 PROJECT_LANE_MD5S = [f"Reports/{p}/lane{l}/md5sums.txt" for p, l in PROJECT_LANES]
 
-print("PROJECT_LANES:", PROJECT_LANES)
+# print("PROJECT_LANES:", PROJECT_LANES)
 
 # Identify configs that require Flexbar processing
 FLEXBAR_CONFIGS = []
@@ -635,14 +731,37 @@ for config in LANE_CONFIGS:
     if os.path.exists(barcode_path):
         FLEXBAR_CONFIGS.append(config['id'])
 
-print("FLEXBAR_CONFIGS:", FLEXBAR_CONFIGS)
+# print("FLEXBAR_CONFIGS:", FLEXBAR_CONFIGS)
+
+# Get (config_id, project) pairs for project links
+def get_config_project_pairs(sample_sheets_dict):
+    pairs = set()
+    for config_id in sample_sheets_dict:
+        map_path = f"src/renaming_map_{config_id}.csv"
+        if os.path.exists(map_path):
+            try:
+                df = pd.read_csv(map_path)
+                df['Sample_Project'] = df['Sample_Project'].astype(str)
+                for project in df['Sample_Project'].unique():
+                    project = str(project).strip()
+                    if project and project.lower() != 'nan':
+                        pairs.add((config_id, project))
+            except Exception as e:
+                print(f"Error reading map file {map_path}: {e}")
+    return sorted(list(pairs))
+
+CONFIG_PROJECT_PAIRS = get_config_project_pairs(SAMPLE_SHEETS_DICT)
+PROJECT_LINK_LOGS = [f"logs/project_link_{config_id}_{project}.log" for config_id, project in CONFIG_PROJECT_PAIRS]
+
+# print("CONFIG_PROJECT_PAIRS:", CONFIG_PROJECT_PAIRS)
 
 rule all:
     input:
         expand("results/fastp_plots_{config_id}.done", config_id=CONFIG_IDS),
         expand("output/{config_id}/.done", config_id=CONFIG_IDS),
-        PROJECT_LANE_REPORTS,
-        PROJECT_LANE_MD5S,
+        expand("output/{config_id}/md5sums.txt", config_id=CONFIG_IDS),
+        ORDER_ID_REPORTS,
+        ORDER_ID_MD5S,
         # expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
         expand("results/fastp_plots_summary_lane{lane}.done", lane=detected_lanes),
         expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
@@ -650,8 +769,36 @@ rule all:
         f"results/{LIBRARY}-count.csv",
         f"Reports/{LIBRARY}_read_counts_email.done",
         # expand("Reports/{project}/email_sent.done", project=PROJECTS),
+        "logs/project_links.yaml"
 
-def get_project_plot_targets(project, lane_filter=None):
+rule bcl_convert_only:
+    input:
+        expand("output/{config_id}/.done", config_id=CONFIG_IDS)
+
+def get_order_id_plot_targets(order_id):
+    """Get all fastp plot targets for all projects in a given order_id."""
+    targets = []
+    projects = ORDER_ID_CONFIGS.get(order_id, set())
+    
+    for project in projects:
+        project_targets = get_project_plot_targets(project, lane_filter=None, order_id=order_id)
+        targets.extend(project_targets)
+    
+    return targets
+
+def get_order_id_fastq_links(yaml_path, order_id):
+    """Get all fastq links for all projects in a given order_id."""
+    all_links = {}
+    projects = ORDER_ID_CONFIGS.get(order_id, set())
+    
+    for project in projects:
+        links_str = get_project_links_from_yaml(yaml_path, project, lane=None, order_id=order_id)
+        if links_str and links_str != "https://precision.biochem.uci.edu/s/x8PGTAWcXbrRySG":
+            all_links[project] = links_str
+    
+    return all_links
+
+def get_project_plot_targets(project, lane_filter=None, order_id=None):
     targets = []
     
     for config_id in CONFIG_IDS:
@@ -669,6 +816,16 @@ def get_project_plot_targets(project, lane_filter=None):
                         continue
                     if lane_filter is not None and lane_val != lane_filter:
                         continue
+                    
+                    # Filter by Order ID if specified
+                    if order_id is not None:
+                        try:
+                            group_val = int(float(row.get('Group', 0)))
+                            sample_order_id = ORDER_ID_LOOKUP.get((lane_val, group_val))
+                            if sample_order_id != order_id:
+                                continue
+                        except Exception:
+                            continue
                     
                     sample_name = str(row.get('Sample_Name', '')).strip()
                     run = str(row.get('Run', '')).strip()
@@ -700,24 +857,68 @@ def get_project_plot_targets(project, lane_filter=None):
                 print(f"Error reading map file {map_path}: {e}")
     return targets
 
-rule report_project:
+rule report_order_id:
     input:
-        fastp_plots = lambda wildcards: get_project_plot_targets(wildcards.project, int(wildcards.lane))
+        fastp_plots = lambda wildcards: get_order_id_plot_targets(wildcards.order_id),
+        md5_files = expand("output/{config_id}/md5sums.txt", config_id=CONFIG_IDS)
     output:
-        html = "Reports/{project}/lane{lane}/index.html",
-        md5 = "Reports/{project}/lane{lane}/md5sums.txt"
+        html = "Reports/order_{order_id}/index.html",
+        md5 = "Reports/order_{order_id}/md5sums.txt"
     log:
-        "logs/report_project_{project}_lane{lane}.log"
+        "logs/report_order_{order_id}.log"
     params:
-        project = "{project}",
-        lane = "{lane}",
+        order_id = "{order_id}",
         output_base = "output",
         fastp_plots_base = FASTP_PLOTS_OUTDIR,
         fastp_base = FASTP_OUTDIR,
-        report_dir = "Reports/{project}/lane{lane}",
-        fastq_links = lambda wildcards: get_fastq_links_for_project_lane(wildcards.project, wildcards.lane)
-    shell:
-        "python3 src/generate_report.py {params.project} {params.output_base} {params.fastp_plots_base} {params.fastp_base} {params.report_dir} \"{params.fastq_links}\" {params.lane} > {log} 2>&1"
+        report_dir = "Reports/order_{order_id}",
+        links_yaml = "logs/project_links.yaml",
+        projects = lambda wildcards: sorted(list(ORDER_ID_CONFIGS.get(wildcards.order_id, [])))
+    run:
+        import subprocess
+        import sys
+        import os
+        sys.path.insert(0, workflow.basedir)
+        
+        order_id = params.order_id
+        projects = params.projects
+        report_dir = params.report_dir
+        log_file = log[0]
+        
+        os.makedirs(report_dir, exist_ok=True)
+        
+        # Open log file
+        with open(log_file, 'w') as lf:
+            lf.write(f"Generating report for order_id: {order_id}\n")
+            lf.write(f"Projects: {projects}\n\n")
+        
+        # Generate report for each project in this order_id
+        for project in projects:
+            # Get fastq links for this project in this order_id
+            fastq_links = get_project_links_from_yaml(params.links_yaml, project, lane=None, order_id=order_id)
+            
+            # Call generate_report.py for this project
+            cmd = [
+                "python3", "src/generate_report.py",
+                project,
+                params.output_base,
+                params.fastp_plots_base,
+                params.fastp_base,
+                report_dir,
+                fastq_links
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            with open(log_file, 'a') as f:
+                f.write(f"\n=== Report generation for project {project} ===\n")
+                f.write(result.stdout)
+                if result.stderr:
+                    f.write(f"STDERR: {result.stderr}\n")
+        
+        # Ensure md5sums.txt exists
+        md5_file = os.path.join(report_dir, "md5sums.txt")
+        if not os.path.exists(md5_file):
+            open(md5_file, 'a').close()
 
 rule send_project_email:
     input:
@@ -882,8 +1083,6 @@ def get_fastp_sample_input(wildcards):
                     else:
                         return [r1]
                 else:
-                    # For non-10x/BD samples: use format {run}-L{lane}-G{group}-P{position}-{barcode}-R{read}.fastq.gz
-                    # Example: xR078-L1-G1-P001-GTAGAGGA-R1.fastq.gz
                     r1 = f"{prefix}/{stem}-R1.fastq.gz"
                     if NUM_READS > 1:
                         r2 = f"{prefix}/{stem}-R2.fastq.gz"
@@ -1213,21 +1412,23 @@ rule compile_read_counts:
 
                 position = str(row.get("Position", f"P{idx + 1:03d}")).strip()
 
-                # Construct filename path based on convention (same as get_fastp_targets)
-                if is_parse_or_10x(project):
-                    sample_path = f"{project}/{sample_name}" if project and project.lower() != "nan" else sample_name
-                    # For 10x/BD/Parse, use sample_name for display
-                    display_name = sample_name
+                # Build both possible fastp JSON paths:
+                # 1) Default renamed stem path
+                stem = f"{run_name}-L{lane}-G{group}-{position}-{barcode}"
+                sample_path_default = f"{project}/{stem}" if project and project.lower() != "nan" else stem
+                json_path_default = os.path.join("results/fastp", config_id, f"{sample_path_default}.json")
+
+                # 2) Illumina naming path for 10x/Parse/BD projects
+                sample_path_illumina = f"{project}/{sample_name}" if project and project.lower() != "nan" else sample_name
+                json_path_illumina = os.path.join("results/fastp", config_id, f"{sample_path_illumina}.json")
+
+                # Prefer default path if it exists; otherwise fall back to Illumina naming
+                if os.path.exists(json_path_default):
+                    json_path = json_path_default
+                elif os.path.exists(json_path_illumina):
+                    json_path = json_path_illumina
                 else:
-                    stem = f"{run_name}-L{lane}-G{group}-{position}-{barcode}"
-                    sample_path = f"{project}/{stem}" if project and project.lower() != "nan" else stem
-                    # For non-10x/BD samples, use the full stem for display
-                    display_name = stem
-
-                json_path = os.path.join("results/fastp", config_id, f"{sample_path}.json")
-
-                if not os.path.exists(json_path):
-                    print(f"Missing fastp json for {sample_path}")
+                    print(f"Missing fastp json for default '{sample_path_default}' and illumina '{sample_path_illumina}'")
                     continue
 
 
@@ -1250,15 +1451,23 @@ rule compile_read_counts:
                 except Exception:
                     group_order = float("inf")
 
-                if display_name not in lane_counts[lane]:
-                    lane_counts[lane][display_name] = [group_order, idx, 0, group]
+                # Determine display label: use Illumina sample name for 10x/Parse/BD; otherwise use stem (includes barcode)
+                try:
+                    is_special = is_parse_or_10x(project)
+                except Exception:
+                    is_special = False
+                label = sample_name if is_special else stem
+
+                if label not in lane_counts[lane]:
+                    lane_counts[lane][label] = [group_order, idx, group, 0]
                 # Keep earliest group/index seen; always accumulate read pairs
-                existing = lane_counts[lane][display_name]
+                existing = lane_counts[lane][label]
                 existing[0] = min(existing[0], group_order)
                 existing[1] = min(existing[1], idx)
-                existing[2] += read_pairs
-                # Keep the group value
-                existing[3] = group
+                # Keep the group value from the earliest entry
+                if existing[0] == group_order:
+                    existing[2] = group
+                existing[3] += read_pairs
 
         lanes_sorted = sorted(lane_counts.keys())
 
@@ -1271,22 +1480,23 @@ rule compile_read_counts:
         for lane, samples in lane_counts.items():
             # sort by (group_order, row_index)
             ordered = sorted(samples.items(), key=lambda x: (x[1][0], x[1][1]))
-            per_lane[lane] = [(name, total, group) for name, (_, _, total, group) in ordered]
+            per_lane[lane] = [(name, group, total) for name, (_, _, group, total) in ordered]
 
         max_rows = max(len(v) for v in per_lane.values())
 
-        header = []
+        # Include explicit column headers: lane, group, sample, counts for each lane
+        header = [""]
         for lane in lanes_sorted:
-            header.extend(["Lane", "Group", "Sample ID", "Read Count"])
+            header.extend(["lane", "group", "sample", "counts"])
 
         rows = []
         for i in range(max_rows):
-            row = []
+            row = [""]  # Start with empty column to match header
             for lane in lanes_sorted:
                 entries = per_lane.get(lane, [])
                 if i < len(entries):
-                    name, count, group = entries[i]
-                    row.extend([lane, group, name, f"{int(count):,}"])
+                    name, group, count = entries[i]
+                    row.extend([str(lane), group, name, f"{int(count):,}"])
                 else:
                     row.extend(["", "", "", ""])
             rows.append(row)
@@ -1328,7 +1538,7 @@ rule fastp_plots_lane:
     log:
         "logs/fastp_plots_lane{lane}.log"
     wildcard_constraints:
-        lane = "\d+"
+        lane = r"\d+"
 
 rule flexbar_per_config:
     input:
@@ -1487,6 +1697,22 @@ rule bcl_convert:
         ) > {log} 2>&1
         """
 
+rule calculate_md5sums:
+    input:
+        done = "output/{config_id}/.done"
+    output:
+        md5 = "output/{config_id}/md5sums.txt"
+    log:
+        "logs/calculate_md5sums_{config_id}.log"
+    shell:
+        """
+        (
+        cd output/{wildcards.config_id}
+        find . -name '*.fastq.gz' -type f -exec md5sum {{}} \\; | sort -k2 > md5sums.txt
+        echo "Generated md5sums.txt with $(wc -l < md5sums.txt) entries"
+        ) > {log} 2>&1
+        """
+
 rule analyze_undetermined:
     input:
         done = "output/{config_id}/.done"
@@ -1502,27 +1728,172 @@ rule analyze_undetermined:
         python3 {params.script} "{params.input_pattern}" --output {output.csv} --limit 15000000 > {log} 2>&1
         """
 
+rule consolidate_project_links:
+    input:
+        expand("output/{config_id}/.done", config_id=CONFIG_IDS)
+    output:
+        "logs/project_links.yaml"
+    log:
+        "logs/consolidate_project_links.log"
+    run:
+        import sys
+        import glob
+        sys.stderr = sys.stdout = open(log[0], 'w')
+        
+        links = {}
+        
+        # Dynamically discover all project_link logs
+        log_files = glob.glob("logs/project_link_*.log")
+        print(f"Found {len(log_files)} project link log files")
+        
+        for log_file in log_files:
+            try:
+                with open(log_file, 'r') as f:
+                    content = f.read()
+                
+                # Extract project and config_id from filename
+                # Format: logs/project_link_{config_id}_{project}.log
+                basename = os.path.basename(log_file)
+                # Remove prefix and suffix
+                filename_no_prefix = basename.replace("project_link_", "").replace(".log", "")
+                
+                # Split at the last underscore to separate config_id from project
+                # config_id contains underscores, project is the last part
+                last_underscore = filename_no_prefix.rfind("_")
+                if last_underscore == -1:
+                    print(f"Could not parse filename: {basename}")
+                    continue
+                    
+                config_id = filename_no_prefix[:last_underscore]
+                project = filename_no_prefix[last_underscore+1:]
+                
+                # Extract Order ID from log content
+                order_id = ""
+                lines = content.split('\n')
+                for line in lines:
+                    if line.startswith("Order ID:"):
+                        order_id = line.split("Order ID:", 1)[1].strip()
+                        break
+                
+                # Try to find "Share link:" in the log content
+                if "Share link:" in content:
+                    for line in lines:
+                        if line.startswith("Share link:"):
+                            share_url = line.split("Share link:", 1)[1].strip()
+                            
+                            if project and config_id and share_url:
+                                if project not in links:
+                                    links[project] = {}
+                                if config_id not in links[project]:
+                                    links[project][config_id] = {}
+                                
+                                # Store with order_id key, or use empty string if not found
+                                order_key = order_id if order_id else "default"
+                                links[project][config_id][order_key] = share_url
+                                print(f"Found link for {project} / {config_id} / {order_key}: {share_url}")
+                                break
+            except Exception as e:
+                print(f"Error processing {log_file}: {e}")
+                continue
+        
+        os.makedirs(os.path.dirname(output[0]), exist_ok=True)
+        with open(output[0], 'w') as yf:
+            yaml.dump(links, yf, default_flow_style=False)
+        
+        print(f"Consolidated {len(links)} projects into {output[0]}")
+
 rule project_link:
     input:
-        "output/{config_id}",
-        fastq_dir = directory("output/{config_id}/{project}")
+        done = "output/{config_id}/.done"
     output:
         log = "logs/project_link_{config_id}_{project}.log"
     wildcard_constraints:
-        config_id = "[^/]+",
-        project = "[^/]+"
-    shell:
-        """
-        # Resolve absolute path and strip the mount prefix to get Nextcloud-relative path
-        ABS_PATH=$(readlink -f "{input.fastq_dir}")
-        # Assuming /staging/nextcloud is the root of the Nextcloud storage
-        NC_PATH=${{ABS_PATH#/staging/nextcloud/}}
+        config_id = r"lane\d+_R\d+-\d+(_[IR]\d+-\d+)*_R\d+-\d+",
+        project = ".+"
+    params:
+        work_dir = os.getcwd(),
+        order_id = lambda wildcards: PROJECT_ORDER_ID.get(wildcards.project, "")
+    run:
+        import traceback
+        from pathlib import Path
         
-        curl -X POST -u "kstachel:ucightf2025" \
-            -H "OCS-APIRequest: true" \
-            -d "path=$NC_PATH" \
-            -d "shareType=3" \
-            "https://precision.biochem.uci.edu/ocs/v2.php/apps/files_sharing/api/v1/shares" \
-            -o {output.log}
-        """
+        config_id = wildcards.config_id
+        project = wildcards.project
+        order_id = params.order_id
+        fastq_dir = f"output/{config_id}/{project}"
+        log_file = output.log
+        work_dir = params.work_dir
+        
+        # Ensure logs directory exists
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        
+        # Create log file
+        with open(log_file, 'w') as f:
+            f.write(f"Checking for directory: {fastq_dir}\n")
+            f.write(f"Working directory: {os.getcwd()}\n")
+            f.write(f"Config ID: {config_id}\n")
+            f.write(f"Project: {project}\n")
+            f.write(f"Order ID: {order_id}\n")
+        
+        try:
+            if os.path.isdir(fastq_dir):
+                abs_path = os.path.abspath(fastq_dir)
+                with open(log_file, 'a') as f:
+                    f.write(f"Absolute path: {abs_path}\n")
+                
+                # Extract Nextcloud path
+                # Nextcloud API expects path like: /DragenExt/xR078_workflow/output/lane.../project/
+                if "/nextcloud2/" in abs_path:
+                    # Replace /mnt/extusb1/nextcloud2/ with /DragenExt/
+                    nc_path = "/DragenExt/" + abs_path.split("/nextcloud2/", 1)[1]
+                else:
+                    nc_path = abs_path
+                
+                with open(log_file, 'a') as f:
+                    f.write(f"Nextcloud path: {nc_path}\n")
+                
+                # Create share link
+                with open(log_file, 'a') as f:
+                    f.write("Creating share link...\n")
+                
+                # Log the curl command being executed
+                with open(log_file, 'a') as f:
+                    f.write(f"Executing curl command:\n")
+                    f.write(f"  curl -s -X POST -u kstachel:*** -H 'OCS-APIRequest: true' -d 'path={nc_path}' -d 'shareType=3' https://precision.biochem.uci.edu/ocs/v2.php/apps/files_sharing/api/v1/shares\n")
+                
+                result = subprocess.run([
+                    'curl', '-s', '-X', 'POST',
+                    '-u', 'kstachel:ucightf2025',
+                    '-H', 'OCS-APIRequest: true',
+                    '-d', f'path={nc_path}',
+                    '-d', 'shareType=3',
+                    'https://precision.biochem.uci.edu/ocs/v2.php/apps/files_sharing/api/v1/shares'
+                ], capture_output=True, text=True, timeout=30)
+                
+                share_xml = result.stdout
+                with open(log_file, 'a') as f:
+                    f.write(f"Response:\n{share_xml}\n")
+                
+                # Sleep to be considerate to the API
+                import time
+                time.sleep(1)
+                
+                # Extract URL from XML
+                match = re.search(r'<url>(.*?)</url>', share_xml)
+                if match:
+                    share_url = match.group(1)
+                    with open(log_file, 'a') as f:
+                        f.write(f"Share link: {share_url}\n")
+                else:
+                    with open(log_file, 'a') as f:
+                        f.write("Could not extract URL from response\n")
+            else:
+                with open(log_file, 'a') as f:
+                    f.write(f"Directory {fastq_dir} does not exist, skipping link creation\n")
+        except Exception as e:
+            with open(log_file, 'a') as f:
+                f.write(f"\nError during processing:\n")
+                f.write(f"Exception type: {type(e).__name__}\n")
+                f.write(f"Exception message: {str(e)}\n")
+                f.write(f"Traceback:\n{traceback.format_exc()}\n")
 

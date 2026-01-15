@@ -53,21 +53,63 @@ def is_parse_or_10x(project_name):
         p = ""
     return ("10x" in p) or ("parse" in p) or ("bd" in p)
 
-def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_dir, report_dir, fastq_links_str, lane_filter=None):
+def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_dir, report_dir, fastq_links_str, lane_filter=None, append_mode=False):
     os.makedirs(report_dir, exist_ok=True)
     lane_label = f" (Lane {lane_filter})" if lane_filter is not None else ""
     
     # Parse fastq_links (semicolon-separated)
     fastq_links = [link.strip() for link in fastq_links_str.split(';') if link.strip()]
     
-    # Build download links section
+    # Build download links section with project identifier
     download_links_html = ""
     if fastq_links:
-        download_links_html = "<p style='margin: 0 0 10px 0; line-height: 1.6;'><strong>Files for downloading:</strong></p>"
+        download_links_html = f"<p style='margin: 0 0 10px 0; line-height: 1.6;'><strong>Project: {project}</strong></p>"
         download_links_html += "<ul style='margin: 5px 0 10px 20px; padding: 0;'>"
         for link in fastq_links:
             download_links_html += f"<li style='margin-bottom: 5px;'><a href='{link}' style='color: #0066cc;'>{link}</a></li>"
         download_links_html += "</ul>"
+    
+    # Load pre-computed MD5 sums from all config directories
+    md5_lookup = {}  # {relative_filename: md5_hash}
+    md5_lines_for_report = []  # Lines to write to consolidated md5sums.txt
+    
+    # Find all md5sums.txt files in output directories
+    for md5_file in glob.glob("output/*/md5sums.txt"):
+        try:
+            with open(md5_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    parts = line.split(None, 1)
+                    if len(parts) == 2:
+                        md5_hash, filepath = parts
+                        # Normalize path - remove leading ./
+                        filepath = filepath.lstrip('./')
+                        # Store with basename as key for lookup
+                        basename = os.path.basename(filepath)
+                        md5_lookup[basename] = md5_hash
+                        # Keep full relative path for report
+                        config_dir = os.path.dirname(md5_file)
+                        full_path = os.path.join(config_dir, filepath)
+                        rel_path = os.path.relpath(full_path, '.')
+                        if project in rel_path:  # Only include files for this project
+                            md5_lines_for_report.append(f"{md5_hash}  {rel_path}")
+        except Exception as e:
+            print(f"Error reading MD5 file {md5_file}: {e}")
+    
+    # Check if we're appending to an existing report
+    html_file_path = os.path.join(report_dir, "index.html")
+    existing_samples_html = ""
+    
+    if append_mode and os.path.exists(html_file_path):
+        # Extract existing sample sections to append to
+        with open(html_file_path, 'r') as f:
+            existing_content = f.read()
+        # Find the samples section - everything between "Sample Details" header and the footer
+        match = re.search(r'(<h2[^>]*>Sample Details</h2>.*?)(<div style="margin: 40px 0 0 0; padding: 18px 0 0 0; border-top:)', existing_content, re.DOTALL)
+        if match:
+            existing_samples_html = match.group(1)
     
     # Gmail-compatible HTML with inline styles and table-based layout
     html_content = f"""<!DOCTYPE html>
@@ -83,7 +125,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 
 <!-- Hero Section -->
 <div style="background: linear-gradient(135deg, rgba(0, 50, 98, 0.92), rgba(0, 50, 98, 0.7)); color: #fefefe; padding: 28px; border-radius: 14px; margin-bottom: 24px;">
-<h1 style="margin: 0 0 10px 0; font-size: 28px; letter-spacing: -0.2px;">Sequencing Report: {project}{lane_label}</h1>
+<h1 style="margin: 0 0 10px 0; font-size: 28px; letter-spacing: -0.2px;">Sequencing Report{lane_label}</h1>
 <p style="margin: 0 0 16px 0; max-width: 760px; color: #e9eef5;">Your sequencing data has been processed and is ready for download.</p>
 </div>
 
@@ -170,6 +212,22 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 <!-- Samples Section Header -->
 <h2 style="margin: 32px 0 12px 0; font-size: 20px; letter-spacing: -0.2px; color: #333333;">Sample Details</h2>
 <p style="margin: 0 0 14px 0; color: #66788a;">Below are the quality metrics and file information for each sample:</p>
+
+"""
+    
+    # If appending, include existing samples first
+    if existing_samples_html:
+        # Extract just the sample tables, not the header
+        samples_match = re.search(r'<p style=.*?Below are the quality metrics.*?</p>\s*(.*)', existing_samples_html, re.DOTALL)
+        if samples_match:
+            html_content += samples_match.group(1)
+    
+    # Add a project separator for this new project's samples
+    html_content += f"""
+<div style="background: #e6f2ff; border-left: 4px solid #0066cc; padding: 12px 16px; margin: 24px 0 16px 0; border-radius: 6px;">
+<h3 style="margin: 0; color: #003d82; font-size: 18px;">Project: {project}</h3>
+{download_links_html}
+</div>
 """
     
     # Find all samples from fastp JSONs
@@ -201,8 +259,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
         except:
             pass
     
-    samples = {} # stem -> { 'lanes': { lane_id: { info... } } }
-    md5_lines = []
+    samples = {} # stem -> { config_id: { info... } }
     
     for json_file in json_files:
         # Extract config_id (lane)
@@ -320,17 +377,9 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                 
             r1_size = get_file_size(r1_path)
             
-            r1_md5 = "N/A"
-            if os.path.exists(r1_path):
-                try:
-                    cmd = ['md5sum', r1_path]
-                    result = subprocess.run(cmd, capture_output=True, text=True)
-                    if result.returncode == 0:
-                        hash_val = result.stdout.split()[0]
-                        md5_lines.append(f"{hash_val}  {os.path.basename(r1_path)}")
-                        r1_md5 = hash_val
-                except Exception as e:
-                    print(f"Error calculating md5 for {r1_path}: {e}")
+            # Lookup MD5 from pre-computed files
+            r1_basename = os.path.basename(r1_path)
+            r1_md5 = md5_lookup.get(r1_basename, "N/A")
             
             r2_size = "N/A"
             r2_md5 = "N/A"
@@ -349,41 +398,11 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                     r2_path = os.path.join(output_base_dir, config_id, project, f"{stem}-R2.fastq.gz")
                     
                 r2_size = get_file_size(r2_path)
-                
-                if os.path.exists(r2_path):
-                    try:
-                        cmd = ['md5sum', r2_path]
-                        result = subprocess.run(cmd, capture_output=True, text=True)
-                        if result.returncode == 0:
-                            hash_val = result.stdout.split()[0]
-                            md5_lines.append(f"{hash_val}  {os.path.basename(r2_path)}")
-                            r2_md5 = hash_val
-                    except Exception as e:
-                        print(f"Error calculating md5 for {r2_path}: {e}")
+                # Lookup MD5 from pre-computed files
+                r2_basename = os.path.basename(r2_path)
+                r2_md5 = md5_lookup.get(r2_basename, "N/A")
 
-            # Index reads (I1/I2) are optional; calculate md5 if present
-            for idx_read in ["I1", "I2"]:
-                if use_illumina_naming:
-                    # Construct index path for Illumina naming
-                    if r1_path and os.path.exists(r1_path):
-                        idx_path = r1_path.replace("_R1_001.fastq.gz", f"_{idx_read}_001.fastq.gz")
-                    else:
-                        lane_num = parse_lane_from_config(config_id) or 1
-                        sample_name = stem
-                        idx_path = os.path.join(output_base_dir, config_id, project, f"{sample_name}_S1_L{lane_num:03d}_{idx_read}_001.fastq.gz")
-                else:
-                    # Stem format
-                    idx_path = os.path.join(output_base_dir, config_id, project, f"{stem}-{idx_read}.fastq.gz")
-                    
-                if os.path.exists(idx_path):
-                    try:
-                        cmd = ['md5sum', idx_path]
-                        result = subprocess.run(cmd, capture_output=True, text=True)
-                        if result.returncode == 0:
-                            hash_val = result.stdout.split()[0]
-                            md5_lines.append(f"{hash_val}  {os.path.basename(idx_path)}")
-                    except Exception as e:
-                        print(f"Error calculating md5 for {idx_path}: {e}")
+            # Skip index read MD5 calculation (too slow for large files)
             
             info = {
                 'barcode': barcode,
@@ -504,15 +523,26 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
     with open(os.path.join(report_dir, "index.html"), 'w') as f:
         f.write(html_content)
 
-    # Write md5sums.txt sorted by position number
+    # Write consolidated md5sums.txt with pre-computed MD5 values
     md5_file_path = os.path.join(report_dir, "md5sums.txt")
-    unique_lines = list(set(md5_lines))
-    # Sort by PO number, then by filename
+    
+    # In append mode, merge with existing MD5 sums
+    if append_mode and os.path.exists(md5_file_path):
+        with open(md5_file_path, 'r') as f:
+            existing_lines = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        md5_lines_for_report.extend(existing_lines)
+    
+    # Remove duplicates and sort
+    unique_lines = list(set(md5_lines_for_report))
     unique_lines.sort(key=lambda line: (extract_po_number(line), line.split()[1] if len(line.split()) > 1 else line))
+    
     with open(md5_file_path, 'w') as f:
+        f.write("# MD5 checksums for FASTQ files\n")
         for line in unique_lines:
             f.write(line + "\n")
-    print(f"Generated {md5_file_path}")
+    
+    print(f"Report generated: {os.path.join(report_dir, 'index.html')}")
+    print(f"MD5 sums written: {md5_file_path} ({len(unique_lines)} files)")
 
 if __name__ == "__main__":
     if len(sys.argv) < 7:
@@ -533,4 +563,7 @@ if __name__ == "__main__":
         except Exception:
             lane_filter = sys.argv[7]
     
-    generate_report(project, output_base, fastp_plots_base, fastp_base, report_dir, fastq_links, lane_filter)
+    # If report_dir already exists with an index.html, this is a continuation (multiple projects for same order_id)
+    append_mode = os.path.exists(os.path.join(report_dir, "index.html"))
+    
+    generate_report(project, output_base, fastp_plots_base, fastp_base, report_dir, fastq_links, lane_filter, append_mode=append_mode)
