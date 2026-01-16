@@ -6,6 +6,7 @@ import json
 import re
 import base64
 import subprocess
+from io import BytesIO
 
 def extract_po_number(md5_line):
     """Extract position number from md5sum line for sorting."""
@@ -18,11 +19,61 @@ def extract_po_number(md5_line):
             return int(match.group(1))
     return float('inf')
 
-def get_image_base64(path):
-    if os.path.exists(path):
+def get_image_base64(path, max_width=800, quality=60):
+    """
+    Load image, compress it, and return base64-encoded string.
+    
+    Args:
+        path: Path to the image file
+        max_width: Maximum width in pixels (maintains aspect ratio)
+        quality: JPEG quality (1-95, lower = smaller file)
+    
+    Returns:
+        Base64-encoded compressed image string
+    """
+    if not os.path.exists(path):
+        return None
+    
+    try:
+        from PIL import Image
+        
+        # Open image
+        img = Image.open(path)
+        
+        # Resize if larger than max_width
+        if img.width > max_width:
+            ratio = max_width / img.width
+            new_height = int(img.height * ratio)
+            img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
+        
+        # Convert RGBA to RGB if needed (for JPEG)
+        if img.mode in ('RGBA', 'LA', 'P'):
+            background = Image.new('RGB', img.size, (255, 255, 255))
+            if img.mode == 'P':
+                img = img.convert('RGBA')
+            background.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
+            img = background
+        
+        # Save as compressed JPEG to BytesIO
+        buffer = BytesIO()
+        img.save(buffer, format='JPEG', quality=quality, optimize=True)
+        buffer.seek(0)
+        
+        # Encode to base64
+        return base64.b64encode(buffer.read()).decode('utf-8')
+        
+    except ImportError:
+        # Fallback if PIL not available - just encode original
         with open(path, "rb") as image_file:
             return base64.b64encode(image_file.read()).decode('utf-8')
-    return None
+    except Exception as e:
+        print(f"Error compressing image {path}: {e}")
+        # Fallback to original encoding
+        try:
+            with open(path, "rb") as image_file:
+                return base64.b64encode(image_file.read()).decode('utf-8')
+        except:
+            return None
 
 def get_file_size(path):
     if os.path.exists(path):
@@ -53,28 +104,100 @@ def is_parse_or_10x(project_name):
         p = ""
     return ("10x" in p) or ("parse" in p) or ("bd" in p)
 
-def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_dir, report_dir, fastq_links_str, lane_filter=None, append_mode=False):
+def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_dir, report_dir, fastq_links_str, lane_filter=None, append_mode=False, links_yaml=None, order_id=None):
     os.makedirs(report_dir, exist_ok=True)
     lane_label = f" (Lane {lane_filter})" if lane_filter is not None else ""
     
-    # Parse fastq_links (semicolon-separated)
-    fastq_links = [link.strip() for link in fastq_links_str.split(';') if link.strip()]
+    # Parse fastq_links (semicolon-separated) for current project
+    project_fastq_links = [link.strip() for link in fastq_links_str.split(';') if link.strip()]
+
+    # If appending to an existing report, collect existing download links from the "Your Download Links" section
+    html_file_path = os.path.join(report_dir, "index.html")
+    existing_samples_html = ""
+    existing_download_links = []
+    existing_project_links = {}
     
-    # Build download links section with project identifier
-    download_links_html = ""
-    if fastq_links:
-        download_links_html = f"<p style='margin: 0 0 10px 0; line-height: 1.6;'><strong>Project: {project}</strong></p>"
-        download_links_html += "<ul style='margin: 5px 0 10px 20px; padding: 0;'>"
-        for link in fastq_links:
-            download_links_html += f"<li style='margin-bottom: 5px;'><a href='{link}' style='color: #0066cc;'>{link}</a></li>"
-        download_links_html += "</ul>"
+    if append_mode and os.path.exists(html_file_path):
+        with open(html_file_path, 'r') as f:
+            existing_content = f.read()
+        # Extract existing sample sections to append to
+        match = re.search(r'(<h2[^>]*>Sample Details</h2>.*?)(<div style="margin: 40px 0 0 0; padding: 18px 0 0 0; border-top:)', existing_content, re.DOTALL)
+        if match:
+            existing_samples_html = match.group(1)
+        
+        # Extract existing links between "Your Download Links" and next section "How to Download"
+        start_idx = existing_content.find("Your Download Links")
+        if start_idx != -1:
+            end_idx = existing_content.find("How to Download", start_idx)
+            if end_idx == -1:
+                end_idx = len(existing_content)
+            links_section = existing_content[start_idx:end_idx]
+            # Find anchor hrefs in that section
+            existing_download_links = re.findall(r"<a\\s+href=['\"]([^'\"]+)['\"][^>]*>", links_section)        
+        # If we have links_yaml and order_id, read ALL project links from YAML
+        if links_yaml and order_id and os.path.exists(links_yaml):
+            try:
+                import yaml
+                with open(links_yaml, 'r') as f:
+                    all_links_data = yaml.safe_load(f) or {}
+                # Collect links for all projects in this order_id
+                for proj_name, lane_configs in all_links_data.items():
+                    for lane_config, lane_links in lane_configs.items():
+                        if isinstance(lane_links, dict):
+                            for oid, link in lane_links.items():
+                                if oid == order_id:
+                                    if proj_name not in existing_project_links:
+                                        existing_project_links[proj_name] = []
+                                    existing_project_links[proj_name].append(link)
+            except Exception as e:
+                print(f"Warning: Could not read links from YAML: {e}")    
+    # Build consolidated list of all download links (existing + other projects + current project), de-duplicated
+    seen = set()
+    all_download_links = []
+    # Add existing links from HTML
+    for lk in existing_download_links:
+        if lk not in seen:
+            seen.add(lk)
+            all_download_links.append(lk)
+    # Add links from other projects in the order_id from YAML
+    for proj_name, proj_links in existing_project_links.items():
+        if proj_name != project:
+            for lk in proj_links:
+                if lk not in seen:
+                    seen.add(lk)
+                    all_download_links.append(lk)
+    # Add current project's links
+    for lk in project_fastq_links:
+        if lk not in seen:
+            seen.add(lk)
+            all_download_links.append(lk)
+
+    # HTML for top "Your Download Links" section: consolidated list without project labels
+    all_download_links_html = ""
+    if all_download_links:
+        all_download_links_html = "<ul style='margin: 5px 0 10px 20px; padding: 0;'>\n"
+        for link in all_download_links:
+            all_download_links_html += f"<li style='margin-bottom: 5px;'><a href='{link}' style='color: #0066cc;'>{link}</a></li>\n"
+        all_download_links_html += "</ul>\n"
+
+    # HTML for per-project links inside the project section
+    project_download_links_html = ""
+    if project_fastq_links:
+        project_download_links_html = f"<p style='margin: 0 0 10px 0; line-height: 1.6;'><strong>Project: {project}</strong></p>\n"
+        project_download_links_html += "<ul style='margin: 5px 0 10px 20px; padding: 0;'>\n"
+        for link in project_fastq_links:
+            project_download_links_html += f"<li style='margin-bottom: 5px;'><a href='{link}' style='color: #0066cc;'>{link}</a></li>\n"
+        project_download_links_html += "</ul>\n"
     
     # Load pre-computed MD5 sums from all config directories
-    md5_lookup = {}  # {relative_filename: md5_hash}
+    md5_lookup = {}  # {basename: md5_hash} - for fast lookups
     md5_lines_for_report = []  # Lines to write to consolidated md5sums.txt
     
     # Find all md5sums.txt files in output directories
-    for md5_file in glob.glob("output/*/md5sums.txt"):
+    # Priority: Load from project-level first (output/*/*/md5sums.txt), then lane-level (output/*/md5sums.txt)
+    
+    # First pass: load project-level MD5s (these have the actual file checksums)
+    for md5_file in glob.glob("output/*/*/md5sums.txt"):
         try:
             with open(md5_file, 'r') as f:
                 for line in f:
@@ -85,31 +208,37 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                     if len(parts) == 2:
                         md5_hash, filepath = parts
                         # Normalize path - remove leading ./
-                        filepath = filepath.lstrip('./')
-                        # Store with basename as key for lookup
-                        basename = os.path.basename(filepath)
+                        filepath_normalized = filepath.lstrip('./')
+                        # Store with basename as key for lookup (most common case)
+                        basename = os.path.basename(filepath_normalized)
                         md5_lookup[basename] = md5_hash
-                        # Keep full relative path for report
-                        config_dir = os.path.dirname(md5_file)
-                        full_path = os.path.join(config_dir, filepath)
-                        rel_path = os.path.relpath(full_path, '.')
-                        if project in rel_path:  # Only include files for this project
-                            md5_lines_for_report.append(f"{md5_hash}  {rel_path}")
+                        
+                        # Also collect for this specific project
+                        if project in md5_file:
+                            md5_lines_for_report.append(f"{md5_hash}  {filepath_normalized}")
         except Exception as e:
             print(f"Error reading MD5 file {md5_file}: {e}")
     
-    # Check if we're appending to an existing report
-    html_file_path = os.path.join(report_dir, "index.html")
-    existing_samples_html = ""
+    # Second pass: load lane-level consolidated files (only for lanes without project files)
+    for md5_file in glob.glob("output/*/md5sums.txt"):
+        try:
+            with open(md5_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    parts = line.split(None, 1)
+                    if len(parts) == 2:
+                        md5_hash, filepath = parts
+                        filepath_normalized = filepath.lstrip('./')
+                        basename = os.path.basename(filepath_normalized)
+                        # Only add if not already in lookup (project-level takes priority)
+                        if basename not in md5_lookup:
+                            md5_lookup[basename] = md5_hash
+        except Exception as e:
+            print(f"Error reading MD5 file {md5_file}: {e}")
     
-    if append_mode and os.path.exists(html_file_path):
-        # Extract existing sample sections to append to
-        with open(html_file_path, 'r') as f:
-            existing_content = f.read()
-        # Find the samples section - everything between "Sample Details" header and the footer
-        match = re.search(r'(<h2[^>]*>Sample Details</h2>.*?)(<div style="margin: 40px 0 0 0; padding: 18px 0 0 0; border-top:)', existing_content, re.DOTALL)
-        if match:
-            existing_samples_html = match.group(1)
+    # existing_samples_html populated above when append_mode
     
     # Gmail-compatible HTML with inline styles and table-based layout
     html_content = f"""<!DOCTYPE html>
@@ -146,7 +275,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 <h2 style="margin: 0 0 12px 0; font-size: 20px; letter-spacing: -0.2px; color: #333333;">Your Download Links</h2>
 <div style="background: #fff9ec; border: 1px solid rgba(245, 183, 0, 0.5); color: #7a5800; padding: 14px 16px; border-radius: 14px; margin-bottom: 16px; box-shadow: 0 8px 18px rgba(245, 183, 0, 0.12);">
 <strong style="display: block; margin-bottom: 8px;">📋 Direct Links:</strong>
-{download_links_html}
+{all_download_links_html}
 <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(0, 0, 0, 0.1); font-size: 13px;">
 <strong>To download entire folder as zip:</strong> Append <code style="background: rgba(0,0,0,0.1); padding: 2px 4px; border-radius: 3px;">/download</code> to the link above.
 </div>
@@ -217,16 +346,20 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
     
     # If appending, include existing samples first
     if existing_samples_html:
-        # Extract just the sample tables, not the header
+        # Extract only prior sample tables, excluding any MD5 sections
         samples_match = re.search(r'<p style=.*?Below are the quality metrics.*?</p>\s*(.*)', existing_samples_html, re.DOTALL)
         if samples_match:
-            html_content += samples_match.group(1)
+            prior_block = samples_match.group(1)
+            md5_idx = prior_block.find("MD5 Checksums")
+            if md5_idx != -1:
+                prior_block = prior_block[:md5_idx]
+            html_content += prior_block
     
     # Add a project separator for this new project's samples
     html_content += f"""
 <div style="background: #e6f2ff; border-left: 4px solid #0066cc; padding: 12px 16px; margin: 24px 0 16px 0; border-radius: 6px;">
 <h3 style="margin: 0; color: #003d82; font-size: 18px;">Project: {project}</h3>
-{download_links_html}
+{project_download_links_html}
 </div>
 """
     
@@ -279,6 +412,25 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 
         lane_val = parse_lane_from_config(config_id)
         if lane_filter is not None and lane_val != lane_filter:
+            continue
+        
+        # Validate that FASTQ files exist for this sample before processing
+        # This filters out deprecated samples that only have fastp JSON but no actual FASTQ files
+        project_dir = os.path.join(output_base_dir, config_id, project)
+        use_illumina_naming = is_parse_or_10x(project)
+        
+        fastq_exists = False
+        if use_illumina_naming:
+            # For 10x/Parse/BD: check if any R1 file matching the stem pattern exists
+            r1_candidates = glob.glob(os.path.join(project_dir, f"*{stem}*_R1_001.fastq.gz"))
+            fastq_exists = len(r1_candidates) > 0
+        else:
+            # For default naming: check if {stem}-R1.fastq.gz exists
+            r1_path = os.path.join(project_dir, f"{stem}-R1.fastq.gz")
+            fastq_exists = os.path.exists(r1_path)
+        
+        if not fastq_exists:
+            print(f"Skipping sample {stem} - no FASTQ files found (deprecated/stale sample)")
             continue
             
         # Parse JSON
@@ -380,6 +532,13 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
             # Lookup MD5 from pre-computed files
             r1_basename = os.path.basename(r1_path)
             r1_md5 = md5_lookup.get(r1_basename, "N/A")
+            # If not found by basename, try to search for a partial match in MD5s
+            if r1_md5 == "N/A":
+                # Try matching by searching through all keys for similar names
+                for key in md5_lookup:
+                    if key in r1_basename or r1_basename in key:
+                        r1_md5 = md5_lookup[key]
+                        break
             
             r2_size = "N/A"
             r2_md5 = "N/A"
@@ -401,6 +560,13 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                 # Lookup MD5 from pre-computed files
                 r2_basename = os.path.basename(r2_path)
                 r2_md5 = md5_lookup.get(r2_basename, "N/A")
+                # If not found by basename, try to search for a partial match in MD5s
+                if r2_md5 == "N/A":
+                    # Try matching by searching through all keys for similar names
+                    for key in md5_lookup:
+                        if key in r2_basename or r2_basename in key:
+                            r2_md5 = md5_lookup[key]
+                            break
 
             # Skip index read MD5 calculation (too slow for large files)
             
@@ -458,7 +624,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
             html_content += f"""
 <tr>
 <td style="border: 1px solid #dddddd; padding: 8px;">{info['barcode']}</td>
-<td style="border: 1px solid #dddddd; padding: 8px;">{info['paired_reads']}</td>
+<td style="border: 1px solid #dddddd; padding: 8px;">{info['paired_reads']:,}</td>
 <td style="border: 1px solid #dddddd; padding: 8px;">{type_str}</td>
 <td style="border: 1px solid #dddddd; padding: 8px;">{info['r1_size']}</td>
 <td style="border: 1px solid #dddddd; padding: 8px; font-family: monospace; font-size: 11px;">{info['r1_md5']}</td>
@@ -493,23 +659,23 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
             
             if os.path.exists(src_mean) or os.path.exists(src_base):
                 html_content += f"<p style='font-weight: bold; margin: 10px 0 5px 0;'>{config_id}</p>"
-                html_content += "<table width='100%' cellpadding='0' cellspacing='0'><tr>"
+                html_content += "<table width='100%' cellpadding='0' cellspacing='0' style='margin-bottom: 15px;'><tr>"
                 
                 if os.path.exists(src_mean):
                     b64_mean = get_image_base64(src_mean)
                     if b64_mean:
-                        html_content += f"<td style='padding: 5px; width: 50%;'><img src='data:image/png;base64,{b64_mean}' alt='Mean Phred' style='width: 100%; max-width: 100%; height: auto; border: 1px solid #dddddd;'></td>"
+                        html_content += f"<td style='padding: 5px; width: 50%;'><img src='data:image/jpeg;base64,{b64_mean}' alt='Mean Phred' style='width: 100%; max-width: 100%; height: auto; border: 1px solid #dddddd;'></td>"
                 
                 if os.path.exists(src_base):
                     b64_base = get_image_base64(src_base)
                     if b64_base:
-                        html_content += f"<td style='padding: 5px; width: 50%;'><img src='data:image/png;base64,{b64_base}' alt='Base Composition' style='width: 100%; max-width: 100%; height: auto; border: 1px solid #dddddd;'></td>"
+                        html_content += f"<td style='padding: 5px; width: 50%;'><img src='data:image/jpeg;base64,{b64_base}' alt='Base Composition' style='width: 100%; max-width: 100%; height: auto; border: 1px solid #dddddd;'></td>"
                 
                 html_content += "</tr></table>"
         
-        html_content += "</td></tr></table>"
+        html_content += "</td>\n</tr>\n</table>"
         
-    # Footer with contact info
+    # Footer Section
     html_content += """
 <div style="margin: 40px 0 0 0; padding: 18px 0 0 0; border-top: 1px solid rgba(0, 50, 98, 0.08); color: #66788a; font-size: 13px;">
 <p style="margin: 0 0 6px 0;"><strong>Questions?</strong> Contact the UCI Genomics Research and Technology Hub</p>
@@ -517,7 +683,11 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 <p style="margin: 6px 0 0 0;"><a href="https://genomics.uci.edu/" style="color: #1f6feb; text-decoration: none;">Visit genomics.uci.edu</a></p>
 </div>
 
-</td></tr></table></body></html>
+</td>
+</tr>
+</table>
+</body>
+</html>
 """
     
     with open(os.path.join(report_dir, "index.html"), 'w') as f:
@@ -546,8 +716,11 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 
 if __name__ == "__main__":
     if len(sys.argv) < 7:
-        print("Usage: generate_report.py <project> <output_base> <fastp_plots_base> <fastp_base> <report_dir> <fastq_links> [lane]")
+        print("Usage: generate_report.py <project> <output_base> <fastp_plots_base> <fastp_base> <report_dir> <fastq_links> [lane] [links_yaml] [order_id]")
         print("  fastq_links: semicolon-separated list of download links")
+        print("  lane: optional lane filter")
+        print("  links_yaml: optional path to project_links.yaml file")
+        print("  order_id: optional order_id for consolidating links from all projects")
         sys.exit(1)
         
     project = sys.argv[1]
@@ -557,13 +730,24 @@ if __name__ == "__main__":
     report_dir = sys.argv[5]
     fastq_links = sys.argv[6]
     lane_filter = None
+    links_yaml = None
+    order_id = None
+    
     if len(sys.argv) >= 8:
-        try:
-            lane_filter = int(sys.argv[7])
-        except Exception:
-            lane_filter = sys.argv[7]
+        arg7 = sys.argv[7]
+        if arg7 != "None":
+            try:
+                lane_filter = int(arg7)
+            except Exception:
+                lane_filter = arg7
+    
+    if len(sys.argv) >= 9:
+        links_yaml = sys.argv[8]
+    
+    if len(sys.argv) >= 10:
+        order_id = sys.argv[9]
     
     # If report_dir already exists with an index.html, this is a continuation (multiple projects for same order_id)
     append_mode = os.path.exists(os.path.join(report_dir, "index.html"))
     
-    generate_report(project, output_base, fastp_plots_base, fastp_base, report_dir, fastq_links, lane_filter, append_mode=append_mode)
+    generate_report(project, output_base, fastp_plots_base, fastp_base, report_dir, fastq_links, lane_filter, append_mode=append_mode, links_yaml=links_yaml, order_id=order_id)

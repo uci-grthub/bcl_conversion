@@ -84,6 +84,8 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
                      if 'Order ID' in df.columns:
                         order_id = str(row['Order ID']).strip()
                         if order_id and order_id.lower() != 'nan':
+                            # Normalize common casing issue (e.g., '1225i-13' -> '1225I-13')
+                            order_id = order_id.replace('i', 'I')
                             ORDER_ID_LOOKUP[(l, g)] = order_id
                             if p and p.lower() != 'nan':
                                 PROJECT_ORDER_ID[p] = order_id
@@ -759,15 +761,18 @@ rule all:
     input:
         expand("results/fastp_plots_{config_id}.done", config_id=CONFIG_IDS),
         expand("output/{config_id}/.done", config_id=CONFIG_IDS),
-        expand("output/{config_id}/md5sums.txt", config_id=CONFIG_IDS),
+        expand("output/{config_id}/{project}/md5sums.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         ORDER_ID_REPORTS,
         ORDER_ID_MD5S,
         # expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
         expand("results/fastp_plots_summary_lane{lane}.done", lane=detected_lanes),
         expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
         expand("results/read_counts_{project}.csv", project=PROJECTS),
+        expand("logs/project_link_{config_id}_{project}.log", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
+        "logs/project_links.yaml",
         f"results/{LIBRARY}-count.csv",
         f"Reports/{LIBRARY}_read_counts_email.done",
+
         # expand("Reports/{project}/email_sent.done", project=PROJECTS),
         "logs/project_links.yaml"
 
@@ -860,7 +865,8 @@ def get_project_plot_targets(project, lane_filter=None, order_id=None):
 rule report_order_id:
     input:
         fastp_plots = lambda wildcards: get_order_id_plot_targets(wildcards.order_id),
-        md5_files = expand("output/{config_id}/md5sums.txt", config_id=CONFIG_IDS)
+        md5_files = lambda wildcards: [f"output/{c}/{p}/md5sums.txt" for c, p in CONFIG_PROJECT_PAIRS if p in ORDER_ID_CONFIGS.get(wildcards.order_id, [])],
+        links_yaml = "logs/project_links.yaml"
     output:
         html = "Reports/order_{order_id}/index.html",
         md5 = "Reports/order_{order_id}/md5sums.txt"
@@ -872,7 +878,6 @@ rule report_order_id:
         fastp_plots_base = FASTP_PLOTS_OUTDIR,
         fastp_base = FASTP_OUTDIR,
         report_dir = "Reports/order_{order_id}",
-        links_yaml = "logs/project_links.yaml",
         projects = lambda wildcards: sorted(list(ORDER_ID_CONFIGS.get(wildcards.order_id, [])))
     run:
         import subprocess
@@ -895,7 +900,7 @@ rule report_order_id:
         # Generate report for each project in this order_id
         for project in projects:
             # Get fastq links for this project in this order_id
-            fastq_links = get_project_links_from_yaml(params.links_yaml, project, lane=None, order_id=order_id)
+            fastq_links = get_project_links_from_yaml(input.links_yaml, project, lane=None, order_id=order_id)
             
             # Call generate_report.py for this project
             cmd = [
@@ -905,7 +910,10 @@ rule report_order_id:
                 params.fastp_plots_base,
                 params.fastp_base,
                 report_dir,
-                fastq_links
+                fastq_links,
+                "None",  # lane_filter
+                input.links_yaml,
+                order_id
             ]
             
             result = subprocess.run(cmd, capture_output=True, text=True)
@@ -915,10 +923,30 @@ rule report_order_id:
                 if result.stderr:
                     f.write(f"STDERR: {result.stderr}\n")
         
-        # Ensure md5sums.txt exists
+        # Consolidate MD5 sums from all projects in this order_id
+        all_md5s = []
+        for md5_file in input.md5_files:
+            try:
+                with open(md5_file, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            all_md5s.append(line)
+            except Exception as e:
+                with open(log_file, 'a') as f:
+                    f.write(f"Warning: Could not read {md5_file}: {e}\n")
+        
+        # Sort consolidated MD5s by filename
+        all_md5s.sort(key=lambda x: x.split()[1] if len(x.split()) > 1 else x)
+        
+        # Write consolidated md5sums.txt
         md5_file = os.path.join(report_dir, "md5sums.txt")
-        if not os.path.exists(md5_file):
-            open(md5_file, 'a').close()
+        with open(md5_file, 'w') as f:
+            for line in all_md5s:
+                f.write(line + '\n')
+        
+        with open(log_file, 'a') as f:
+            f.write(f"\nConsolidated {len(all_md5s)} MD5 entries into {md5_file}\n")
 
 rule send_project_email:
     input:
@@ -1701,15 +1729,18 @@ rule calculate_md5sums:
     input:
         done = "output/{config_id}/.done"
     output:
-        md5 = "output/{config_id}/md5sums.txt"
+        md5 = "output/{config_id}/{project}/md5sums.txt"
     log:
-        "logs/calculate_md5sums_{config_id}.log"
+        "logs/calculate_md5sums_{config_id}_{project}.log"
+    wildcard_constraints:
+        config_id = "[^/]+",
+        project = ".+"
     shell:
         """
         (
-        cd output/{wildcards.config_id}
+        cd output/{wildcards.config_id}/{wildcards.project}
         find . -name '*.fastq.gz' -type f -exec md5sum {{}} \\; | sort -k2 > md5sums.txt
-        echo "Generated md5sums.txt with $(wc -l < md5sums.txt) entries"
+        echo "Generated md5sums.txt with $(wc -l < md5sums.txt) entries for {wildcards.project}"
         ) > {log} 2>&1
         """
 
@@ -1730,7 +1761,7 @@ rule analyze_undetermined:
 
 rule consolidate_project_links:
     input:
-        expand("output/{config_id}/.done", config_id=CONFIG_IDS)
+        PROJECT_LINK_LOGS
     output:
         "logs/project_links.yaml"
     log:
@@ -1757,15 +1788,21 @@ rule consolidate_project_links:
                 # Remove prefix and suffix
                 filename_no_prefix = basename.replace("project_link_", "").replace(".log", "")
                 
-                # Split at the last underscore to separate config_id from project
-                # config_id contains underscores, project is the last part
-                last_underscore = filename_no_prefix.rfind("_")
-                if last_underscore == -1:
-                    print(f"Could not parse filename: {basename}")
+                # Match against known CONFIG_IDS to extract config_id
+                # config_id format: lane{N}_R{N}-{N}_I{N}-{N}_I{N}-{N}_R{N}-{N}
+                config_id = None
+                project = None
+                
+                for known_config in CONFIG_IDS:
+                    if filename_no_prefix.startswith(known_config + "_"):
+                        config_id = known_config
+                        # Everything after config_id + "_" is the project name
+                        project = filename_no_prefix[len(known_config) + 1:]
+                        break
+                
+                if not config_id or not project:
+                    print(f"Could not parse filename: {basename} (no matching config_id)")
                     continue
-                    
-                config_id = filename_no_prefix[:last_underscore]
-                project = filename_no_prefix[last_underscore+1:]
                 
                 # Extract Order ID from log content
                 order_id = ""
@@ -1774,6 +1811,15 @@ rule consolidate_project_links:
                     if line.startswith("Order ID:"):
                         order_id = line.split("Order ID:", 1)[1].strip()
                         break
+                
+                # If order_id not found in log or is empty, look it up from PROJECT_ORDER_ID
+                if not order_id:
+                    order_id = PROJECT_ORDER_ID.get(project, "")
+                    if order_id:
+                        print(f"Order ID for {project} not in log, using PROJECT_ORDER_ID: {order_id}")
+                # Normalize casing (e.g., '1225i-13' -> '1225I-13')
+                if order_id:
+                    order_id = order_id.replace('i', 'I')
                 
                 # Try to find "Share link:" in the log content
                 if "Share link:" in content:
@@ -1787,7 +1833,7 @@ rule consolidate_project_links:
                                 if config_id not in links[project]:
                                     links[project][config_id] = {}
                                 
-                                # Store with order_id key, or use empty string if not found
+                                # Store with order_id key, or use "default" if still not found
                                 order_key = order_id if order_id else "default"
                                 links[project][config_id][order_key] = share_url
                                 print(f"Found link for {project} / {config_id} / {order_key}: {share_url}")
