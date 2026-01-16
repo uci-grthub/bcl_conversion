@@ -1,8 +1,8 @@
 # Snakemake configuration for postprocess workflow
 sample_sheet: "src/SampleSheet_default.csv"
 num_reads: 2
-library_name: "xR078"
-run: "xR078"
+library_name: "xR079"
+run: "xR079"
 fastqdir: "output"
 start_s: 1
 lanes: [1,2,3,4,5,6,7,8]
@@ -11,7 +11,6 @@ fastp_outdir: "results/fastp"
 metadata: "metadata/260107_233TCJLT4_25B_PE151_xR078.xlsx"
 run_info_path: "src/RunInfo_nn.xml"
 basecalls_path: "/staging/nextcloud/NovaseqX/20260107_LH00626_0087_A233TCJLT4/Data/Intensities/BaseCalls"
-script_dir: "src/Tools"
 data_dir: "/staging/nextcloud/NovaseqX/20260107_LH00626_0087_A233TCJLT4"
 tiles: ""
 email_sender: "kstachel@uci.edu"
