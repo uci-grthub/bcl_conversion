@@ -11,3 +11,4 @@ src/flexbar/*.txt
 *.html
 *.pyc
 *.done
+*.pdf

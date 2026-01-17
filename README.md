@@ -84,7 +84,7 @@ snakemake --cores 1 Reports/ProjectName/index.html
 - Creates comprehensive HTML reports per project
 - Embeds quality plots as base64 images
 - Includes download instructions (browser, wget, HPC)
-- Calculates and includes MD5 checksums (sorted by position)
+- Calculates and includes md5 checksums (sorted by position)
 - Outputs `Reports/{project}/index.html` and `md5sums.txt`
 
 ### 6. Read Count Compilation
@@ -189,7 +189,7 @@ For OAuth2 (Gmail):
 - Verify projects are listed in Summary sheet
 - Look for "PROJECTS found in SampleSheet" in workflow output
 
-**MD5 mismatches:**
+**md5 mismatches:**
 - Re-run specific project: `snakemake -R report_project --cores 1 Reports/{project}/md5sums.txt`
 - Verify FASTQ files weren't modified after generation
 
@@ -212,6 +212,6 @@ For OAuth2 (Gmail):
 
 - The workflow auto-detects lanes from the BaseCalls directory
 - Sample sheets are generated once at workflow start from metadata
-- MD5 checksums are sorted by position number (P001, P002, ...)
+- md5 checksums are sorted by position number (P001, P002, ...)
 - Reports include embedded images for email compatibility
 - 2-week data retention policy is noted in all reports

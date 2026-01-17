@@ -5,6 +5,23 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from io import StringIO
 
+# Helper to get group for a project from metadata
+def get_project_group(project, config_id):
+    """Extract group number for a project based on config_id (lane)."""
+    # Extract lane from config_id
+    lane_match = re.match(r'lane(\d+)', config_id)
+    if not lane_match:
+        return ""
+    
+    lane = int(lane_match.group(1))
+    
+    # Look up in PROJECT_LOOKUP to find the group
+    for (l, g), p in PROJECT_LOOKUP.items():
+        if l == lane and p == project:
+            return str(g)
+    
+    return ""
+
 # Helper to produce semicolon-separated fastq links for a given project+lane
 def get_fastq_links_for_project_lane(project, lane):
     try:
@@ -47,14 +64,24 @@ def get_project_links_from_yaml(yaml_path, project, lane=None, order_id=None):
                 continue
             # Check if config_data is a dict (new format with order_id) or string (old format)
             if isinstance(config_data, dict):
-                # New nested format: {config_id: {order_id: url}}
+                # New nested format: {config_id: {order_id: {'link': url, 'group': ...}}}
                 if order_id is not None:
                     # Filter by order_id
                     if order_id in config_data:
-                        urls.append(config_data[order_id])
+                        link_data = config_data[order_id]
+                        # Extract link from dict if it's a dict, otherwise use as-is
+                        if isinstance(link_data, dict):
+                            urls.append(link_data.get('link', link_data))
+                        else:
+                            urls.append(link_data)
                 else:
                     # No order_id filter, include all urls for this config
-                    urls.extend(config_data.values())
+                    for link_data in config_data.values():
+                        # Extract link from dict if it's a dict, otherwise use as-is
+                        if isinstance(link_data, dict):
+                            urls.append(link_data.get('link', ''))
+                        else:
+                            urls.append(link_data)
             else:
                 # Old format: {config_id: url}
                 urls.append(config_data)
@@ -66,7 +93,7 @@ def get_project_links_from_yaml(yaml_path, project, lane=None, order_id=None):
         seen = set()
         unique = []
         for url in urls:
-            if url not in seen:
+            if url and url not in seen:
                 seen.add(url)
                 unique.append(url)
         
@@ -106,7 +133,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         print("Metadata file not found.")
         return {}
         
-    print(f"Generating sample sheets from {metadata_file}")
+    # print(f"Generating sample sheets from {metadata_file}")
     
     # Extract run name from metadata filename
     run_name = "Run"
@@ -130,7 +157,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             if sheet == "Summary":
                 continue
             
-            print(f"Reading sheet: {sheet}")
+            # print(f"Reading sheet: {sheet}")
             try:
                 # Read raw to find header
                 df_raw = pd.read_excel(metadata_file, sheet_name=sheet, header=None)

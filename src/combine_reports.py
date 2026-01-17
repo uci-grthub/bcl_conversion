@@ -5,7 +5,7 @@ Combine sequencing reports according to report_combinations.yaml configuration.
 This script:
 1. Reads the report combinations config
 2. Combines multiple project reports into single HTML documents
-3. Aggregates MD5sum files
+3. Aggregates md5sum files
 4. Optionally sends emails with the combined reports
 """
 

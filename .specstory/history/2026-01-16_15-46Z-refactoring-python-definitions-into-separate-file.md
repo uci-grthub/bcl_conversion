@@ -967,7 +967,7 @@ rule report_order_id:
                 if result.stderr:
                     f.write(f"STDERR: {result.stderr}\n")
         
-        # Consolidate MD5 sums from all projects in this order_id
+        # Consolidate md5 sums from all projects in this order_id
         all_md5s = []
         for md5_file in input.md5_files:
             try:
@@ -980,7 +980,7 @@ rule report_order_id:
                 with open(log_file, 'a') as f:
                     f.write(f"Warning: Could not read {md5_file}: {e}\n")
         
-        # Sort consolidated MD5s by filename
+        # Sort consolidated md5s by filename
         all_md5s.sort(key=lambda x: x.split()[1] if len(x.split()) > 1 else x)
         
         # Write consolidated md5sums.txt
@@ -990,7 +990,7 @@ rule report_order_id:
                 f.write(line + '\n')
         
         with open(log_file, 'a') as f:
-            f.write(f"\nConsolidated {len(all_md5s)} MD5 entries into {md5_file}\n")
+            f.write(f"\nConsolidated {len(all_md5s)} md5 entries into {md5_file}\n")
 
 rule send_project_email:
     input:
@@ -2294,7 +2294,7 @@ rule report_order_id:
                 if result.stderr:
                     f.write(f"STDERR: {result.stderr}\n")
         
-        # Consolidate MD5 sums from all projects in this order_id
+        # Consolidate md5 sums from all projects in this order_id
         all_md5s = []
         for md5_file in input.md5_files:
             try:
@@ -2307,7 +2307,7 @@ rule report_order_id:
                 with open(log_file, 'a') as f:
                     f.write(f"Warning: Could not read {md5_file}: {e}\n")
         
-        # Sort consolidated MD5s by filename
+        # Sort consolidated md5s by filename
         all_md5s.sort(key=lambda x: x.split()[1] if len(x.split()) > 1 else x)
         
         # Write consolidated md5sums.txt
@@ -2317,7 +2317,7 @@ rule report_order_id:
                 f.write(line + '\n')
         
         with open(log_file, 'a') as f:
-            f.write(f"\nConsolidated {len(all_md5s)} MD5 entries into {md5_file}\n")
+            f.write(f"\nConsolidated {len(all_md5s)} md5 entries into {md5_file}\n")
 
 rule send_project_email:
     input:
@@ -3656,7 +3656,7 @@ rule report_order_id:
                 if result.stderr:
                     f.write(f"STDERR: {result.stderr}\n")
         
-        # Consolidate MD5 sums from all projects in this order_id
+        # Consolidate md5 sums from all projects in this order_id
         all_md5s = []
         for md5_file in input.md5_files:
             try:
@@ -3669,7 +3669,7 @@ rule report_order_id:
                 with open(log_file, 'a') as f:
                     f.write(f"Warning: Could not read {md5_file}: {e}\n")
         
-        # Sort consolidated MD5s by filename
+        # Sort consolidated md5s by filename
         all_md5s.sort(key=lambda x: x.split()[1] if len(x.split()) > 1 else x)
         
         # Write consolidated md5sums.txt
@@ -3679,7 +3679,7 @@ rule report_order_id:
                 f.write(line + '\n')
         
         with open(log_file, 'a') as f:
-            f.write(f"\nConsolidated {len(all_md5s)} MD5 entries into {md5_file}\n")
+            f.write(f"\nConsolidated {len(all_md5s)} md5 entries into {md5_file}\n")
 
 rule send_project_email:
     input:
@@ -4991,7 +4991,7 @@ rule report_order_id:
                 if result.stderr:
                     f.write(f"STDERR: {result.stderr}\n")
         
-        # Consolidate MD5 sums from all projects in this order_id
+        # Consolidate md5 sums from all projects in this order_id
         all_md5s = []
         for md5_file in input.md5_files:
             try:
@@ -5004,7 +5004,7 @@ rule report_order_id:
                 with open(log_file, 'a') as f:
                     f.write(f"Warning: Could not read {md5_file}: {e}\n")
         
-        # Sort consolidated MD5s by filename
+        # Sort consolidated md5s by filename
         all_md5s.sort(key=lambda x: x.split()[1] if len(x.split()) > 1 else x)
         
         # Write consolidated md5sums.txt
@@ -5014,7 +5014,7 @@ rule report_order_id:
                 f.write(line + '\n')
         
         with open(log_file, 'a') as f:
-            f.write(f"\nConsolidated {len(all_md5s)} MD5 entries into {md5_file}\n")
+            f.write(f"\nConsolidated {len(all_md5s)} md5 entries into {md5_file}\n")
 
 rule send_project_email:
     input:
@@ -6271,7 +6271,7 @@ rule report_order_id:
                 if result.stderr:
                     f.write(f"STDERR: {result.stderr}\n")
         
-        # Consolidate MD5 sums from all projects in this order_id
+        # Consolidate md5 sums from all projects in this order_id
         all_md5s = []
         for md5_file in input.md5_files:
             try:
@@ -6284,7 +6284,7 @@ rule report_order_id:
                 with open(log_file, 'a') as f:
                     f.write(f"Warning: Could not read {md5_file}: {e}\n")
         
-        # Sort consolidated MD5s by filename
+        # Sort consolidated md5s by filename
         all_md5s.sort(key=lambda x: x.split()[1] if len(x.split()) > 1 else x)
         
         # Write consolidated md5sums.txt
@@ -6294,7 +6294,7 @@ rule report_order_id:
                 f.write(line + '\n')
         
         with open(log_file, 'a') as f:
-            f.write(f"\nConsolidated {len(all_md5s)} MD5 entries into {md5_file}\n")
+            f.write(f"\nConsolidated {len(all_md5s)} md5 entries into {md5_file}\n")
 
 rule send_project_email:
     input:
@@ -7385,7 +7385,7 @@ rule report_order_id:
                 if result.stderr:
                     f.write(f"STDERR: {result.stderr}\n")
         
-        # Consolidate MD5 sums from all projects in this order_id
+        # Consolidate md5 sums from all projects in this order_id
         all_md5s = []
         for md5_file in input.md5_files:
             try:
@@ -7398,7 +7398,7 @@ rule report_order_id:
                 with open(log_file, 'a') as f:
                     f.write(f"Warning: Could not read {md5_file}: {e}\n")
         
-        # Sort consolidated MD5s by filename
+        # Sort consolidated md5s by filename
         all_md5s.sort(key=lambda x: x.split()[1] if len(x.split()) > 1 else x)
         
         # Write consolidated md5sums.txt
@@ -7408,7 +7408,7 @@ rule report_order_id:
                 f.write(line + '\n')
         
         with open(log_file, 'a') as f:
-            f.write(f"\nConsolidated {len(all_md5s)} MD5 entries into {md5_file}\n")
+            f.write(f"\nConsolidated {len(all_md5s)} md5 entries into {md5_file}\n")
 
 rule send_project_email:
     input:
@@ -8431,7 +8431,7 @@ rule report_order_id:
                 if result.stderr:
                     f.write(f"STDERR: {result.stderr}\n")
         
-        # Consolidate MD5 sums from all projects in this order_id
+        # Consolidate md5 sums from all projects in this order_id
         all_md5s = []
         for md5_file in input.md5_files:
             try:
@@ -8444,7 +8444,7 @@ rule report_order_id:
                 with open(log_file, 'a') as f:
                     f.write(f"Warning: Could not read {md5_file}: {e}\n")
         
-        # Sort consolidated MD5s by filename
+        # Sort consolidated md5s by filename
         all_md5s.sort(key=lambda x: x.split()[1] if len(x.split()) > 1 else x)
         
         # Write consolidated md5sums.txt
@@ -8454,7 +8454,7 @@ rule report_order_id:
                 f.write(line + '\n')
         
         with open(log_file, 'a') as f:
-            f.write(f"\nConsolidated {len(all_md5s)} MD5 entries into {md5_file}\n")
+            f.write(f"\nConsolidated {len(all_md5s)} md5 entries into {md5_file}\n")
 
 rule send_project_email:
     input:
@@ -9427,7 +9427,7 @@ rule report_order_id:
                 if result.stderr:
                     f.write(f"STDERR: {result.stderr}\n")
         
-        # Consolidate MD5 sums from all projects in this order_id
+        # Consolidate md5 sums from all projects in this order_id
         all_md5s = []
         for md5_file in input.md5_files:
             try:
@@ -9440,7 +9440,7 @@ rule report_order_id:
                 with open(log_file, 'a') as f:
                     f.write(f"Warning: Could not read {md5_file}: {e}\n")
         
-        # Sort consolidated MD5s by filename
+        # Sort consolidated md5s by filename
         all_md5s.sort(key=lambda x: x.split()[1] if len(x.split()) > 1 else x)
         
         # Write consolidated md5sums.txt
@@ -9450,7 +9450,7 @@ rule report_order_id:
                 f.write(line + '\n')
         
         with open(log_file, 'a') as f:
-            f.write(f"\nConsolidated {len(all_md5s)} MD5 entries into {md5_file}\n")
+            f.write(f"\nConsolidated {len(all_md5s)} md5 entries into {md5_file}\n")
 
 rule send_project_email:
     input:
@@ -10417,7 +10417,7 @@ rule report_order_id:
                 if result.stderr:
                     f.write(f"STDERR: {result.stderr}\n")
         
-        # Consolidate MD5 sums from all projects in this order_id
+        # Consolidate md5 sums from all projects in this order_id
         all_md5s = []
         for md5_file in input.md5_files:
             try:
@@ -10430,7 +10430,7 @@ rule report_order_id:
                 with open(log_file, 'a') as f:
                     f.write(f"Warning: Could not read {md5_file}: {e}\n")
         
-        # Sort consolidated MD5s by filename
+        # Sort consolidated md5s by filename
         all_md5s.sort(key=lambda x: x.split()[1] if len(x.split()) > 1 else x)
         
         # Write consolidated md5sums.txt
@@ -10440,7 +10440,7 @@ rule report_order_id:
                 f.write(line + '\n')
         
         with open(log_file, 'a') as f:
-            f.write(f"\nConsolidated {len(all_md5s)} MD5 entries into {md5_file}\n")
+            f.write(f"\nConsolidated {len(all_md5s)} md5 entries into {md5_file}\n")
 
 rule send_project_email:
     input:

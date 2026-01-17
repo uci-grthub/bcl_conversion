@@ -174,8 +174,7 @@ rule all:
         "logs/project_links.yaml",
         f"results/{LIBRARY}-count.csv",
         f"Reports/{LIBRARY}_read_counts_email.done",
-
-        # expand("Reports/{project}/email_sent.done", project=PROJECTS),
+        expand("Reports/order_{order_id}/email_sent.done", order_id=ORDER_ID_CONFIGS.keys()),
         "logs/project_links.yaml"
 
 rule bcl_convert_only:
@@ -189,7 +188,8 @@ rule report_order_id:
         links_yaml = "logs/project_links.yaml"
     output:
         html = "Reports/order_{order_id}/index.html",
-        md5 = "Reports/order_{order_id}/md5sums.txt"
+        md5 = "Reports/order_{order_id}/md5sums.txt",
+        pdf = "Reports/order_{order_id}/Download_Instructions.pdf"
     log:
         "logs/report_order_{order_id}.log"
     params:
@@ -233,7 +233,8 @@ rule report_order_id:
                 fastq_links,
                 "None",  # lane_filter
                 input.links_yaml,
-                order_id
+                order_id,
+                LIBRARY  # library_name
             ]
             
             result = subprocess.run(cmd, capture_output=True, text=True)
@@ -243,7 +244,7 @@ rule report_order_id:
                 if result.stderr:
                     f.write(f"STDERR: {result.stderr}\n")
         
-        # Consolidate MD5 sums from all projects in this order_id
+        # Consolidate md5 sums from all projects in this order_id
         all_md5s = []
         for md5_file in input.md5_files:
             try:
@@ -256,7 +257,7 @@ rule report_order_id:
                 with open(log_file, 'a') as f:
                     f.write(f"Warning: Could not read {md5_file}: {e}\n")
         
-        # Sort consolidated MD5s by filename
+        # Sort consolidated md5s by filename
         all_md5s.sort(key=lambda x: x.split()[1] if len(x.split()) > 1 else x)
         
         # Write consolidated md5sums.txt
@@ -266,23 +267,25 @@ rule report_order_id:
                 f.write(line + '\n')
         
         with open(log_file, 'a') as f:
-            f.write(f"\nConsolidated {len(all_md5s)} MD5 entries into {md5_file}\n")
+            f.write(f"\nConsolidated {len(all_md5s)} md5 entries into {md5_file}\n")
 
-rule send_project_email:
+rule send_order_email:
     input:
-        html = "Reports/{project}/index.html",
-        md5 = "Reports/{project}/md5sums.txt"
+        html = "Reports/order_{order_id}/index.html",
+        md5 = "Reports/order_{order_id}/md5sums.txt",
+        pdf = "Reports/order_{order_id}/Download_Instructions.pdf"
     output:
-        touch("Reports/{project}/email_sent.done")
+        touch("Reports/order_{order_id}/email_sent.done")
     log:
-        "logs/send_project_email_{project}.log"
+        "logs/send_order_email_{order_id}.log"
     params:
         script = "src/send_email.py",
-        sender = "kstachel@uci.edu",
-        receiver = "kstachel@uci.edu",
-        subject = lambda wildcards: f"Sequencing Report for Project {wildcards.project}"
+        sender = EMAIL_SENDER,
+        receiver = EMAIL_RECIPIENT,
+        cc_email = EMAIL_CC,
+        subject = lambda wildcards: f"Sequencing Report for Order {wildcards.order_id}"
     shell:
-        "python3 {params.script} {params.sender} {params.receiver} \"{params.subject}\" {input.html} {input.md5} {params.cc_email} > {log} 2>&1 && touch {output}"
+        "python3 {params.script} {params.sender} {params.receiver} \"{params.subject}\" {input.html} \"{input.md5};{input.pdf}\" {params.cc_email} > {log} 2>&1 && touch {output}"
 
 rule fastp_sample:
     input:
@@ -798,13 +801,15 @@ rule consolidate_project_links:
                     print(f"Could not parse filename: {basename} (no matching config_id)")
                     continue
                 
-                # Extract Order ID from log content
+                # Extract Order ID and Group from log content
                 order_id = ""
+                group = ""
                 lines = content.split('\n')
                 for line in lines:
                     if line.startswith("Order ID:"):
                         order_id = line.split("Order ID:", 1)[1].strip()
-                        break
+                    elif line.startswith("Group:"):
+                        group = line.split("Group:", 1)[1].strip()
                 
                 # If order_id not found in log or is empty, look it up from PROJECT_ORDER_ID
                 if not order_id:
@@ -829,8 +834,12 @@ rule consolidate_project_links:
                                 
                                 # Store with order_id key, or use "default" if still not found
                                 order_key = order_id if order_id else "default"
-                                links[project][config_id][order_key] = share_url
-                                print(f"Found link for {project} / {config_id} / {order_key}: {share_url}")
+                                # Store as dict with link and group
+                                links[project][config_id][order_key] = {
+                                    'link': share_url,
+                                    'group': group
+                                }
+                                print(f"Found link for {project} / {config_id} / {order_key} (group: {group}): {share_url}")
                                 break
             except Exception as e:
                 print(f"Error processing {log_file}: {e}")
@@ -852,14 +861,19 @@ rule project_link:
         project = ".+"
     params:
         work_dir = os.getcwd(),
-        order_id = lambda wildcards: PROJECT_ORDER_ID.get(wildcards.project, "")
+        order_id = lambda wildcards: PROJECT_ORDER_ID.get(wildcards.project, ""),
+        group = lambda wildcards: get_project_group(wildcards.project, wildcards.config_id)
     run:
         import traceback
         from pathlib import Path
+        import time
+        import urllib.parse
+        import re
         
         config_id = wildcards.config_id
         project = wildcards.project
         order_id = params.order_id
+        group = params.group
         fastq_dir = f"output/{config_id}/{project}"
         log_file = output.log
         work_dir = params.work_dir
@@ -874,7 +888,36 @@ rule project_link:
             f.write(f"Config ID: {config_id}\n")
             f.write(f"Project: {project}\n")
             f.write(f"Order ID: {order_id}\n")
+            f.write(f"Group: {group}\n")
         
+        def extract_share_url(xml_text):
+            if not xml_text:
+                return None
+            match = re.search(r'<url>(.*?)</url>', xml_text)
+            return match.group(1) if match else None
+
+        def fetch_existing_share(path, log_handle):
+            """Try to fetch an existing share link for the given path."""
+            encoded_path = urllib.parse.quote(path, safe="/")
+            result = subprocess.run([
+                'curl', '-s', '-X', 'GET',
+                '-u', 'kstachel:ucightf2025',
+                '-H', 'OCS-APIRequest: true',
+                f'https://precision.biochem.uci.edu/ocs/v2.php/apps/files_sharing/api/v1/shares?path={encoded_path}&reshares=true'
+            ], capture_output=True, text=True, timeout=30)
+
+            log_handle.write("  GET existing share response:\n")
+            log_handle.write(f"    Return code: {result.returncode}\n")
+            if result.stderr:
+                log_handle.write(f"    STDERR: {result.stderr}\n")
+            log_handle.write(f"    STDOUT length: {len(result.stdout)} bytes\n")
+            if result.stdout:
+                log_handle.write(f"    Content:\n{result.stdout}\n")
+            else:
+                log_handle.write("    Content: (empty response)\n")
+
+            return extract_share_url(result.stdout)
+
         try:
             if os.path.isdir(fastq_dir):
                 abs_path = os.path.abspath(fastq_dir)
@@ -892,41 +935,102 @@ rule project_link:
                 with open(log_file, 'a') as f:
                     f.write(f"Nextcloud path: {nc_path}\n")
                 
-                # Create share link
-                with open(log_file, 'a') as f:
-                    f.write("Creating share link...\n")
+                # Retry logic with exponential backoff
+                max_retries = 5
+                retry_count = 0
+                share_url = None
                 
-                # Log the curl command being executed
-                with open(log_file, 'a') as f:
-                    f.write(f"Executing curl command:\n")
-                    f.write(f"  curl -s -X POST -u kstachel:*** -H 'OCS-APIRequest: true' -d 'path={nc_path}' -d 'shareType=3' https://precision.biochem.uci.edu/ocs/v2.php/apps/files_sharing/api/v1/shares\n")
-                
-                result = subprocess.run([
-                    'curl', '-s', '-X', 'POST',
-                    '-u', 'kstachel:ucightf2025',
-                    '-H', 'OCS-APIRequest: true',
-                    '-d', f'path={nc_path}',
-                    '-d', 'shareType=3',
-                    'https://precision.biochem.uci.edu/ocs/v2.php/apps/files_sharing/api/v1/shares'
-                ], capture_output=True, text=True, timeout=30)
-                
-                share_xml = result.stdout
-                with open(log_file, 'a') as f:
-                    f.write(f"Response:\n{share_xml}\n")
-                
-                # Sleep to be considerate to the API
-                import time
-                time.sleep(1)
-                
-                # Extract URL from XML
-                match = re.search(r'<url>(.*?)</url>', share_xml)
-                if match:
-                    share_url = match.group(1)
+                while retry_count < max_retries and not share_url:
+                    retry_count += 1
+                    wait_time = 2 ** (retry_count - 1)  # 1, 2, 4, 8, 16 seconds
+                    
                     with open(log_file, 'a') as f:
-                        f.write(f"Share link: {share_url}\n")
-                else:
+                        if retry_count > 1:
+                            f.write(f"\nRetry attempt {retry_count}/{max_retries} (waited {wait_time}s)...\n")
+                        else:
+                            f.write("Creating share link...\n")
+                    
+                    # Log the curl command being executed
                     with open(log_file, 'a') as f:
-                        f.write("Could not extract URL from response\n")
+                        f.write(f"Executing curl command (attempt {retry_count}):\n")
+                        f.write(f"  curl -s -X POST -u kstachel:*** -H 'OCS-APIRequest: true' -d 'path={nc_path}' -d 'shareType=3' https://precision.biochem.uci.edu/ocs/v2.php/apps/files_sharing/api/v1/shares\n")
+                    
+                    try:
+                        result = subprocess.run([
+                            'curl', '-s', '-X', 'POST',
+                            '-u', 'kstachel:ucightf2025',
+                            '-H', 'OCS-APIRequest: true',
+                            '-d', f'path={nc_path}',
+                            '-d', 'shareType=3',
+                            'https://precision.biochem.uci.edu/ocs/v2.php/apps/files_sharing/api/v1/shares'
+                        ], capture_output=True, text=True, timeout=30)
+                        
+                        share_xml = result.stdout
+                        stderr_output = result.stderr
+                        returncode = result.returncode
+                        
+                        with open(log_file, 'a') as f:
+                            f.write(f"Response (attempt {retry_count}):\n")
+                            f.write(f"  Return code: {returncode}\n")
+                            f.write(f"  STDOUT length: {len(share_xml)} bytes\n")
+                            if stderr_output:
+                                f.write(f"  STDERR: {stderr_output}\n")
+                            if share_xml:
+                                f.write(f"  Content:\n{share_xml}\n")
+                            else:
+                                f.write(f"  Content: (empty response)\n")
+                        
+                        # Extract URL from XML
+                        if share_xml:
+                            share_url = extract_share_url(share_xml)
+                            if share_url:
+                                with open(log_file, 'a') as f:
+                                    f.write(f"✓ Successfully created share link on attempt {retry_count}: {share_url}\n")
+                                    f.write(f"Share link: {share_url}\n")
+                            else:
+                                with open(log_file, 'a') as f:
+                                    f.write(f"Could not extract URL from response (attempt {retry_count})\n")
+                        else:
+                            with open(log_file, 'a') as f:
+                                f.write(f"Empty response received (attempt {retry_count})\n")
+                            
+                        # If POST did not yield a URL, try to find an existing share via GET
+                        if not share_url:
+                            with open(log_file, 'a') as f:
+                                f.write("Attempting to fetch existing share (GET)...\n")
+                                share_url = fetch_existing_share(nc_path, f)
+                                if share_url:
+                                    f.write(f"✓ Found existing share link: {share_url}\n")
+                                    f.write(f"Share link: {share_url}\n")
+                                else:
+                                    f.write("No existing share link found via GET\n")
+
+                        # Wait before retrying (unless it's the last attempt and we already found a URL)
+                        if not share_url and retry_count < max_retries:
+                            with open(log_file, 'a') as f:
+                                f.write(f"Waiting {wait_time} seconds before retry...\n")
+                            time.sleep(wait_time)
+                    
+                    except subprocess.TimeoutExpired:
+                        with open(log_file, 'a') as f:
+                            f.write(f"Timeout on attempt {retry_count} (30s)\n")
+                        if retry_count < max_retries:
+                            with open(log_file, 'a') as f:
+                                f.write(f"Waiting {wait_time} seconds before retry...\n")
+                            time.sleep(wait_time)
+                    except Exception as e:
+                        with open(log_file, 'a') as f:
+                            f.write(f"Error on attempt {retry_count}: {type(e).__name__}: {e}\n")
+                        if retry_count < max_retries:
+                            with open(log_file, 'a') as f:
+                                f.write(f"Waiting {wait_time} seconds before retry...\n")
+                            time.sleep(wait_time)
+                
+                if not share_url:
+                    with open(log_file, 'a') as f:
+                        f.write(f"\n✗ Failed to create share link after {max_retries} attempts\n")
+                        f.write(f"NOTE: Rule will succeed but link was not created\n")
+                        f.write(f"This project will be missing from project_links.yaml\n")
             else:
                 with open(log_file, 'a') as f:
                     f.write(f"Directory {fastq_dir} does not exist, skipping link creation\n")
@@ -936,4 +1040,9 @@ rule project_link:
                 f.write(f"Exception type: {type(e).__name__}\n")
                 f.write(f"Exception message: {str(e)}\n")
                 f.write(f"Traceback:\n{traceback.format_exc()}\n")
+                f.write(f"NOTE: Rule will succeed despite error\n")
+        
+        # Always ensure the log file exists to satisfy the output requirement
+        # This makes the rule always succeed even if link creation fails
+        Path(log_file).touch(exist_ok=True)
 
