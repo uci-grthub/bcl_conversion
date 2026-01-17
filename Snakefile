@@ -12,12 +12,12 @@ configfile: "snakemake_config.yaml"
 
 SAMPLE_SHEET = config.get("sample_sheet", "src/SampleSheet_default.csv")
 NUM_READS = config.get("num_reads", 2)
-LIBRARY = config.get("library_name", "xR078")
+LIBRARY = config.get("library_name", "xR079")
 FASTQDIR = config.get("fastqdir", "output")
 START_S = config.get("start_s", 1)
 DRYRUN = config.get("dryrun", False)
 RUN_INFO_PATH = config.get("run_info_path", "src/RunInfo.xml")
-DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20260107_LH00626_0087_A233TCJLT4")
+DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20260115_LH00626_0088_A233NM2LT4")
 TILES = config.get("tiles", "1_1101")
 
 EMAIL_SENDER = config.get("email_sender", "kstachel@uci.edu")
@@ -28,7 +28,8 @@ include: "src/workflow_defs.smk"
 
 # Auto-detect lanes from data/Data/Intensities/BaseCalls
 detected_lanes = []
-basecalls_path = config.get("basecalls_path", "data/Data/Intensities/BaseCalls")
+
+basecalls_path = DATA_DIR + "/Data/Intensities/BaseCalls"
 if os.path.exists(basecalls_path):
     detected_lanes = sorted([
         int(d[1:]) for d in os.listdir(basecalls_path) 
