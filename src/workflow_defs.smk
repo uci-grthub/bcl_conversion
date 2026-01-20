@@ -30,7 +30,7 @@ def get_fastq_links_for_project_lane(project, lane):
         pass
     links = PROJECT_LINKS_BY_LANE.get((project, lane))
     if not links:
-        links = PROJECT_LINKS.get(project, ["https://precision.biochem.uci.edu/s/x8PGTAWcXbrRySG"])
+        links = PROJECT_LINKS.get(project, ["https://precision.biochem.uci.edu/"])
         if not isinstance(links, list):
             links = [links]
     # De-duplicate while preserving order
@@ -46,13 +46,13 @@ def get_fastq_links_for_project_lane(project, lane):
 def get_project_links_from_yaml(yaml_path, project, lane=None, order_id=None):
     try:
         if not os.path.exists(yaml_path):
-            return "https://precision.biochem.uci.edu/s/x8PGTAWcXbrRySG"
+            return "https://precision.biochem.uci.edu/"
         
         with open(yaml_path, 'r') as f:
             links_data = yaml.safe_load(f)
         
         if not links_data or project not in links_data:
-            return "https://precision.biochem.uci.edu/s/x8PGTAWcXbrRySG"
+            return "https://precision.biochem.uci.edu/"
         
         project_links = links_data[project]
         lane_prefix = f"lane{lane}_" if lane is not None else None
@@ -87,7 +87,7 @@ def get_project_links_from_yaml(yaml_path, project, lane=None, order_id=None):
                 urls.append(config_data)
         
         if not urls:
-            return "https://precision.biochem.uci.edu/s/x8PGTAWcXbrRySG"
+            return "https://precision.biochem.uci.edu/"
         
         # De-duplicate while preserving order
         seen = set()
@@ -100,7 +100,7 @@ def get_project_links_from_yaml(yaml_path, project, lane=None, order_id=None):
         return ";".join(unique)
     except Exception as e:
         print(f"Error reading project links from YAML: {e}")
-        return "https://precision.biochem.uci.edu/s/x8PGTAWcXbrRySG"
+        return "https://precision.biochem.uci.edu/"
 
 # 10x/Parse/BD naming: keep Illumina default (<sample>_S<num>_L00<lane>_R<read>_001.fastq.gz)
 def is_parse_or_10x(project_name):
@@ -109,6 +109,176 @@ def is_parse_or_10x(project_name):
     except Exception:
         p = ""
     return ("10x" in p) or ("parse" in p) or ("bd" in p)
+
+def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name):
+    """Generate sample sheets for MiSeq runs with simpler metadata format."""
+    
+    print(f"Processing MiSeq format metadata: {metadata_file}")
+    
+    # Read project information
+    try:
+        df_info = pd.read_excel(metadata_file, sheet_name='Sample Information + User Info', header=None)
+        
+        # Find the header row (contains 'Lab ID')
+        header_row = -1
+        for i, row in df_info.iterrows():
+            if 'Lab ID' in row.values:
+                header_row = i
+                break
+        
+        if header_row == -1:
+            print("Could not find header row in Sample Information sheet")
+            return {}
+        
+        # Read with proper header
+        df_info = pd.read_excel(metadata_file, sheet_name='Sample Information + User Info', header=header_row)
+        
+        # Get project name (Lab ID or Sample Name)
+        project_name = None
+        if 'Lab ID' in df_info.columns:
+            project_name = df_info['Lab ID'].dropna().iloc[0] if not df_info['Lab ID'].dropna().empty else None
+        if not project_name and 'Sample Name' in df_info.columns:
+            project_name = df_info['Sample Name'].dropna().iloc[0] if not df_info['Sample Name'].dropna().empty else None
+        
+        if not project_name:
+            project_name = "Project"
+        
+        project_name = str(project_name).strip()
+        
+    except Exception as e:
+        print(f"Error reading project info: {e}")
+        project_name = "Project"
+    
+    # Read barcode entries
+    try:
+        df_barcodes = pd.read_excel(metadata_file, sheet_name='Barcode Entries', header=None)
+        
+        # Find header row
+        header_row = -1
+        for i, row in df_barcodes.iterrows():
+            row_str = ' '.join([str(x) for x in row.values if pd.notna(x)])
+            if 'Barcode Entries i7' in row_str or 'i7' in row_str.lower():
+                header_row = i
+                break
+        
+        if header_row == -1:
+            print("Could not find barcode header")
+            return {}
+        
+        # Read barcodes starting after header
+        barcodes_i7 = []
+        barcodes_i5 = []
+        
+        # Column indices (typically: 0=Library Name, 1=i7, 2=spacer, 3=i5)
+        i7_col = 1
+        i5_col = 3
+        
+        for i in range(header_row + 1, len(df_barcodes)):
+            row = df_barcodes.iloc[i]
+            
+            # i7 barcode
+            if pd.notna(row.iloc[i7_col]) and str(row.iloc[i7_col]).strip():
+                val = str(row.iloc[i7_col]).strip()
+                if val and val.upper() != 'NAN' and not val.startswith('Barcode'):
+                    barcodes_i7.append(val)
+            
+            # i5 barcode (if exists)
+            if i5_col < len(row) and pd.notna(row.iloc[i5_col]) and str(row.iloc[i5_col]).strip():
+                val = str(row.iloc[i5_col]).strip()
+                if val and val.upper() != 'NAN':
+                    barcodes_i5.append(val)
+        
+        if not barcodes_i7:
+            print("No barcodes found")
+            return {}
+        
+        # Determine if dual-indexed
+        has_i5 = len(barcodes_i5) > 0 and len(barcodes_i5) == len(barcodes_i7)
+        
+    except Exception as e:
+        print(f"Error reading barcodes: {e}")
+        return {}
+    
+    # Build sample sheet data
+    samples = []
+    for idx, i7 in enumerate(barcodes_i7):
+        sample_name = f"Sample_{idx+1:03d}"
+        sample_data = {
+            'Lane': 1,  # MiSeq typically has only 1 lane
+            'Sample_ID': sample_name,
+            'Sample_Name': sample_name,
+            'index': i7,
+            'index2': barcodes_i5[idx] if has_i5 and idx < len(barcodes_i5) else '',
+            'Sample_Project': project_name,
+        }
+        samples.append(sample_data)
+    
+    df_samples = pd.DataFrame(samples)
+    
+    # Determine OverrideCycles from RunInfo.xml
+    override_cycles = ""
+    try:
+        run_reads = get_run_read_lengths(run_info_path)
+        if run_reads:
+            cycles = []
+            for read in run_reads:
+                num_cycles = read['NumCycles']
+                is_index = read['IsIndexedRead'] == 'Y'
+                
+                if is_index:
+                    cycles.append(f"I{num_cycles}")
+                else:
+                    cycles.append(f"Y{num_cycles}")
+            
+            override_cycles = ";".join(cycles)
+    except Exception as e:
+        print(f"Could not parse RunInfo for OverrideCycles: {e}")
+    
+    df_samples['OverrideCycles'] = override_cycles
+    
+    # Generate sample sheet file
+    config_id = "lane1_default"
+    outfile = os.path.join(out_dir, f"SampleSheet_{config_id}.csv")
+    
+    os.makedirs(out_dir, exist_ok=True)
+    
+    with open(outfile, 'w') as f:
+        f.write("[Header]\n")
+        f.write("FileFormatVersion,2\n")
+        f.write("\n")
+        
+        f.write("[BCLConvert_Settings]\n")
+        f.write("CreateFastqForIndexReads,0\n")
+        f.write("MinimumTrimmedReadLength,8\n")
+        f.write("MaskShortReads,8\n")
+        f.write("FastqCompressionFormat,gzip\n")
+        f.write("\n")
+        
+        f.write("[BCLConvert_Data]\n")
+        cols = ['Lane', 'Sample_ID', 'Sample_Name', 'index', 'index2', 'Sample_Project', 'OverrideCycles']
+        df_samples[cols].to_csv(f, index=False)
+    
+    print(f"Generated MiSeq sample sheet: {outfile}")
+    
+    # Generate renaming map
+    map_df = pd.DataFrame()
+    map_df['Sample_Name'] = df_samples['Sample_Name']
+    map_df['Sample_Project'] = df_samples['Sample_Project']
+    map_df['Lane'] = df_samples['Lane']
+    map_df['index'] = df_samples['index']
+    map_df['index2'] = df_samples['index2']
+    map_df['Run'] = run_name
+    map_df['Group'] = '1'  # MiSeq typically has one group
+    
+    # Add positions
+    positions = [f"P{i+1:03d}" for i in range(len(df_samples))]
+    map_df['Position'] = positions
+    
+    map_file = os.path.join(out_dir, f"renaming_map_{config_id}.csv")
+    map_df.to_csv(map_file, index=False)
+    print(f"Generated renaming map: {map_file}")
+    
+    return {config_id: outfile}
 
 def get_run_read_lengths(run_info_path):
     if not os.path.exists(run_info_path):
@@ -145,6 +315,16 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             run_name = parts[-1]
     except:
         pass
+    
+    # Detect metadata format: MiSeq (simple) vs NovaSeqX (complex with Summary sheet)
+    try:
+        xl = pd.ExcelFile(metadata_file)
+        is_miseq_format = 'Barcode Entries' in xl.sheet_names and 'Summary' not in xl.sheet_names
+    except:
+        is_miseq_format = False
+    
+    if is_miseq_format:
+        return generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name)
     
     # Get actual run read lengths
     run_reads = get_run_read_lengths(run_info_path)
@@ -643,7 +823,7 @@ def get_order_id_fastq_links(yaml_path, order_id):
     
     for project in projects:
         links_str = get_project_links_from_yaml(yaml_path, project, lane=None, order_id=order_id)
-        if links_str and links_str != "https://precision.biochem.uci.edu/s/x8PGTAWcXbrRySG":
+        if links_str and links_str != "https://precision.biochem.uci.edu/":
             all_links[project] = links_str
     
     return all_links

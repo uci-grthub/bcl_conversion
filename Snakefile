@@ -51,68 +51,78 @@ PROJECT_ORDER_ID = {}
 
 if METADATA_FILE and os.path.exists(METADATA_FILE):
     try:
-        df = pd.read_excel(METADATA_FILE, sheet_name="Summary", header=2)
+        # Check if this is MiSeq format (simple) or NovaSeqX format (complex with Summary sheet)
+        xl = pd.ExcelFile(METADATA_FILE)
+        is_miseq_format = 'Barcode Entries' in xl.sheet_names and 'Summary' not in xl.sheet_names
         
-        # Build Project and Masking Lookups: (Lane, Group) -> Value
-        if 'Lane' in df.columns and 'Gr' in df.columns:
-             for index, row in df.iterrows():
-                 try:
-                     l = int(float(row['Lane']))
-                     g = int(float(row['Gr']))
-                     
-                     if 'Project Name' in df.columns:
-                        p = str(row['Project Name']).strip()
-                        PROJECT_LOOKUP[(l, g)] = p
-                        
-                        # Check for Fastq Link
-                        link_col = None
-                        for col in ['Fastq Link', 'fastq link', 'Fastq link', 'Download Link', 'download link']:
-                            if col in df.columns:
-                                link_col = col
-                                break
-                        
-                        if link_col:
-                             link = str(row[link_col]).strip()
-                             if link and link.lower() != 'nan':
-                                 # Accumulate multiple links per project (e.g., multiple lanes)
-                                 PROJECT_LINKS.setdefault(p, []).append(link)
-                                 # Also accumulate links per (project, lane) for lane-specific reports
-                                 PROJECT_LINKS_BY_LANE.setdefault((p, l), []).append(link)
-                     
-                     if 'Masking' in df.columns:
-                        m = str(row['Masking']).strip()
-                        MASKING_LOOKUP[(l, g)] = m
-                     
-                     if 'Order ID' in df.columns:
-                        order_id = str(row['Order ID']).strip()
-                        if order_id and order_id.lower() != 'nan':
-                            # Normalize common casing issue (e.g., '1225i-13' -> '1225I-13')
-                            order_id = order_id.replace('i', 'I')
-                            ORDER_ID_LOOKUP[(l, g)] = order_id
-                            if p and p.lower() != 'nan':
-                                PROJECT_ORDER_ID[p] = order_id
-                 except:
-                     pass
+        if is_miseq_format:
+            # MiSeq: simple format, assume single lane
+            print("Detected MiSeq metadata format")
+            # No need to parse Summary sheet, will be handled in generate_miseq_samplesheets
+        else:
+            # NovaSeqX: complex format with Summary sheet
+            df = pd.read_excel(METADATA_FILE, sheet_name="Summary", header=2)
         
-        if 'Lane' in df.columns and 'Masking' in df.columns:
-            # Collect unique (Lane, Masking) combinations
-            groups = df[['Lane', 'Masking']].drop_duplicates()
-            for index, row in groups.iterrows():
-                try:
-                    lane = int(float(row['Lane']))
-                    masking = str(row['Masking']).strip()
-                    # Sanitize masking for filename
-                    # Example: "R1:151, I1:8, I2:8, R2:151" -> "R1-151_I1-8_I2-8_R2-151"
-                    masking_sanitized = masking.replace(":", "-").replace(", ", "_").replace(",", "_").replace(" ", "")
-                    
-                    LANE_CONFIGS.append({
-                        'lane': lane,
-                        'masking': masking,
-                        'masking_sanitized': masking_sanitized,
-                        'id': f"lane{lane}_{masking_sanitized}"
-                    })
-                except ValueError:
-                    continue
+            # Build Project and Masking Lookups: (Lane, Group) -> Value
+            if 'Lane' in df.columns and 'Gr' in df.columns:
+                 for index, row in df.iterrows():
+                     try:
+                         l = int(float(row['Lane']))
+                         g = int(float(row['Gr']))
+                         
+                         if 'Project Name' in df.columns:
+                            p = str(row['Project Name']).strip()
+                            PROJECT_LOOKUP[(l, g)] = p
+                            
+                            # Check for Fastq Link
+                            link_col = None
+                            for col in ['Fastq Link', 'fastq link', 'Fastq link', 'Download Link', 'download link']:
+                                if col in df.columns:
+                                    link_col = col
+                                    break
+                            
+                            if link_col:
+                                 link = str(row[link_col]).strip()
+                                 if link and link.lower() != 'nan':
+                                     # Accumulate multiple links per project (e.g., multiple lanes)
+                                     PROJECT_LINKS.setdefault(p, []).append(link)
+                                     # Also accumulate links per (project, lane) for lane-specific reports
+                                     PROJECT_LINKS_BY_LANE.setdefault((p, l), []).append(link)
+                         
+                         if 'Masking' in df.columns:
+                            m = str(row['Masking']).strip()
+                            MASKING_LOOKUP[(l, g)] = m
+                         
+                         if 'Order ID' in df.columns:
+                            order_id = str(row['Order ID']).strip()
+                            if order_id and order_id.lower() != 'nan':
+                                # Normalize common casing issue (e.g., '1225i-13' -> '1225I-13')
+                                order_id = order_id.replace('i', 'I')
+                                ORDER_ID_LOOKUP[(l, g)] = order_id
+                                if p and p.lower() != 'nan':
+                                    PROJECT_ORDER_ID[p] = order_id
+                     except:
+                         pass
+            
+            if 'Lane' in df.columns and 'Masking' in df.columns:
+                # Collect unique (Lane, Masking) combinations
+                groups = df[['Lane', 'Masking']].drop_duplicates()
+                for index, row in groups.iterrows():
+                    try:
+                        lane = int(float(row['Lane']))
+                        masking = str(row['Masking']).strip()
+                        # Sanitize masking for filename
+                        # Example: "R1:151, I1:8, I2:8, R2:151" -> "R1-151_I1-8_I2-8_R2-151"
+                        masking_sanitized = masking.replace(":", "-").replace(", ", "_").replace(",", "_").replace(" ", "")
+                        
+                        LANE_CONFIGS.append({
+                            'lane': lane,
+                            'masking': masking,
+                            'masking_sanitized': masking_sanitized,
+                            'id': f"lane{lane}_{masking_sanitized}"
+                        })
+                    except ValueError:
+                        continue
     except Exception as e:
         print(f"Error reading metadata: {e}")
 
@@ -142,6 +152,11 @@ FASTP_PLOTS_OUTDIR = config.get("fastp_plots_outdir", "results/fastp_plots")
 PROJECTS = get_all_projects(SAMPLE_SHEETS_DICT)
 
 ORDER_ID_CONFIGS = get_order_id_configs(SAMPLE_SHEETS_DICT)
+
+# If no order_id found in metadata, use a single default order_id
+if not ORDER_ID_CONFIGS or all(not v for v in ORDER_ID_CONFIGS.values()):
+    ORDER_ID_CONFIGS = {"default": PROJECTS}
+
 ORDER_ID_REPORTS = [f"Reports/order_{oid}/index.html" for oid in ORDER_ID_CONFIGS.keys()]
 ORDER_ID_MD5S = [f"Reports/order_{oid}/md5sums.txt" for oid in ORDER_ID_CONFIGS.keys()]
 
@@ -858,7 +873,7 @@ rule project_link:
     output:
         log = "logs/project_link_{config_id}_{project}.log"
     wildcard_constraints:
-        config_id = r"lane\d+_R\d+-\d+(_[IR]\d+-\d+)*_R\d+-\d+",
+        config_id = r"lane\d+_(R\d+-\d+(_[IR]\d+-\d+)*_R\d+-\d+|default)",
         project = ".+"
     params:
         work_dir = os.getcwd(),
