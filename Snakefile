@@ -10,14 +10,31 @@ envvars: "GMAIL_APP_PASSWORD"
 
 configfile: "snakemake_config.yaml"
 
+# Load project-specific config if it exists (higher priority than default)
+# Note: library_name from base config is used ONLY to determine which project-specific config to load
+# After merge, all values (including library_name, data_dir, metadata) come from the merged config
+_LIBRARY_NAME = config.get("library_name", "xR079")
+_PROJECT_CONFIG = f"snakemake_config_{_LIBRARY_NAME}.yaml"
+
+if os.path.exists(_PROJECT_CONFIG):
+    import yaml as _yaml
+    with open(_PROJECT_CONFIG, 'r') as _f:
+        _project_config = _yaml.safe_load(_f) or {}
+    # Merge: project-specific config overrides default config
+    config.update(_project_config)
+    print(f"Loaded project-specific config: {_PROJECT_CONFIG}")
+else:
+    print(f"No project-specific config found ({_PROJECT_CONFIG}), using defaults")
+
+# All config values read AFTER merge - project-specific config takes priority
 SAMPLE_SHEET = config.get("sample_sheet", "src/SampleSheet_default.csv")
 NUM_READS = config.get("num_reads", 2)
-LIBRARY = config.get("library_name", "xR079")
+LIBRARY = config.get("library_name", "xR079")  # From merged config (project-specific if exists)
 FASTQDIR = config.get("fastqdir", "output")
 START_S = config.get("start_s", 1)
 DRYRUN = config.get("dryrun", False)
 RUN_INFO_PATH = config.get("run_info_path", "src/RunInfo.xml")
-DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20260115_LH00626_0088_A233NM2LT4")
+DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20260115_LH00626_0088_A233NM2LT4")  # From merged config
 TILES = config.get("tiles", "1_1101")
 
 EMAIL_SENDER = config.get("email_sender", "kstachel@uci.edu")
@@ -38,9 +55,9 @@ if os.path.exists(basecalls_path):
 
 # print("detected_lanes:", detected_lanes)
 
+# Metadata path from merged config (project-specific if exists, otherwise base config)
 metadata = config.get("metadata", "metadata/SampleSheet.xlsx")
-
-METADATA_FILE = config.get("metadata")
+METADATA_FILE = config.get("metadata")  # From merged config
 LANE_CONFIGS = []
 PROJECT_LOOKUP = {}
 MASKING_LOOKUP = {}
@@ -250,7 +267,9 @@ rule report_order_id:
                 "None",  # lane_filter
                 input.links_yaml,
                 order_id,
-                LIBRARY  # library_name
+                LIBRARY,  # library_name
+                str(config.get('plots_total_width', 900)),
+                str(config.get('plots_quality', 35))
             ]
             
             result = subprocess.run(cmd, capture_output=True, text=True)
@@ -911,28 +930,48 @@ rule project_link:
                 return None
             match = re.search(r'<url>(.*?)</url>', xml_text)
             return match.group(1) if match else None
+        
+        def check_http_status(stderr_text):
+            """Extract HTTP status code from curl verbose output in stderr."""
+            if not stderr_text:
+                return None
+            # Look for "< HTTP/2 XXX" or "< HTTP/1.1 XXX"
+            match = re.search(r'<\s*HTTP/[0-9.]+\s+(\d+)', stderr_text)
+            return int(match.group(1)) if match else None
 
         def fetch_existing_share(path, log_handle):
             """Try to fetch an existing share link for the given path."""
             encoded_path = urllib.parse.quote(path, safe="/")
             result = subprocess.run([
-                'curl', '-s', '-X', 'GET',
+                'curl', '-s', '-w', '\nHTTP_CODE:%{http_code}',
+                '-X', 'GET',
                 '-u', 'kstachel:ucightf2025',
                 '-H', 'OCS-APIRequest: true',
                 f'https://precision.biochem.uci.edu/ocs/v2.php/apps/files_sharing/api/v1/shares?path={encoded_path}&reshares=true'
             ], capture_output=True, text=True, timeout=30)
 
+            # Parse HTTP status from output
+            http_code = None
+            stdout_lines = result.stdout.split('\n')
+            for line in stdout_lines:
+                if line.startswith('HTTP_CODE:'):
+                    http_code = line.split(':', 1)[1]
+                    stdout_lines.remove(line)
+                    break
+            share_xml = '\n'.join(stdout_lines)
+
             log_handle.write("  GET existing share response:\n")
             log_handle.write(f"    Return code: {result.returncode}\n")
+            log_handle.write(f"    HTTP status: {http_code}\n")
             if result.stderr:
                 log_handle.write(f"    STDERR: {result.stderr}\n")
-            log_handle.write(f"    STDOUT length: {len(result.stdout)} bytes\n")
-            if result.stdout:
-                log_handle.write(f"    Content:\n{result.stdout}\n")
+            log_handle.write(f"    STDOUT length: {len(share_xml)} bytes\n")
+            if share_xml:
+                log_handle.write(f"    Content:\n{share_xml}\n")
             else:
                 log_handle.write("    Content: (empty response)\n")
 
-            return extract_share_url(result.stdout)
+            return extract_share_url(share_xml)
 
         try:
             if os.path.isdir(fastq_dir):
@@ -952,13 +991,23 @@ rule project_link:
                     f.write(f"Nextcloud path: {nc_path}\n")
                 
                 # Retry logic with exponential backoff
+                # Start with longer delays to avoid rate limiting
                 max_retries = 5
                 retry_count = 0
                 share_url = None
+                rate_limited = False
                 
                 while retry_count < max_retries and not share_url:
                     retry_count += 1
-                    wait_time = 2 ** (retry_count - 1)  # 1, 2, 4, 8, 16 seconds
+                    # Longer delays: 3, 6, 12, 24, 48 seconds to avoid rate limiting
+                    wait_time = 3 * (2 ** (retry_count - 1))
+                    
+                    # If we were rate limited before, add extra delay
+                    if rate_limited and retry_count > 1:
+                        extra_wait = 10
+                        with open(log_file, 'a') as f:
+                            f.write(f"Previous attempt was rate-limited, adding {extra_wait}s extra delay\n")
+                        time.sleep(extra_wait)
                     
                     with open(log_file, 'a') as f:
                         if retry_count > 1:
@@ -969,11 +1018,12 @@ rule project_link:
                     # Log the curl command being executed
                     with open(log_file, 'a') as f:
                         f.write(f"Executing curl command (attempt {retry_count}):\n")
-                        f.write(f"  curl -s -X POST -u kstachel:*** -H 'OCS-APIRequest: true' -d 'path={nc_path}' -d 'shareType=3' https://precision.biochem.uci.edu/ocs/v2.php/apps/files_sharing/api/v1/shares\n")
+                        f.write(f"  curl -s -w '\\nHTTP_CODE:%{{http_code}}' -X POST -u kstachel:*** -H 'OCS-APIRequest: true' -d 'path={nc_path}' -d 'shareType=3' https://precision.biochem.uci.edu/ocs/v2.php/apps/files_sharing/api/v1/shares\n")
                     
                     try:
                         result = subprocess.run([
-                            'curl', '-s', '-X', 'POST',
+                            'curl', '-s', '-w', '\nHTTP_CODE:%{http_code}',
+                            '-X', 'POST',
                             '-u', 'kstachel:ucightf2025',
                             '-H', 'OCS-APIRequest: true',
                             '-d', f'path={nc_path}',
@@ -981,13 +1031,22 @@ rule project_link:
                             'https://precision.biochem.uci.edu/ocs/v2.php/apps/files_sharing/api/v1/shares'
                         ], capture_output=True, text=True, timeout=30)
                         
-                        share_xml = result.stdout
+                        # Parse HTTP status from output
+                        http_code = None
+                        stdout_lines = result.stdout.split('\n')
+                        for line in stdout_lines:
+                            if line.startswith('HTTP_CODE:'):
+                                http_code = line.split(':', 1)[1]
+                                stdout_lines.remove(line)
+                                break
+                        share_xml = '\n'.join(stdout_lines)
                         stderr_output = result.stderr
                         returncode = result.returncode
                         
                         with open(log_file, 'a') as f:
                             f.write(f"Response (attempt {retry_count}):\n")
                             f.write(f"  Return code: {returncode}\n")
+                            f.write(f"  HTTP status: {http_code}\n")
                             f.write(f"  STDOUT length: {len(share_xml)} bytes\n")
                             if stderr_output:
                                 f.write(f"  STDERR: {stderr_output}\n")
@@ -996,22 +1055,43 @@ rule project_link:
                             else:
                                 f.write(f"  Content: (empty response)\n")
                         
+                        # Check for rate limiting (HTTP 429)
+                        if http_code == '429':
+                            rate_limited = True
+                            with open(log_file, 'a') as f:
+                                f.write(f"⚠ Rate limited (HTTP 429) - will retry with longer delay\n")
+                        elif http_code and not http_code.startswith('2'):
+                            # Non-2xx status code
+                            with open(log_file, 'a') as f:
+                                f.write(f"⚠ HTTP error status {http_code}\n")
+                        
                         # Extract URL from XML
-                        if share_xml:
+                        if share_xml and len(share_xml.strip()) > 0:
                             share_url = extract_share_url(share_xml)
                             if share_url:
                                 with open(log_file, 'a') as f:
                                     f.write(f"✓ Successfully created share link on attempt {retry_count}: {share_url}\n")
                                     f.write(f"Share link: {share_url}\n")
                             else:
-                                with open(log_file, 'a') as f:
-                                    f.write(f"Could not extract URL from response (attempt {retry_count})\n")
+                                # Check if response indicates an error
+                                if '<statuscode>404</statuscode>' in share_xml:
+                                    with open(log_file, 'a') as f:
+                                        f.write(f"✗ Path not found (404) - directory may not exist in Nextcloud\n")
+                                elif '<statuscode>403</statuscode>' in share_xml:
+                                    with open(log_file, 'a') as f:
+                                        f.write(f"✗ Permission denied (403)\n")
+                                else:
+                                    with open(log_file, 'a') as f:
+                                        f.write(f"Could not extract URL from response (attempt {retry_count})\n")
                         else:
                             with open(log_file, 'a') as f:
-                                f.write(f"Empty response received (attempt {retry_count})\n")
+                                if http_code == '429':
+                                    f.write(f"Empty response due to rate limiting (HTTP 429)\n")
+                                else:
+                                    f.write(f"Empty response received (attempt {retry_count})\n")
                             
-                        # If POST did not yield a URL, try to find an existing share via GET
-                        if not share_url:
+                        # If POST did not yield a URL and we're not rate limited, try to find an existing share via GET
+                        if not share_url and http_code != '429':
                             with open(log_file, 'a') as f:
                                 f.write("Attempting to fetch existing share (GET)...\n")
                                 share_url = fetch_existing_share(nc_path, f)
@@ -1045,6 +1125,9 @@ rule project_link:
                 if not share_url:
                     with open(log_file, 'a') as f:
                         f.write(f"\n✗ Failed to create share link after {max_retries} attempts\n")
+                        if rate_limited:
+                            f.write(f"   Reason: Rate limiting (HTTP 429 - Too Many Requests)\n")
+                            f.write(f"   Suggestion: Wait a few minutes and retry manually, or increase delays in code\n")
                         f.write(f"NOTE: Rule will succeed but link was not created\n")
                         f.write(f"This project will be missing from project_links.yaml\n")
             else:

@@ -19,7 +19,7 @@ def extract_po_number(md5_line):
             return int(match.group(1))
     return float('inf')
 
-def get_image_base64(path, max_width=800, quality=60):
+def get_image_base64(path, max_width=600, quality=35):
     """
     Load image, compress it, and return base64-encoded string.
     
@@ -104,7 +104,65 @@ def is_parse_or_10x(project_name):
         p = ""
     return ("10x" in p) or ("parse" in p) or ("bd" in p)
 
-def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_dir, report_dir, fastq_links_str, lane_filter=None, append_mode=False, links_yaml=None, order_id=None, library_name=None):
+def compose_plots_base64(image_paths, total_width=900, quality=35, background_color=(255, 255, 255)):
+    """
+    Compose up to three PNG plot images side-by-side into a single JPEG and return base64.
+    - image_paths: list of existing file paths (max 3 will be used)
+    - total_width: target total width of the composed image in pixels (configurable via config)
+    - quality: JPEG quality for output, 1-95 (configurable via config, lower = smaller file)
+    - background_color: RGB tuple for canvas background
+    Returns base64 string or None on failure.
+    """
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+
+    try:
+        # Filter only existing files and cap at 3
+        files = [p for p in image_paths if p and os.path.exists(p)][:3]
+        if not files:
+            return None
+
+        n = len(files)
+        # Per-image width (equal split)
+        per_w = max(1, total_width // n)
+
+        resized = []
+        max_h = 0
+        for p in files:
+            img = Image.open(p).convert('RGB')
+            w, h = img.size
+            if w > per_w:
+                # scale down maintaining aspect ratio
+                ratio = per_w / float(w)
+                new_w = per_w
+                new_h = max(1, int(h * ratio))
+                img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                w, h = img.size
+            resized.append(img)
+            if h > max_h:
+                max_h = h
+
+        # Create canvas and paste images horizontally
+        total_w = sum(im.size[0] for im in resized)
+        canvas = Image.new('RGB', (total_w, max_h), background_color)
+        x = 0
+        for im in resized:
+            # top align; could center vertically if needed
+            canvas.paste(im, (x, 0))
+            x += im.size[0]
+
+        buffer = BytesIO()
+        canvas.save(buffer, format='JPEG', quality=quality, optimize=True)
+        buffer.seek(0)
+        import base64 as _b64
+        return _b64.b64encode(buffer.read()).decode('utf-8')
+    except Exception as e:
+        print(f"Error composing plots {image_paths}: {e}")
+        return None
+
+def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_dir, report_dir, fastq_links_str, lane_filter=None, append_mode=False, links_yaml=None, order_id=None, library_name=None, plots_total_width=900, plots_quality=35):
     os.makedirs(report_dir, exist_ok=True)
     lane_label = f" (Lane {lane_filter})" if lane_filter is not None else ""
     
@@ -626,44 +684,50 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 """
         html_content += "</tbody></table>"
         
-        # Plots section using tables
+        # Plots section using tables (composed image of up to three plots)
         html_content += "<h3 style='color: #333333; font-size: 16px; margin: 15px 0 10px 0;'>Quality Plots</h3>"
-        
+
         for config_id in lane_configs:
             # Look for plots in fastp_plots_base_dir/{config_id}/{project}/{stem}-*.png
             plot_dir = os.path.join(fastp_plots_base_dir, config_id, project)
-            mean_plot = f"{stem}-mean_phred.png"
-            base_plot = f"{stem}-base_comp.png"
-            
-            src_mean = os.path.join(plot_dir, mean_plot)
-            src_base = os.path.join(plot_dir, base_plot)
-            
+            expected = [
+                os.path.join(plot_dir, f"{stem}-mean_phred.png"),
+                os.path.join(plot_dir, f"{stem}-base_comp.png"),
+                # Optional third plot type if present (future-proof): pick any third matching pattern
+            ]
+
+            # If fewer than 3 expected plots exist, try to find additional matching images
+            candidates = [p for p in expected if os.path.exists(p)]
+            if len(candidates) < 3 and os.path.exists(plot_dir):
+                wildcard_matches = sorted(glob.glob(os.path.join(plot_dir, f"{stem}-*.png")))
+                for m in wildcard_matches:
+                    if m not in candidates:
+                        candidates.append(m)
+                    if len(candidates) >= 3:
+                        break
+
             print(f"Checking for plots in {plot_dir} for {stem}")
-            if os.path.exists(src_mean):
-                print(f"Found mean plot: {src_mean}")
-            else:
-                print(f"Missing mean plot: {src_mean}")
-                
-            if os.path.exists(src_base):
-                print(f"Found base plot: {src_base}")
-            else:
-                print(f"Missing base plot: {src_base}")
-            
-            if os.path.exists(src_mean) or os.path.exists(src_base):
+            for c in candidates:
+                print(f"Found plot: {c}")
+            if not candidates:
+                print("No plots found for sample.")
+
+            if candidates:
                 html_content += f"<p style='font-weight: bold; margin: 10px 0 5px 0;'>{config_id}</p>"
-                html_content += "<table width='100%' cellpadding='0' cellspacing='0' style='margin-bottom: 15px;'><tr>"
-                
-                if os.path.exists(src_mean):
-                    b64_mean = get_image_base64(src_mean)
-                    if b64_mean:
-                        html_content += f"<td style='padding: 5px; width: 50%;'><img src='data:image/jpeg;base64,{b64_mean}' alt='Mean Phred' style='width: 100%; max-width: 100%; height: auto; border: 1px solid #dddddd;'></td>"
-                
-                if os.path.exists(src_base):
-                    b64_base = get_image_base64(src_base)
-                    if b64_base:
-                        html_content += f"<td style='padding: 5px; width: 50%;'><img src='data:image/jpeg;base64,{b64_base}' alt='Base Composition' style='width: 100%; max-width: 100%; height: auto; border: 1px solid #dddddd;'></td>"
-                
-                html_content += "</tr></table>"
+                html_content += "<div style='margin-bottom: 12px;'>"
+
+                # Compose up to three plots into one image
+                composed_b64 = compose_plots_base64(candidates, total_width=plots_total_width, quality=plots_quality)
+                if composed_b64:
+                    html_content += f"<img src='data:image/jpeg;base64,{composed_b64}' alt='Quality plots' style='width: 100%; max-width: 100%; height: auto; border: 1px solid #dddddd;'>"
+                else:
+                    # Fallback: embed individually (compressed)
+                    for c in candidates:
+                        b64 = get_image_base64(c)
+                        if b64:
+                            html_content += f"<img src='data:image/jpeg;base64,{b64}' alt='Plot' style='width: 32%; max-width: 32%; margin-right: 1%; height: auto; border: 1px solid #dddddd;'>"
+
+                html_content += "</div>"
         
         html_content += "</td>\n</tr>\n</table>"
         
@@ -721,12 +785,14 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 
 if __name__ == "__main__":
     if len(sys.argv) < 7:
-        print("Usage: generate_report.py <project> <output_base> <fastp_plots_base> <fastp_base> <report_dir> <fastq_links> [lane] [links_yaml] [order_id] [library_name]")
+        print("Usage: generate_report.py <project> <output_base> <fastp_plots_base> <fastp_base> <report_dir> <fastq_links> [lane] [links_yaml] [order_id] [library_name] [plots_total_width] [plots_quality]")
         print("  fastq_links: semicolon-separated list of download links")
         print("  lane: optional lane filter")
         print("  links_yaml: optional path to project_links.yaml file")
         print("  order_id: optional order_id for consolidating links from all projects")
         print("  library_name: optional library/run name to display in reports")
+        print("  plots_total_width: optional total width for composed plots (default: 900)")
+        print("  plots_quality: optional JPEG quality for composed plots (default: 35)")
         sys.exit(1)
         
     project = sys.argv[1]
@@ -757,7 +823,21 @@ if __name__ == "__main__":
     if len(sys.argv) >= 11:
         library_name = sys.argv[10]
     
+    plots_total_width = 900
+    if len(sys.argv) >= 12:
+        try:
+            plots_total_width = int(sys.argv[11])
+        except ValueError:
+            plots_total_width = 900
+    
+    plots_quality = 35
+    if len(sys.argv) >= 13:
+        try:
+            plots_quality = int(sys.argv[12])
+        except ValueError:
+            plots_quality = 35
+    
     # If report_dir already exists with an index.html, this is a continuation (multiple projects for same order_id)
     append_mode = os.path.exists(os.path.join(report_dir, "index.html"))
     
-    generate_report(project, output_base, fastp_plots_base, fastp_base, report_dir, fastq_links, lane_filter, append_mode=append_mode, links_yaml=links_yaml, order_id=order_id, library_name=library_name)
+    generate_report(project, output_base, fastp_plots_base, fastp_base, report_dir, fastq_links, lane_filter, append_mode=append_mode, links_yaml=links_yaml, order_id=order_id, library_name=library_name, plots_total_width=plots_total_width, plots_quality=plots_quality)
