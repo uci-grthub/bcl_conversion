@@ -1,0 +1,44 @@
+name: Update Rule Graph
+
+on:
+  push:
+    paths:
+      - 'Snakefile'
+      - 'src/workflow_defs.smk'
+      - '.github/workflows/update-rulegraph.yml'
+
+jobs:
+  update-graph:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Conda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: true
+          python-version: "3.12"
+          
+      - name: Install dependencies
+        shell: bash -l {0}
+        run: |
+          conda install -c conda-forge -c bioconda snakemake graphviz -y
+          
+      - name: Generate rulegraph
+        shell: bash -l {0}
+        run: |
+          snakemake --rulegraph 2>/dev/null | dot -Tpng > rulegraph.png
+          
+      - name: Check for changes
+        id: changes
+        run: |
+          git diff --exit-code rulegraph.png || echo "changed=true" >> $GITHUB_OUTPUT
+          
+      - name: Commit updated graph
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add rulegraph.png
+          git commit -m "Auto-update rulegraph.png [skip ci]"
+          git push
