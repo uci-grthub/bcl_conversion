@@ -1,7 +1,7 @@
 # Snakemake configuration for postprocess workflow
 sample_sheet: "src/SampleSheet_default.csv"
 num_reads: 2
-library_name: "xR079"
+library_name: "mR489"
 fastqdir: "output"
 start_s: 1
 lanes: [1,2,3,4,5,6,7,8]
@@ -9,8 +9,12 @@ fastp_threads: 4
 fastp_outdir: "results/fastp"
 metadata: "metadata/260115_233NM2LT4_25B_PE151_xR079.xlsx"
 run_info_path: "src/RunInfo_nn.xml"
-data_dir: "/staging/nextcloud/NovaseqX/20260115_LH00626_0088_A233NM2LT4"
+data_dir: "/staging/nextcloud/Miseq/260116_M05630_0704_000000000-M4B2Y"
 tiles: ""
 email_sender: "kstachel@uci.edu"
 email_recipient: "kstachel@uci.edu"
 email_cc: "kstachel@uci.edu"
+
+# Report plot composition settings
+plots_total_width: 900  # Total width in pixels for composed plots (default: 900)
+plots_quality: 35       # JPEG quality for composed plots, 1-95 (default: 35, lower = smaller file)

@@ -12,3 +12,4 @@ src/flexbar/*.txt
 *.pyc
 *.done
 *.pdf
+snakemake_config_*
