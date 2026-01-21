@@ -18,15 +18,19 @@ jobs:
         with:
           auto-update-conda: true
           python-version: "3.12"
+          environment-name: rulegraph-env
+          activate-environment: rulegraph-env
           
       - name: Install dependencies
         shell: bash -l {0}
         run: |
+          conda activate rulegraph-env
           conda install -c conda-forge -c bioconda snakemake graphviz -y
           
       - name: Generate rulegraph
         shell: bash -l {0}
         run: |
+          conda activate rulegraph-env
           snakemake --rulegraph 2>/dev/null | dot -Tpng > rulegraph.png
           
       - name: Check for changes
