@@ -4,6 +4,7 @@
 md5sum*
 *.csv
 *.png
+!rulegraph.png
 Tools/*.storable
 .snakemake/
 src/flexbar/*.txt
