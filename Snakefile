@@ -207,6 +207,7 @@ rule all:
         f"results/{LIBRARY}-count.csv",
         f"Reports/{LIBRARY}_read_counts_email.done",
         expand("Reports/order_{order_id}/email_sent.done", order_id=ORDER_ID_CONFIGS.keys()),
+        expand("logs/verify_project_link_{config_id}_{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         "logs/project_links.yaml"
 
 rule bcl_convert_only:
@@ -792,7 +793,8 @@ rule analyze_undetermined:
 
 rule consolidate_project_links:
     input:
-        PROJECT_LINK_LOGS
+        PROJECT_LINK_LOGS,
+        expand("logs/nextcloud_scan_{config_id}_{project}.done", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS])
     output:
         "logs/project_links.yaml"
     log:
@@ -1143,4 +1145,151 @@ rule project_link:
         # Always ensure the log file exists to satisfy the output requirement
         # This makes the rule always succeed even if link creation fails
         Path(log_file).touch(exist_ok=True)
+
+rule rescan_nextcloud:
+    input:
+        "logs/project_link_{config_id}_{project}.log"
+    output:
+        touch("logs/nextcloud_scan_{config_id}_{project}.done")
+    log:
+        "logs/rescan_nextcloud_{config_id}_{project}.log"
+    wildcard_constraints:
+        config_id = r"lane\d+_(R\d+-\d+(_[IR]\d+-\d+)*_R\d+-\d+|default)",
+        project = ".+"
+    params:
+        nc_path = lambda wildcards: f"/DragenExt/{LIBRARY}_workflow/output/{wildcards.config_id}/{wildcards.project}"
+    shell:
+        """
+        ssh kstachel@precision.biochem.uci.edu "docker exec --user www-data nextcloud-aio-nextcloud php occ files:scan --path='{params.nc_path}'" > {log} 2>&1
+        """
+
+rule verify_project_links:
+    input:
+        project_link_log = "logs/project_link_{config_id}_{project}.log",
+        scan_done = "logs/nextcloud_scan_{config_id}_{project}.done"
+    output:
+        report = "logs/verify_project_link_{config_id}_{project}.txt"
+    log:
+        "logs/verify_project_link_{config_id}_{project}.log"
+    wildcard_constraints:
+        config_id = r"lane\d+_(R\d+-\d+(_[IR]\d+-\d+)*_R\d+-\d+|default)",
+        project = ".+"
+    run:
+        import subprocess
+        import re
+        import os
+        
+        config_id = wildcards.config_id
+        project = wildcards.project
+        local_dir = f"output/{config_id}/{project}"
+        
+        # Read the project_link log to extract the share URL
+        share_url = None
+        with open(input.project_link_log, 'r') as f:
+            content = f.read()
+            match = re.search(r'Share link: (https://.*)', content)
+            if match:
+                share_url = match.group(1).strip()
+        
+        report = []
+        report.append(f"Project Link Verification Report")
+        report.append(f"Config ID: {config_id}")
+        report.append(f"Project: {project}")
+        report.append(f"Local Directory: {local_dir}")
+        report.append(f"Share URL: {share_url if share_url else 'NOT FOUND'}")
+        report.append("")
+        
+        # Get local fastq.gz files
+        local_fastqs = []
+        if os.path.isdir(local_dir):
+            try:
+                local_fastqs = sorted([f for f in os.listdir(local_dir) if f.endswith('.fastq.gz')])
+            except Exception as e:
+                report.append(f"ERROR reading local directory: {e}")
+        else:
+            report.append(f"Local directory does not exist: {local_dir}")
+        
+        report.append(f"Local FASTQ files ({len(local_fastqs)}):")
+        for f in local_fastqs:
+            report.append(f"  - {f}")
+        report.append("")
+        
+        # Query Nextcloud share for files if URL is available
+        remote_fastqs = []
+        if share_url:
+            try:
+                # Extract the share token from the URL
+                # URL format: https://precision.biochem.uci.edu/s/SHARETOKEN
+                match = re.search(r'/s/([a-zA-Z0-9]+)', share_url)
+                if match:
+                    share_token = match.group(1)
+                    
+                    # Query the WebDAV API to list files in the share
+                    # Using curl to query the share with basic auth
+                    cmd = [
+                        'curl', '-s',
+                        '-u', 'kstachel:ucightf2025',
+                        '-X', 'PROPFIND',
+                        '-H', 'Depth: 1',
+                        f'https://precision.biochem.uci.edu/remote.php/dav/files/kstachel/DragenExt/{LIBRARY}_workflow/output/{config_id}/{project}/'
+                    ]
+                    
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                    
+                    # Parse XML response to extract filenames
+                    if result.stdout:
+                        # Extract hrefs from the PROPFIND response
+                        hrefs = re.findall(r'<d:href>(.*?)</d:href>', result.stdout)
+                        for href in hrefs:
+                            # Extract just the filename from the full path
+                            filename = href.split('/')[-1]
+                            if filename and filename.endswith('.fastq.gz'):
+                                remote_fastqs.append(filename)
+                        remote_fastqs = sorted(set(remote_fastqs))
+            except Exception as e:
+                report.append(f"ERROR querying Nextcloud: {e}")
+        
+        if remote_fastqs:
+            report.append(f"Remote FASTQ files ({len(remote_fastqs)}):")
+            for f in remote_fastqs:
+                report.append(f"  - {f}")
+            report.append("")
+        
+        # Compare files
+        local_set = set(local_fastqs)
+        remote_set = set(remote_fastqs)
+        
+        report.append("VERIFICATION RESULTS:")
+        if local_set == remote_set:
+            report.append("✓ SUCCESS: Local and remote files match perfectly")
+            report.append(f"  Total files: {len(local_set)}")
+        else:
+            report.append("✗ MISMATCH: Local and remote files differ")
+            
+            missing_remote = local_set - remote_set
+            if missing_remote:
+                report.append(f"\n  Files in local but NOT in remote ({len(missing_remote)}):")
+                for f in sorted(missing_remote):
+                    report.append(f"    - {f}")
+            
+            missing_local = remote_set - local_set
+            if missing_local:
+                report.append(f"\n  Files in remote but NOT in local ({len(missing_local)}):")
+                for f in sorted(missing_local):
+                    report.append(f"    - {f}")
+            
+            common = local_set & remote_set
+            if common:
+                report.append(f"\n  Files in both ({len(common)}):")
+                for f in sorted(common):
+                    report.append(f"    - {f}")
+        
+        # Write report
+        os.makedirs(os.path.dirname(output.report), exist_ok=True)
+        with open(output.report, 'w') as f:
+            f.write('\n'.join(report))
+        
+        # Also write to log
+        with open(log[0], 'w') as f:
+            f.write('\n'.join(report))
 
