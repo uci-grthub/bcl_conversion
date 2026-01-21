@@ -13,8 +13,7 @@ configfile: "snakemake_config.yaml"
 # Load project-specific config if it exists (higher priority than default)
 # Note: library_name from base config is used ONLY to determine which project-specific config to load
 # After merge, all values (including library_name, data_dir, metadata) come from the merged config
-_LIBRARY_NAME = config.get("library_name", "xR079")
-_PROJECT_CONFIG = f"snakemake_config_{_LIBRARY_NAME}.yaml"
+_PROJECT_CONFIG = f"snakemake_config_project.yaml"
 
 if os.path.exists(_PROJECT_CONFIG):
     import yaml as _yaml
@@ -712,7 +711,7 @@ rule bcl_convert:
         sample_sheet=lambda wildcards: f"src/SampleSheet_{wildcards.config_id}.csv",
         data_dir=DATA_DIR
     output:
-        output_dir = directory("output/{config_id}"),
+        output_dir = protected(directory("output/{config_id}")),
         done_file = touch("output/{config_id}/.done")
     log:
         "logs/bcl_convert_{config_id}.log"
