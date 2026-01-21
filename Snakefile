@@ -454,7 +454,7 @@ rule summarize_project_reads:
 rule compile_read_counts:
     input:
         fastp_done = expand("results/fastp_{config_id}.done", config_id=CONFIG_IDS),
-        maps = expand("src/renaming_map_{config_id}.csv", config_id=CONFIG_IDS)
+        maps = expand("results/renaming_map_{config_id}.csv", config_id=CONFIG_IDS)
     output:
         csv = f"results/{LIBRARY}-count.csv"
     log:
@@ -714,29 +714,102 @@ rule generate_samplesheets:
         metadata = METADATA_FILE if METADATA_FILE else [],
         run_info = RUN_INFO_PATH
     output:
-        expand("src/SampleSheet_{config_id}.csv", config_id=CONFIG_IDS)
+        expand("results/SampleSheet_{config_id}.csv", config_id=CONFIG_IDS),
+        expand("logs/generate_samplesheets_{config_id}.done", config_id=CONFIG_IDS)
     log:
         "logs/generate_samplesheets.log"
     params:
         lane_configs = LANE_CONFIGS,
         project_lookup = PROJECT_LOOKUP,
         masking_lookup = MASKING_LOOKUP,
-        output_dir = "src"
+        output_dir = "results"
     run:
         import sys
         sys.stderr = sys.stdout = open(log[0], 'w')
+        import hashlib
         
-        # Only proceed if metadata file exists
-        if not input.metadata or not os.path.exists(input.metadata):
-            print(f"No metadata file found, skipping sample sheet generation")
-            # Create empty sample sheets for each config_id
-            for output_file in output:
-                os.makedirs(os.path.dirname(output_file), exist_ok=True)
-                open(output_file, 'w').close()
+        # Get metadata timestamp if it exists
+        metadata_mtime = os.path.getmtime(input.metadata) if input.metadata and os.path.exists(input.metadata) else 0
+        
+        def get_file_hash(filepath):
+            """Calculate MD5 hash of file content."""
+            if not os.path.exists(filepath):
+                return None
+            hasher = hashlib.md5()
+            with open(filepath, 'rb') as f:
+                hasher.update(f.read())
+            return hasher.hexdigest()
+        
+        print(f"Checking sample sheets and updating only changed configs...")
+        
+        # Track which configs need regeneration
+        configs_to_generate = []
+        
+        for config in params.lane_configs:
+            config_id = config['id']
+            samplesheet_path = f"results/SampleSheet_{config_id}.csv"
+            done_marker = f"logs/generate_samplesheets_{config_id}.done"
+            
+            needs_generation = False
+            
+            # Check if sample sheet exists
+            if not os.path.exists(samplesheet_path):
+                print(f"Missing sample sheet: {samplesheet_path}")
+                needs_generation = True
+            else:
+                # Check if done marker exists and is newer than sample sheet
+                if not os.path.exists(done_marker):
+                    print(f"Missing done marker: {done_marker}")
+                    needs_generation = True
+                else:
+                    # Check if metadata is newer than done marker
+                    done_marker_mtime = os.path.getmtime(done_marker)
+                    if metadata_mtime > done_marker_mtime:
+                        print(f"Metadata newer than done marker for {config_id}")
+                        needs_generation = True
+            
+            if needs_generation:
+                configs_to_generate.append(config)
+        
+        # If no configs need generation, just ensure all done markers exist
+        if not configs_to_generate:
+            print(f"All sample sheets up to date, ensuring done markers exist...")
+            for config in params.lane_configs:
+                config_id = config['id']
+                done_marker = f"logs/generate_samplesheets_{config_id}.done"
+                if not os.path.exists(done_marker):
+                    os.makedirs(os.path.dirname(done_marker), exist_ok=True)
+                    open(done_marker, 'w').close()
+                    print(f"Created done marker: {done_marker}")
             sys.exit(0)
         
+        # If metadata doesn't exist, create placeholders only for missing files
+        if not input.metadata or not os.path.exists(input.metadata):
+            print(f"No metadata file found, creating placeholder sample sheets")
+            for config in configs_to_generate:
+                config_id = config['id']
+                samplesheet_path = f"results/SampleSheet_{config_id}.csv"
+                done_marker = f"logs/generate_samplesheets_{config_id}.done"
+                
+                os.makedirs(os.path.dirname(samplesheet_path), exist_ok=True)
+                open(samplesheet_path, 'w').close()
+                
+                os.makedirs(os.path.dirname(done_marker), exist_ok=True)
+                open(done_marker, 'w').close()
+            sys.exit(0)
+        
+        # Generate sample sheets and track which ones actually changed
         try:
-            # Call the function from workflow_defs to generate sample sheets
+            print(f"Generating sample sheets for {len(configs_to_generate)} configs...")
+            
+            # Get hashes before generation
+            old_hashes = {}
+            for config in configs_to_generate:
+                config_id = config['id']
+                samplesheet_path = f"results/SampleSheet_{config_id}.csv"
+                old_hashes[config_id] = get_file_hash(samplesheet_path)
+            
+            # Generate all sample sheets
             generated_sheets = generate_lane_samplesheets(
                 input.metadata,
                 params.lane_configs,
@@ -748,30 +821,68 @@ rule generate_samplesheets:
             
             print(f"Generated sample sheets: {generated_sheets}")
             
-            # Ensure all expected output files exist
-            for output_file in output:
-                if not os.path.exists(output_file):
-                    print(f"Warning: Expected output file not created: {output_file}")
-                    # Create an empty placeholder
-                    os.makedirs(os.path.dirname(output_file), exist_ok=True)
-                    open(output_file, 'w').close()
+            # Check which sample sheets actually changed and update only their done markers
+            for config in params.lane_configs:
+                config_id = config['id']
+                samplesheet_path = f"results/SampleSheet_{config_id}.csv"
+                done_marker = f"logs/generate_samplesheets_{config_id}.done"
+                
+                # Ensure sample sheet exists
+                if not os.path.exists(samplesheet_path):
+                    print(f"Warning: Expected sample sheet not created: {samplesheet_path}")
+                    os.makedirs(os.path.dirname(samplesheet_path), exist_ok=True)
+                    open(samplesheet_path, 'w').close()
+                
+                # Only update done marker if this config was regenerated
+                if config in configs_to_generate:
+                    new_hash = get_file_hash(samplesheet_path)
+                    old_hash = old_hashes.get(config_id)
+                    
+                    if new_hash != old_hash:
+                        # Content changed, update done marker
+                        os.makedirs(os.path.dirname(done_marker), exist_ok=True)
+                        open(done_marker, 'w').close()
+                        print(f"Updated done marker for {config_id} (content changed)")
+                    else:
+                        # Content unchanged, only touch if done marker doesn't exist
+                        if not os.path.exists(done_marker):
+                            os.makedirs(os.path.dirname(done_marker), exist_ok=True)
+                            open(done_marker, 'w').close()
+                            print(f"Created done marker for {config_id} (content unchanged)")
+                        else:
+                            print(f"Skipped done marker update for {config_id} (content unchanged)")
+                else:
+                    # Config was not in generation list, ensure done marker exists without updating timestamp
+                    if not os.path.exists(done_marker):
+                        os.makedirs(os.path.dirname(done_marker), exist_ok=True)
+                        open(done_marker, 'w').close()
+                        print(f"Created done marker for {config_id} (not regenerated)")
+                
         except Exception as e:
             print(f"Error generating sample sheets: {e}")
             import traceback
             traceback.print_exc()
-            # Create empty placeholder files so rule doesn't fail
-            for output_file in output:
-                os.makedirs(os.path.dirname(output_file), exist_ok=True)
-                open(output_file, 'w').close()
+            # Create placeholders for configs that were supposed to be generated
+            for config in configs_to_generate:
+                config_id = config['id']
+                samplesheet_path = f"results/SampleSheet_{config_id}.csv"
+                done_marker = f"logs/generate_samplesheets_{config_id}.done"
+                
+                os.makedirs(os.path.dirname(samplesheet_path), exist_ok=True)
+                open(samplesheet_path, 'w').close()
+                
+                os.makedirs(os.path.dirname(done_marker), exist_ok=True)
+                open(done_marker, 'w').close()
 
 rule bcl_convert:
     input:
-        sample_sheet=lambda wildcards: f"src/SampleSheet_{wildcards.config_id}.csv",
+        sample_sheet=lambda wildcards: f"results/SampleSheet_{wildcards.config_id}.csv",
         data_dir=DATA_DIR,
-        _sample_sheets_generated = expand("src/SampleSheet_{config_id}.csv", config_id=CONFIG_IDS)
+        _sheet_done=lambda wildcards: f"logs/generate_samplesheets_{wildcards.config_id}.done"
     output:
         output_dir = protected(directory("output/{config_id}")),
-        done_file = touch("output/{config_id}/.done")
+        done_file = touch("output/{config_id}/.done"),
+        renaming_map = "results/renaming_map_{config_id}.csv"
     log:
         "logs/bcl_convert_{config_id}.log"
     wildcard_constraints:
@@ -805,8 +916,8 @@ rule bcl_convert:
         $tiles_arg
         
         # Rename FASTQ files
-        # python3 src/rename_fastqs.py {wildcards.config_id} {output.output_dir} src/renaming_map_{wildcards.config_id}.csv
-        src/run_rename.sh {wildcards.config_id} {output.output_dir} src/renaming_map_{wildcards.config_id}.csv
+        # python3 src/rename_fastqs.py {wildcards.config_id} {output.output_dir} results/renaming_map_{wildcards.config_id}.csv
+        src/run_rename.sh {wildcards.config_id} {output.output_dir} results/renaming_map_{wildcards.config_id}.csv
         
         # Delete Undetermined FASTQ files to save space - DISABLED as they are needed for analysis
         # find {output.output_dir} -name "Undetermined_S0*.fastq.gz" -delete || true

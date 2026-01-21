@@ -743,7 +743,7 @@ def get_order_id_configs(sample_sheets_dict):
     order_id_to_projects = {}
     
     for config_id in sample_sheets_dict:
-        map_path = f"src/renaming_map_{config_id}.csv"
+        map_path = f"results/renaming_map_{config_id}.csv"
         if os.path.exists(map_path):
             try:
                 df = pd.read_csv(map_path)
@@ -770,7 +770,7 @@ def get_order_id_configs(sample_sheets_dict):
 def get_project_lane_pairs(sample_sheets_dict):
     pairs = set()
     for config_id in sample_sheets_dict:
-        map_path = f"src/renaming_map_{config_id}.csv"
+        map_path = f"results/renaming_map_{config_id}.csv"
         if os.path.exists(map_path):
             try:
                 df = pd.read_csv(map_path)
@@ -792,7 +792,7 @@ def get_project_lane_pairs(sample_sheets_dict):
 def get_config_project_pairs(sample_sheets_dict):
     pairs = set()
     for config_id in sample_sheets_dict:
-        map_path = f"src/renaming_map_{config_id}.csv"
+        map_path = f"results/renaming_map_{config_id}.csv"
         if os.path.exists(map_path):
             try:
                 df = pd.read_csv(map_path)
@@ -832,7 +832,7 @@ def get_project_plot_targets(project, lane_filter=None, order_id=None):
     targets = []
     
     for config_id in CONFIG_IDS:
-        map_path = f"src/renaming_map_{config_id}.csv"
+        map_path = f"results/renaming_map_{config_id}.csv"
         if os.path.exists(map_path):
             try:
                 df = pd.read_csv(map_path)
@@ -891,7 +891,7 @@ def get_project_plot_targets(project, lane_filter=None, order_id=None):
     return targets
 
 def read_sample_sheet(config_id):
-    sheet_path = f"src/SampleSheet_{config_id}.csv"
+    sheet_path = f"results/SampleSheet_{config_id}.csv"
     if not os.path.exists(sheet_path):
         return None
     
@@ -917,7 +917,7 @@ def get_fastp_targets(wildcards):
     config_id = wildcards.config_id
     
     # Use renaming map to define targets
-    map_path = f"src/renaming_map_{config_id}.csv"
+    map_path = f"results/renaming_map_{config_id}.csv"
     if os.path.exists(map_path):
         try:
             df = pd.read_csv(map_path)
@@ -989,7 +989,7 @@ def get_fastp_sample_input(wildcards):
     sample_path = wildcards.sample_path
     
     # Try to use renaming map first
-    map_path = f"src/renaming_map_{config_id}.csv"
+    map_path = f"results/renaming_map_{config_id}.csv"
     if not os.path.exists(map_path):
         raise ValueError(f"Renaming map not found: {map_path}")
         
@@ -1061,7 +1061,7 @@ def get_fastp_plots_targets(wildcards):
     config_id = wildcards.config_id
     
     # Use renaming map to define targets
-    map_path = f"src/renaming_map_{config_id}.csv"
+    map_path = f"results/renaming_map_{config_id}.csv"
     if os.path.exists(map_path):
         try:
             df = pd.read_csv(map_path)
@@ -1135,7 +1135,7 @@ def get_project_fastp_targets(wildcards):
     targets = []
     
     for config_id in CONFIG_IDS:
-        map_path = f"src/renaming_map_{config_id}.csv"
+        map_path = f"results/renaming_map_{config_id}.csv"
         if os.path.exists(map_path):
             try:
                 df = pd.read_csv(map_path)
@@ -1193,7 +1193,7 @@ def get_bcl_convert_fastqs(wildcards):
     import pandas as pd
     import os
     config_id = wildcards.config_id
-    map_path = f"src/renaming_map_{config_id}.csv"
+    map_path = f"results/renaming_map_{config_id}.csv"
     if not os.path.exists(map_path):
         return []
     df = pd.read_csv(map_path)
