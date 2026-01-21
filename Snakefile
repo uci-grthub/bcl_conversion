@@ -17,13 +17,15 @@ _PROJECT_CONFIG = f"snakemake_config_project.yaml"
 
 if os.path.exists(_PROJECT_CONFIG):
     import yaml as _yaml
+    import sys as _sys
     with open(_PROJECT_CONFIG, 'r') as _f:
         _project_config = _yaml.safe_load(_f) or {}
     # Merge: project-specific config overrides default config
     config.update(_project_config)
-    print(f"Loaded project-specific config: {_PROJECT_CONFIG}")
+    _sys.stderr.write(f"Loaded project-specific config: {_PROJECT_CONFIG}\n")
 else:
-    print(f"No project-specific config found ({_PROJECT_CONFIG}), using defaults")
+    import sys as _sys
+    _sys.stderr.write(f"No project-specific config found ({_PROJECT_CONFIG}), using defaults\n")
 
 # All config values read AFTER merge - project-specific config takes priority
 SAMPLE_SHEET = config.get("sample_sheet", "src/SampleSheet_default.csv")

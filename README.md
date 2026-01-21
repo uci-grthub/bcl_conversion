@@ -2,6 +2,10 @@
 
 Automated workflow for NovaSeq data processing, quality control, and report generation.
 
+## Workflow Diagram
+
+![Workflow Rule Graph](rulegraph.png)
+
 ## Overview
 
 This Snakemake pipeline handles the complete sequencing data processing workflow:

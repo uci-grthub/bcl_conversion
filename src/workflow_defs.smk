@@ -5,6 +5,39 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from io import StringIO
 
+# Helper to generate organized directory name
+def get_organized_dir_name(project, config_id, lab_id, run_name, project_lookup, project_order_id):
+    """Generate directory name: lab-id_order-id_run-number_lane_group"""
+    # Extract lane from config_id
+    lane_match = re.match(r'lane(\d+)', config_id)
+    lane = lane_match.group(1) if lane_match else "0"
+    
+    # Get group for this project and lane
+    group = ""
+    try:
+        lane_int = int(lane)
+        for (l, g), p in project_lookup.items():
+            if l == lane_int and p == project:
+                group = str(g)
+                break
+    except:
+        pass
+    
+    # Get order_id for this project
+    order_id = project_order_id.get(project, "NOORDER")
+    
+    # Sanitize components for filename
+    lab_id_clean = lab_id.replace(" ", "-").replace("_", "-")
+    order_id_clean = order_id.replace(" ", "-").replace("_", "-")
+    run_clean = run_name.replace(" ", "-").replace("_", "-")
+    
+    # Build directory name
+    dir_name = f"{lab_id_clean}_{order_id_clean}_{run_clean}_L{lane}"
+    if group:
+        dir_name += f"_G{group}"
+    
+    return dir_name
+
 # Helper to get group for a project from metadata
 def get_project_group(project, config_id):
     """Extract group number for a project based on config_id (lane)."""
