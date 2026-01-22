@@ -21,36 +21,14 @@ jobs:
           environment-name: rulegraph-env
           activate-environment: rulegraph-env
           
-      - name: List Conda Environments
-        shell: bash -l {0}
-        run: |
-          conda env list
-
-      - name: Print Environment Variables
-        shell: bash -l {0}
-        run: |
-          env
-
-      - name: Check Conda Info
-        shell: bash -l {0}
-        run: |
-          conda info
-
-      - name: Upgrade Conda
-        shell: bash -l {0}
-        run: |
-          conda update -n base -c defaults conda -y
-
       - name: Install dependencies
         shell: bash -l {0}
         run: |
-          conda activate rulegraph-env
           conda install -c conda-forge -c bioconda snakemake graphviz -y
           
       - name: Generate rulegraph
         shell: bash -l {0}
         run: |
-          conda activate rulegraph-env
           snakemake --rulegraph 2>/dev/null | dot -Tpng > rulegraph.png
           
       - name: Check for changes
