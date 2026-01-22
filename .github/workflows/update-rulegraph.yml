@@ -18,13 +18,16 @@ jobs:
         with:
           auto-update-conda: true
           python-version: "3.12"
+          mamba-version: "*"
+          channels: conda-forge,bioconda,defaults
+          channel-priority: strict
           environment-name: rulegraph-env
           activate-environment: rulegraph-env
-          
+
       - name: Install dependencies
         shell: bash -l {0}
         run: |
-          conda install -c conda-forge -c bioconda snakemake graphviz -y
+          mamba install -c conda-forge -c bioconda snakemake-minimal graphviz -y
           
       - name: Generate rulegraph
         shell: bash -l {0}
