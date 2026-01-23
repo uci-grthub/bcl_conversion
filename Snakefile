@@ -155,7 +155,7 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
 
 # Generate sample sheets during parse time (needed for function calls below)
 # Rule generate_samplesheets will also ensure they're created as explicit dependencies
-SAMPLE_SHEETS_DICT = generate_lane_samplesheets(METADATA_FILE, LANE_CONFIGS, PROJECT_LOOKUP, MASKING_LOOKUP, "src", RUN_INFO_PATH)
+SAMPLE_SHEETS_DICT = generate_lane_samplesheets(METADATA_FILE, LANE_CONFIGS, PROJECT_LOOKUP, MASKING_LOOKUP, "results", RUN_INFO_PATH)
 
 # print(SAMPLE_SHEETS_DICT)
 # print(RUN_INFO_PATH)

@@ -1477,3 +1477,156 @@ Let me remove these unnecessary steps and keep only the essential ones.
 
 ---
 
+_**User (2026-01-22 00:54Z)**_
+
+The job is failing during the "Install dependencies" step when trying to install Snakemake and Graphviz via conda. The error log shows Process completed with exit code 1, indicating the conda installation command failed.
+Solution
+
+The issue is likely due to package conflicts or solver issues with conda. Here's the recommended fix:
+
+Update your workflow file (.github/workflows/update-rulegraph.yml):
+YAML
+
+      - name: Setup Conda
+        uses: conda-incubator/setup-miniconda@v3
+        with: 
+          auto-update-conda:  true
+          python-version: "3.12"
+          mamba-version: "*"
+          channels: conda-forge,bioconda,defaults
+          channel-priority: strict
+          environment-name: rulegraph-env
+          activate-environment: rulegraph-env
+          
+      - name: Install dependencies
+        shell:  bash -l {0}
+        run: |
+          mamba install -c conda-forge -c bioconda snakemake-minimal graphviz -y
+
+Key changes:
+
+    Add mamba-version:  "*" to the setup step - Mamba is a faster, more reliable conda alternative that handles dependency resolution better
+    Add channels configuration with proper priority to avoid conflicts
+    Use mamba install instead of conda install in the installation step
+    Use snakemake-minimal instead of snakemake - it's lighter weight and sufficient for generating rulegraphs, avoiding unnecessary dependency conflicts
+
+This should resolve the installation failure and allow your workflow to complete successfully.
+
+---
+
+_**Agent (model copilot/auto)**_
+
+<tool-use data-tool-type="search" data-tool-name="copilot_searchCodebase">
+<details>
+<summary>Tool use: **copilot_searchCodebase** • Searching codebase for "The job is failing during the "Install dependencies" step when trying to install Snakemake and Graphviz via conda. The error log shows Process completed with exit code 1, indicating the conda installation command failed.
+Solution
+
+The issue is likely due to package conflicts or solver issues with conda. Here's the recommended fix:
+
+Update your workflow file (.github/workflows/update-rulegraph.yml):
+YAML
+
+      - name: Setup Conda
+        uses: conda-incubator/setup-miniconda@v3
+        with: 
+          auto-update-conda:  true
+          python-version: "3.12"
+          mamba-version: "*"
+          channels: conda-forge,bioconda,defaults
+          channel-priority: strict
+          environment-name: rulegraph-env
+          activate-environment: rulegraph-env
+          
+      - name: Install dependencies
+        shell:  bash -l {0}
+        run: |
+          mamba install -c conda-forge -c bioconda snakemake-minimal graphviz -y
+
+Key changes:
+
+    Add mamba-version:  "*" to the setup step - Mamba is a faster, more reliable conda alternative that handles dependency resolution better
+    Add channels configuration with proper priority to avoid conflicts
+    Use mamba install instead of conda install in the installation step
+    Use snakemake-minimal instead of snakemake - it's lighter weight and sufficient for generating rulegraphs, avoiding unnecessary dependency conflicts
+
+This should resolve the installation failure and allow your workflow to complete successfully."</summary>
+
+
+No results found
+</details>
+</tool-use>
+
+---
+
+<tool-use data-tool-type="write" data-tool-name="copilot_applyPatch">
+<details>
+<summary>Tool use: **copilot_applyPatch** • Using "Apply Patch"</summary>
+
+```yaml
+name: Update Rule Graph
+
+on:
+  push:
+    paths:
+      - 'Snakefile'
+      - 'src/workflow_defs.smk'
+      - '.github/workflows/update-rulegraph.yml'
+
+jobs:
+  update-graph:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Conda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: true
+          python-version: "3.12"
+          mamba-version: "*"
+          channels: conda-forge,bioconda,defaults
+          channel-priority: strict
+          environment-name: rulegraph-env
+          activate-environment: rulegraph-env
+
+      - name: Install dependencies
+        shell: bash -l {0}
+        run: |
+          mamba install -c conda-forge -c bioconda snakemake-minimal graphviz -y
+          
+      - name: Generate rulegraph
+        shell: bash -l {0}
+        run: |
+          snakemake --rulegraph 2>/dev/null | dot -Tpng > rulegraph.png
+          
+      - name: Check for changes
+        id: changes
+        run: |
+          git diff --exit-code rulegraph.png || echo "changed=true" >> $GITHUB_OUTPUT
+          
+      - name: Commit updated graph
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add rulegraph.png
+          git commit -m "Auto-update rulegraph.png [skip ci]"
+          git push
+
+```
+
+
+</details>
+</tool-use>
+
+---
+
+Your workflow is now updated to use mamba for dependency installation and snakemake-minimal for rulegraph generation, with strict channel priority:
+
+- Setup step now includes mamba and channel configuration.
+- Install step uses mamba and snakemake-minimal.
+
+This should resolve the conda installation failures and allow the workflow to complete successfully.
+
+---
+
