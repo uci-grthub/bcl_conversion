@@ -1,15 +1,15 @@
 # Snakemake configuration for postprocess workflow
 sample_sheet: "src/SampleSheet_default.csv"
 num_reads: 2
-library_name: "xR079"
+library_name: "default"
 fastqdir: "output"
 start_s: 1
 lanes: [1,2,3,4,5,6,7,8]
 fastp_threads: 4
 fastp_outdir: "results/fastp"
-metadata: "metadata/260115_233NM2LT4_25B_PE151_xR079.xlsx"
+metadata: "metadata/default.xlsx"
 run_info_path: "src/RunInfo_nn.xml"
-data_dir: "/staging/nextcloud/NovaseqX/20260115_LH00626_0088_A233NM2LT4"
+data_dir: "/staging/nextcloud/NovaseqX/default"
 tiles: ""
 email_sender: "kstachel@uci.edu"
 email_recipient: "kstachel@uci.edu"
