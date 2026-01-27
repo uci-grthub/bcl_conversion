@@ -5,6 +5,23 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from io import StringIO
 
+# Sanitize Masking strings for filenames: strip appended project-like suffixes
+def sanitize_masking(masking):
+    if not masking:
+        return masking
+    s = str(masking).strip()
+    try:
+        m = re.search(r'(\s|_)(SwarV[^\s_]*)', s, flags=re.IGNORECASE)
+        if m:
+            s = s[:m.start()].rstrip(' _-')
+        m2 = re.search(r'(_|\s)[A-Z0-9]+_L\d', s)
+        if m2:
+            s = s[:m2.start()].rstrip(' _-')
+    except Exception:
+        pass
+    s = s.replace(":", "-").replace(", ", "_").replace(",", "_").replace(" ", "")
+    return s
+
 # Helper to generate organized directory name
 def get_organized_dir_name(project, config_id, lab_id, run_name, project_lookup, project_order_id):
     """Generate directory name: lab-id_order-id_run-number_lane_group"""
@@ -281,7 +298,18 @@ def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name)
         f.write("\n")
         
         f.write("[BCLConvert_Settings]\n")
-        f.write("CreateFastqForIndexReads,0\n")
+        # BD_Rhapsody_ATACseq special settings
+        bd_rhapsody_atac = False
+        if 'Sample_Project' in df_samples.columns:
+            for proj in df_samples['Sample_Project'].unique():
+                if isinstance(proj, str) and 'BD_Rhapsody_ATACseq' in proj:
+                    bd_rhapsody_atac = True
+                    break
+        if bd_rhapsody_atac:
+            f.write("CreateFastqForIndexReads,1\n")
+            f.write("TrimUMI,0\n")
+        else:
+            f.write("CreateFastqForIndexReads,0\n")
         f.write("MinimumTrimmedReadLength,8\n")
         f.write("MaskShortReads,8\n")
         f.write("FastqCompressionFormat,gzip\n")
@@ -471,6 +499,8 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 else:
                     sheet_samples['index2'] = ""
                 
+                # Track sheet name for each sample
+                sheet_samples['__sheet_name__'] = sheet
                 all_samples = pd.concat([all_samples, sheet_samples], ignore_index=True)
                 
             except Exception as e:
@@ -507,11 +537,19 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
 
     for config in lane_configs:
         lane = config['lane']
-        masking = config['masking']
-        masking_sanitized = config['masking_sanitized']
-        
+        masking = config.get('masking', '')
+        # Ensure masking_sanitized is safe even if upstream metadata contained project suffixes
+        masking_sanitized = sanitize_masking(config.get('masking_sanitized', masking))
         # Filter by Lane AND Masking
         lane_df = df[(df['Lane'] == lane) & (df['Masking'] == masking)].copy()
+        # Determine if this config comes from a BD_Rhapsody_ATACseq sheet (allow both space and underscore)
+        bd_rhapsody_atac = False
+        if not lane_df.empty and '__sheet_name__' in lane_df.columns:
+            for s in lane_df['__sheet_name__'].unique():
+                s_norm = str(s).replace('_', ' ').strip().lower()
+                if s_norm == 'bd rhapsody atacseq':
+                    bd_rhapsody_atac = True
+                    break
         
         # Remove rows with empty index if there are other rows with index
         def is_valid_index(val):
@@ -584,12 +622,30 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         has_index1 = False
         has_index2 = False
         
+        # Allow per-config override: for single-cell ATAC projects there is no I2 index
+        masking_for_cycles = masking
+        try:
+            projects_upper = [str(p).upper() for p in lane_df['Project'].unique() if p and str(p).strip()]
+        except Exception:
+            projects_upper = []
+
+        # If this config appears to be single-cell ATAC (project name contains 'ATAC' or BD_Rhapsody_ATACseq tab),
+        # remove any I2 component from masking when computing OverrideCycles so DRAGEN does not expect index2.
+        if bd_rhapsody_atac or any('ATAC' in p for p in projects_upper):
+            try:
+                parts = [p.strip() for p in masking.split(',') if p and str(p).strip()]
+                parts = [p for p in parts if not p.strip().upper().startswith('I2:')]
+                masking_for_cycles = ', '.join(parts)
+            except Exception:
+                masking_for_cycles = masking
+
         if masking:
             # Masking format from metadata: "R1:151, I1:8, I2:8, R2:151"
             # Target format: Y151;I8;I8;Y151
             
             try:
-                parts = [p.strip() for p in masking.split(',')]
+                # Use masking_for_cycles which may have I2 removed for ATAC projects
+                parts = [p.strip() for p in masking_for_cycles.split(',')]
                 cycles = []
                 for i, p in enumerate(parts):
                     if ':' in p:
@@ -661,16 +717,19 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             # Add Settings block
             f.write("[BCLConvert_Settings]\n")
             
-            # Check if any project in this lane contains "10x", "BD", "parse" or "Parse"
+            # BD_Rhapsody_ATACseq special settings (now based on sheet/tab name)
+            # Override fallback logic for 10x/BD/Parse if BD_Rhapsody_ATACseq
             create_fastq_for_index = "0"
-            if 'Sample_Project' in ss_data.columns:
-                for proj in ss_data['Sample_Project'].unique():
-                    proj_str = str(proj)
-                    if any(keyword in proj_str for keyword in ["10x", "BD", "parse", "Parse"]):
-                        create_fastq_for_index = "1"
-                        break
-            
-            f.write(f"CreateFastqForIndexReads,{create_fastq_for_index}\n")
+            if bd_rhapsody_atac:
+                f.write("CreateFastqForIndexReads,1\n")
+                f.write("TrimUMI,0\n")
+            else:
+                if 'Sample_Project' in ss_data.columns:
+                    for proj in ss_data['Sample_Project'].unique():
+                        proj_str = str(proj)
+                        if any(keyword in proj_str for keyword in ["10x", "BD", "parse", "Parse"]):
+                            create_fastq_for_index = "1"
+                f.write(f"CreateFastqForIndexReads,{create_fastq_for_index}\n")
             f.write("MinimumTrimmedReadLength,8\n")
             f.write("MaskShortReads,8\n")
             # if has_index1:
