@@ -1,3 +1,4 @@
+
 import os
 import re
 import subprocess
@@ -6,7 +7,24 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from io import StringIO
 
-envvars: "GMAIL_APP_PASSWORD"
+
+envvars: 
+    "GMAIL_APP_PASSWORD",
+    "NEXTCLOUD_URL",
+    "NEXTCLOUD_USER",
+    "NEXTCLOUD_PASSWORD"
+
+NEXTCLOUD_URL = os.environ.get("NEXTCLOUD_URL")
+if not NEXTCLOUD_URL:
+    raise SystemExit("Error: NEXTCLOUD_URL environment variable not set")
+
+NEXTCLOUD_USER = os.environ.get("NEXTCLOUD_USER")
+if not NEXTCLOUD_USER:
+    raise SystemExit("Error: NEXTCLOUD_USER environment variable not set")
+
+NEXTCLOUD_PASSWORD = os.environ.get("NEXTCLOUD_PASSWORD")
+if not NEXTCLOUD_PASSWORD:
+    raise SystemExit("Error: NEXTCLOUD_PASSWORD environment variable not set")
 
 configfile: "snakemake_config.yaml"
 
@@ -38,11 +56,33 @@ RUN_INFO_PATH = config.get("run_info_path", "src/RunInfo.xml")
 DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20260115_LH00626_0088_A233NM2LT4")  # From merged config
 TILES = config.get("tiles", "1_1101")
 
+NEXTCLOUD_DIR_NAME = config.get("nextcloud_dir_name", "DragenExt3")
+NEXTCLOUD_DIR_PATH = config.get("nextcloud_dir_path", "nextcloud3")
+
 EMAIL_SENDER = config.get("email_sender", "kstachel@uci.edu")
 EMAIL_RECIPIENT = config.get("email_recipient", "kstachel@uci.edu")
 EMAIL_CC = config.get("email_cc", "kstachel@uci.edu")
 
 include: "src/workflow_defs.smk"
+
+# Sanitize Masking strings for filenames: strip appended project-like suffixes
+def sanitize_masking(masking):
+    if not masking:
+        return masking
+    s = str(masking).strip()
+    # Remove common project-like suffixes (e.g., _SwarV..., SwarV_..., or trailing PROJECT_Lx tokens)
+    try:
+        m = re.search(r'(\s|_)(SwarV[^\s_]*)', s, flags=re.IGNORECASE)
+        if m:
+            s = s[:m.start()].rstrip(' _-')
+        m2 = re.search(r'(_|\s)[A-Z0-9]+_L\d', s)
+        if m2:
+            s = s[:m2.start()].rstrip(' _-')
+    except Exception:
+        pass
+    # Normalize formatting used elsewhere in the workflow
+    s = s.replace(":", "-").replace(", ", "_").replace(",", "_").replace(" ", "")
+    return s
 
 # Auto-detect lanes from data/Data/Intensities/BaseCalls
 detected_lanes = []
@@ -131,7 +171,8 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
                         masking = str(row['Masking']).strip()
                         # Sanitize masking for filename
                         # Example: "R1:151, I1:8, I2:8, R2:151" -> "R1-151_I1-8_I2-8_R2-151"
-                        masking_sanitized = masking.replace(":", "-").replace(", ", "_").replace(",", "_").replace(" ", "")
+                        # Sanitize masking for filename and strip appended project tokens
+                        masking_sanitized = sanitize_masking(masking)
                         
                         LANE_CONFIGS.append({
                             'lane': lane,
@@ -206,13 +247,12 @@ rule all:
         expand("results/fastp_plots_summary_lane{lane}.done", lane=detected_lanes),
         expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
         expand("results/read_counts_{project}.csv", project=PROJECTS),
-        expand("logs/project_link_{config_id}_{project}.log", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
+        # expand("logs/project_link_{config_id}_{project}.log", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         "logs/project_links.yaml",
         f"results/{LIBRARY}-count.csv",
         f"Reports/{LIBRARY}_read_counts_email.done",
         expand("Reports/order_{order_id}/email_sent.done", order_id=ORDER_ID_CONFIGS.keys()),
-        expand("logs/verify_project_link_{config_id}_{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
-        "logs/project_links.yaml"
+        expand("logs/verify_project_link_{config_id}_{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS])
 
 rule bcl_convert_only:
     input:
@@ -876,15 +916,49 @@ rule generate_samplesheets:
                 os.makedirs(os.path.dirname(done_marker), exist_ok=True)
                 open(done_marker, 'w').close()
 
+
+
+# Generate renaming map by copying from generate_samplesheets output
+rule generate_renaming_map:
+    input:
+        sample_sheet = "results/SampleSheet_{config_id}.csv"
+    output:
+        map = "results/renaming_map_{config_id}.csv"
+    log:
+        "logs/generate_renaming_map_{config_id}.log"
+    shell:
+        """
+        cp {input.sample_sheet} {output.map}
+        echo "Copied sample sheet to renaming map for {wildcards.config_id}" > {log}
+        """
+
+# Ensure renaming map is correct for BD Rhapsody ATACseq before bcl_convert
+rule update_renaming_map_bd_rhapsody:
+    input:
+        map = "results/renaming_map_{config_id}.csv",
+        sample_sheet = "results/SampleSheet_{config_id}.csv"
+    output:
+        map = "results/renaming_map_{config_id}.csv.bd_fixed"
+    log:
+        "logs/update_renaming_map_bd_rhapsody_{config_id}.log"
+    shell:
+        """
+        cp {input.map} {output.map}
+        if grep -q "BD Rhapsody_ATACseq\\|BD_Rhapsody_ATACseq" {input.sample_sheet}; then
+            echo "Updating renaming map for BD Rhapsody ATACseq: {wildcards.config_id}" >> {log}
+            bash src/rename_bd_rhapsody_atac.sh --map {output.map}
+        fi
+        """
+
 rule bcl_convert:
     input:
         sample_sheet=lambda wildcards: f"results/SampleSheet_{wildcards.config_id}.csv",
+        renaming_map = "results/renaming_map_{config_id}.csv.bd_fixed",
         data_dir=DATA_DIR,
         _sheet_done=lambda wildcards: f"logs/generate_samplesheets_{wildcards.config_id}.done"
     output:
-        output_dir = protected(directory("output/{config_id}")),
-        done_file = touch("output/{config_id}/.done"),
-        renaming_map = "results/renaming_map_{config_id}.csv"
+        output_dir = directory("output/{config_id}"),
+        done_file = touch("output/{config_id}/.done")
     log:
         "logs/bcl_convert_{config_id}.log"
     wildcard_constraints:
@@ -918,12 +992,14 @@ rule bcl_convert:
         $tiles_arg
         
         # Rename FASTQ files
-        # python3 src/rename_fastqs.py {wildcards.config_id} {output.output_dir} results/renaming_map_{wildcards.config_id}.csv
-        src/run_rename.sh {wildcards.config_id} {output.output_dir} results/renaming_map_{wildcards.config_id}.csv
-        
-        # Delete Undetermined FASTQ files to save space - DISABLED as they are needed for analysis
-        # find {output.output_dir} -name "Undetermined_S0*.fastq.gz" -delete || true
-        
+        src/run_rename.sh {wildcards.config_id} {output.output_dir} {input.renaming_map}
+
+        # If BD Rhapsody ATACseq, run additional renaming for R1/R2/R3
+        if grep -q "BD Rhapsody_ATACseq\\|BD_Rhapsody_ATACseq" {input.sample_sheet}; then
+            echo "Running BD Rhapsody ATACseq renaming for {wildcards.config_id}..."
+            bash src/rename_bd_rhapsody_atac.sh {output.output_dir}
+        fi
+
         touch {output.done_file}
         ) > {log} 2>&1
         """
@@ -936,7 +1012,7 @@ rule calculate_md5sums:
     log:
         "logs/calculate_md5sums_{config_id}_{project}.log"
     wildcard_constraints:
-        config_id = "[^/]+",
+        config_id = r"lane\d+_R\d+-\d+_I1-\d+_(?:I2-\d+|U-\d+)_R\d+-\d+",
         project = ".+"
     shell:
         """
@@ -964,7 +1040,6 @@ rule analyze_undetermined:
 
 rule consolidate_project_links:
     input:
-        PROJECT_LINK_LOGS,
         expand("logs/nextcloud_scan_{config_id}_{project}.done", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS])
     output:
         "logs/project_links.yaml"
@@ -977,35 +1052,24 @@ rule consolidate_project_links:
         
         links = {}
         
-        # Dynamically discover all project_link logs
+        # Dynamically discover all project_link logs (now using '---' separator)
         log_files = glob.glob("logs/project_link_*.log")
         print(f"Found {len(log_files)} project link log files")
-        
+
         for log_file in log_files:
             try:
                 with open(log_file, 'r') as f:
                     content = f.read()
-                
-                # Extract project and config_id from filename
-                # Format: logs/project_link_{config_id}_{project}.log
+
+                # Filename format: logs/project_link_{config_id}---{project}.log
                 basename = os.path.basename(log_file)
-                # Remove prefix and suffix
                 filename_no_prefix = basename.replace("project_link_", "").replace(".log", "")
-                
-                # Match against known CONFIG_IDS to extract config_id
-                # config_id format: lane{N}_R{N}-{N}_I{N}-{N}_I{N}-{N}_R{N}-{N}
-                config_id = None
-                project = None
-                
-                for known_config in CONFIG_IDS:
-                    if filename_no_prefix.startswith(known_config + "_"):
-                        config_id = known_config
-                        # Everything after config_id + "_" is the project name
-                        project = filename_no_prefix[len(known_config) + 1:]
-                        break
-                
-                if not config_id or not project:
-                    print(f"Could not parse filename: {basename} (no matching config_id)")
+
+                # Split on the delimiter '---'
+                if '---' in filename_no_prefix:
+                    config_id, project = filename_no_prefix.split('---', 1)
+                else:
+                    print(f"Could not parse filename (no delimiter): {basename}")
                     continue
                 
                 # Extract Order ID and Group from log content
@@ -1027,27 +1091,31 @@ rule consolidate_project_links:
                 if order_id:
                     order_id = order_id.replace('i', 'I')
                 
-                # Try to find "Share link:" in the log content
-                if "Share link:" in content:
-                    for line in lines:
-                        if line.startswith("Share link:"):
-                            share_url = line.split("Share link:", 1)[1].strip()
-                            
-                            if project and config_id and share_url:
-                                if project not in links:
-                                    links[project] = {}
-                                if config_id not in links[project]:
-                                    links[project][config_id] = {}
-                                
-                                # Store with order_id key, or use "default" if still not found
-                                order_key = order_id if order_id else "default"
-                                # Store as dict with link and group
-                                links[project][config_id][order_key] = {
-                                    'link': share_url,
-                                    'group': group
-                                }
-                                print(f"Found link for {project} / {config_id} / {order_key} (group: {group}): {share_url}")
-                                break
+                # Try to find share URL in the log content (support multiple labels)
+                share_url = None
+                for line in lines:
+                    if line.startswith("Share link:"):
+                        share_url = line.split("Share link:", 1)[1].strip()
+                        break
+                    if line.startswith("Browser URL:"):
+                        share_url = line.split("Browser URL:", 1)[1].strip()
+                        break
+
+                if share_url:
+                    if project and config_id and share_url:
+                        if project not in links:
+                            links[project] = {}
+                        if config_id not in links[project]:
+                            links[project][config_id] = {}
+
+                        # Store with order_id key, or use "default" if still not found
+                        order_key = order_id if order_id else "default"
+                        # Store as dict with link and group
+                        links[project][config_id][order_key] = {
+                            'link': share_url,
+                            'group': group
+                        }
+                        print(f"Found link for {project} / {config_id} / {order_key} (group: {group}): {share_url}")
             except Exception as e:
                 print(f"Error processing {log_file}: {e}")
                 continue
@@ -1062,9 +1130,10 @@ rule project_link:
     input:
         done = "output/{config_id}/.done"
     output:
-        log = "logs/project_link_{config_id}_{project}.log"
+        log = "logs/project_link_{config_id}---{project}.log"
     wildcard_constraints:
-        config_id = r"lane\d+_(R\d+-\d+(_[IR]\d+-\d+)*_R\d+-\d+|default)",
+        # Relaxed to accept any lane-prefixed config with additional underscore-separated tokens
+        config_id = "[^/]+",
         project = ".+"
     params:
         work_dir = os.getcwd(),
@@ -1072,10 +1141,13 @@ rule project_link:
         group = lambda wildcards: get_project_group(wildcards.project, wildcards.config_id)
     run:
         import traceback
+        import subprocess
         from pathlib import Path
         import time
         import urllib.parse
         import re
+        import os
+        import shlex
         
         config_id = wildcards.config_id
         project = wildcards.project
@@ -1083,267 +1155,209 @@ rule project_link:
         group = params.group
         fastq_dir = f"output/{config_id}/{project}"
         log_file = output.log
-        work_dir = params.work_dir
         
-        # Ensure logs directory exists
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
         
-        # Create log file
-        with open(log_file, 'w') as f:
-            f.write(f"Checking for directory: {fastq_dir}\n")
-            f.write(f"Working directory: {os.getcwd()}\n")
-            f.write(f"Config ID: {config_id}\n")
-            f.write(f"Project: {project}\n")
-            f.write(f"Order ID: {order_id}\n")
-            f.write(f"Group: {group}\n")
-        
+        # Helper: Extract Browser URL
         def extract_share_url(xml_text):
-            if not xml_text:
-                return None
+            if not xml_text: return None
             match = re.search(r'<url>(.*?)</url>', xml_text)
             return match.group(1) if match else None
-        
-        def check_http_status(stderr_text):
-            """Extract HTTP status code from curl verbose output in stderr."""
-            if not stderr_text:
-                return None
-            # Look for "< HTTP/2 XXX" or "< HTTP/1.1 XXX"
-            match = re.search(r'<\s*HTTP/[0-9.]+\s+(\d+)', stderr_text)
-            return int(match.group(1)) if match else None
+
+        # Helper: Extract Token (This is your WebDAV Username)
+        def extract_share_token(xml_text):
+            if not xml_text: return None
+            match = re.search(r'<token>(.*?)</token>', xml_text)
+            return match.group(1) if match else None
+
+        def extract_share_owner(xml_text):
+            if not xml_text: return None
+            m = re.search(r'<uid_owner>(.*?)</uid_owner>', xml_text)
+            if m:
+                return m.group(1)
+            # fallback: sometimes owner is in <id> or <owner>
+            m2 = re.search(r'<owner>(.*?)</owner>', xml_text)
+            if m2:
+                return m2.group(1)
+            return None
+
+        def extract_internal_path(xml_text):
+            if not xml_text: return None
+            m = re.search(r'<path>(.*?)</path>', xml_text)
+            if m:
+                return m.group(1)
+            # fallback: sometimes in <folder>
+            m2 = re.search(r'<folder>(.*?)</folder>', xml_text)
+            if m2:
+                return m2.group(1)
+            return None
+
+        # Capture executed commands for logging
+        executed_cmds = []
 
         def fetch_existing_share(path, log_handle):
-            """Try to fetch an existing share link for the given path."""
             encoded_path = urllib.parse.quote(path, safe="/")
-            result = subprocess.run([
-                'curl', '-s', '-w', '\nHTTP_CODE:%{http_code}',
-                '-X', 'GET',
-                '-u', 'kstachel:ucightf2025',
+            cmd = [
+                'curl', '-s', '-X', 'GET',
+                '-u', f'{NEXTCLOUD_USER}:{NEXTCLOUD_PASSWORD}',
                 '-H', 'OCS-APIRequest: true',
-                f'https://precision.biochem.uci.edu/ocs/v2.php/apps/files_sharing/api/v1/shares?path={encoded_path}&reshares=true'
-            ], capture_output=True, text=True, timeout=30)
-
-            # Parse HTTP status from output
-            http_code = None
-            stdout_lines = result.stdout.split('\n')
-            for line in stdout_lines:
-                if line.startswith('HTTP_CODE:'):
-                    http_code = line.split(':', 1)[1]
-                    stdout_lines.remove(line)
-                    break
-            share_xml = '\n'.join(stdout_lines)
-
-            log_handle.write("  GET existing share response:\n")
-            log_handle.write(f"    Return code: {result.returncode}\n")
-            log_handle.write(f"    HTTP status: {http_code}\n")
-            if result.stderr:
-                log_handle.write(f"    STDERR: {result.stderr}\n")
-            log_handle.write(f"    STDOUT length: {len(share_xml)} bytes\n")
-            if share_xml:
-                log_handle.write(f"    Content:\n{share_xml}\n")
-            else:
-                log_handle.write("    Content: (empty response)\n")
-
-            return extract_share_url(share_xml)
+                f'{NEXTCLOUD_URL}/ocs/v2.php/apps/files_sharing/api/v1/shares?path={encoded_path}&reshares=true'
+            ]
+            executed_cmds.append(cmd)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            return result.stdout
 
         try:
             if os.path.isdir(fastq_dir):
                 abs_path = os.path.abspath(fastq_dir)
-                with open(log_file, 'a') as f:
-                    f.write(f"Absolute path: {abs_path}\n")
+                nc_path = f"/{NEXTCLOUD_DIR_NAME}/" + abs_path.split(f"/{NEXTCLOUD_DIR_PATH}/", 1)[1] if f"/{NEXTCLOUD_DIR_PATH}/" in abs_path else abs_path
                 
-                # Extract Nextcloud path
-                # Nextcloud API expects path like: /DragenExt/xR078_workflow/output/lane.../project/
-                if "/nextcloud2/" in abs_path:
-                    # Replace /mnt/extusb1/nextcloud2/ with /DragenExt/
-                    nc_path = "/DragenExt/" + abs_path.split("/nextcloud2/", 1)[1]
-                else:
-                    nc_path = abs_path
-                
-                with open(log_file, 'a') as f:
-                    f.write(f"Nextcloud path: {nc_path}\n")
-                
-                # Retry logic with exponential backoff
-                # Start with longer delays to avoid rate limiting
                 max_retries = 5
                 retry_count = 0
                 share_url = None
+                share_token = None
                 rate_limited = False
                 
                 while retry_count < max_retries and not share_url:
                     retry_count += 1
-                    # Longer delays: 3, 6, 12, 24, 48 seconds to avoid rate limiting
                     wait_time = 3 * (2 ** (retry_count - 1))
-                    
-                    # If we were rate limited before, add extra delay
-                    if rate_limited and retry_count > 1:
-                        extra_wait = 10
-                        with open(log_file, 'a') as f:
-                            f.write(f"Previous attempt was rate-limited, adding {extra_wait}s extra delay\n")
-                        time.sleep(extra_wait)
-                    
-                    with open(log_file, 'a') as f:
-                        if retry_count > 1:
-                            f.write(f"\nRetry attempt {retry_count}/{max_retries} (waited {wait_time}s)...\n")
-                        else:
-                            f.write("Creating share link...\n")
-                    
-                    # Log the curl command being executed
-                    with open(log_file, 'a') as f:
-                        f.write(f"Executing curl command (attempt {retry_count}):\n")
-                        f.write(f"  curl -s -w '\\nHTTP_CODE:%{{http_code}}' -X POST -u kstachel:*** -H 'OCS-APIRequest: true' -d 'path={nc_path}' -d 'shareType=3' https://precision.biochem.uci.edu/ocs/v2.php/apps/files_sharing/api/v1/shares\n")
+                    if rate_limited: time.sleep(10)
                     
                     try:
-                        result = subprocess.run([
+                        cmd = [
                             'curl', '-s', '-w', '\nHTTP_CODE:%{http_code}',
                             '-X', 'POST',
-                            '-u', 'kstachel:ucightf2025',
+                            '-u', f'{NEXTCLOUD_USER}:{NEXTCLOUD_PASSWORD}',
                             '-H', 'OCS-APIRequest: true',
                             '-d', f'path={nc_path}',
-                            '-d', 'shareType=3',
-                            'https://precision.biochem.uci.edu/ocs/v2.php/apps/files_sharing/api/v1/shares'
-                        ], capture_output=True, text=True, timeout=30)
+                            '-d', 'shareType=3', # 3 = Public Link
+                            f'{NEXTCLOUD_URL}/ocs/v2.php/apps/files_sharing/api/v1/shares'
+                        ]
+                        executed_cmds.append(cmd)
+                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
                         
-                        # Parse HTTP status from output
-                        http_code = None
-                        stdout_lines = result.stdout.split('\n')
-                        for line in stdout_lines:
-                            if line.startswith('HTTP_CODE:'):
-                                http_code = line.split(':', 1)[1]
-                                stdout_lines.remove(line)
-                                break
-                        share_xml = '\n'.join(stdout_lines)
-                        stderr_output = result.stderr
-                        returncode = result.returncode
-                        
-                        with open(log_file, 'a') as f:
-                            f.write(f"Response (attempt {retry_count}):\n")
-                            f.write(f"  Return code: {returncode}\n")
-                            f.write(f"  HTTP status: {http_code}\n")
-                            f.write(f"  STDOUT length: {len(share_xml)} bytes\n")
-                            if stderr_output:
-                                f.write(f"  STDERR: {stderr_output}\n")
-                            if share_xml:
-                                f.write(f"  Content:\n{share_xml}\n")
-                            else:
-                                f.write(f"  Content: (empty response)\n")
-                        
-                        # Check for rate limiting (HTTP 429)
+                        stdout_split = result.stdout.split('\n')
+                        http_code = next((l.split(':')[1] for l in stdout_split if l.startswith('HTTP_CODE:')), None)
+                        share_xml = '\n'.join([l for l in stdout_split if not l.startswith('HTTP_CODE:')])
+
                         if http_code == '429':
                             rate_limited = True
-                            with open(log_file, 'a') as f:
-                                f.write(f"⚠ Rate limited (HTTP 429) - will retry with longer delay\n")
-                        elif http_code and not http_code.startswith('2'):
-                            # Non-2xx status code
-                            with open(log_file, 'a') as f:
-                                f.write(f"⚠ HTTP error status {http_code}\n")
-                        
-                        # Extract URL from XML
-                        if share_xml and len(share_xml.strip()) > 0:
+                        elif share_xml:
                             share_url = extract_share_url(share_xml)
-                            if share_url:
-                                with open(log_file, 'a') as f:
-                                    f.write(f"✓ Successfully created share link on attempt {retry_count}: {share_url}\n")
-                                    f.write(f"Share link: {share_url}\n")
-                            else:
-                                # Check if response indicates an error
-                                if '<statuscode>404</statuscode>' in share_xml:
-                                    with open(log_file, 'a') as f:
-                                        f.write(f"✗ Path not found (404) - directory may not exist in Nextcloud\n")
-                                elif '<statuscode>403</statuscode>' in share_xml:
-                                    with open(log_file, 'a') as f:
-                                        f.write(f"✗ Permission denied (403)\n")
-                                else:
-                                    with open(log_file, 'a') as f:
-                                        f.write(f"Could not extract URL from response (attempt {retry_count})\n")
-                        else:
-                            with open(log_file, 'a') as f:
-                                if http_code == '429':
-                                    f.write(f"Empty response due to rate limiting (HTTP 429)\n")
-                                else:
-                                    f.write(f"Empty response received (attempt {retry_count})\n")
-                            
-                        # If POST did not yield a URL and we're not rate limited, try to find an existing share via GET
-                        if not share_url and http_code != '429':
-                            with open(log_file, 'a') as f:
-                                f.write("Attempting to fetch existing share (GET)...\n")
-                                share_url = fetch_existing_share(nc_path, f)
-                                if share_url:
-                                    f.write(f"✓ Found existing share link: {share_url}\n")
-                                    f.write(f"Share link: {share_url}\n")
-                                else:
-                                    f.write("No existing share link found via GET\n")
+                            share_token = extract_share_token(share_xml)
 
-                        # Wait before retrying (unless it's the last attempt and we already found a URL)
-                        if not share_url and retry_count < max_retries:
-                            with open(log_file, 'a') as f:
-                                f.write(f"Waiting {wait_time} seconds before retry...\n")
-                            time.sleep(wait_time)
-                    
-                    except subprocess.TimeoutExpired:
-                        with open(log_file, 'a') as f:
-                            f.write(f"Timeout on attempt {retry_count} (30s)\n")
-                        if retry_count < max_retries:
-                            with open(log_file, 'a') as f:
-                                f.write(f"Waiting {wait_time} seconds before retry...\n")
-                            time.sleep(wait_time)
+                        # If POST failed (often because share exists), try GET
+                        if not share_url and http_code != '429':
+                            share_xml = fetch_existing_share(nc_path, None)
+                            share_url = extract_share_url(share_xml)
+                            share_token = extract_share_token(share_xml)
+
+                        if share_url and share_token:
+                            # try to extract owner/internal path from response
+                            try:
+                                owner = extract_share_owner(share_xml)
+                                internal_path = extract_internal_path(share_xml)
+                            except Exception:
+                                owner = None
+                                internal_path = None
+                            share_owner = owner
+                            share_internal_path = internal_path
+                            break
+                        
+                        if retry_count < max_retries: time.sleep(wait_time)
+
                     except Exception as e:
-                        with open(log_file, 'a') as f:
-                            f.write(f"Error on attempt {retry_count}: {type(e).__name__}: {e}\n")
-                        if retry_count < max_retries:
-                            with open(log_file, 'a') as f:
-                                f.write(f"Waiting {wait_time} seconds before retry...\n")
-                            time.sleep(wait_time)
-                
-                if not share_url:
-                    with open(log_file, 'a') as f:
-                        f.write(f"\n✗ Failed to create share link after {max_retries} attempts\n")
-                        if rate_limited:
-                            f.write(f"   Reason: Rate limiting (HTTP 429 - Too Many Requests)\n")
-                            f.write(f"   Suggestion: Wait a few minutes and retry manually, or increase delays in code\n")
-                        f.write(f"NOTE: Rule will succeed but link was not created\n")
-                        f.write(f"This project will be missing from project_links.yaml\n")
+                        if retry_count < max_retries: time.sleep(wait_time)
+
+                # --- LOGGING WEB DAV CREDENTIALS AND EXECUTED COMMANDS ---
+                with open(log_file, 'w') as f:
+                    f.write(f"Project: {project}\n")
+                    f.write(f"Config ID: {config_id}\n")
+                    # Write the Nextcloud path we attempted to share (for rescan parsing)
+                    try:
+                        f.write(f"NC_PATH: {nc_path}\n")
+                    except Exception:
+                        pass
+                    if share_url and share_token:
+                        f.write(f"Status: SUCCESS\n")
+                        f.write(f"Browser URL: {share_url}\n")
+                        f.write(f"WebDAV URL: {NEXTCLOUD_URL}/public.php/dav/\n")
+                        f.write(f"WebDAV Token: {share_token}\n")
+                        # If available, record Nextcloud owner and internal storage path
+                        try:
+                            if share_owner:
+                                f.write(f"NC_OWNER: {share_owner}\n")
+                            if share_internal_path:
+                                f.write(f"NC_INTERNAL_PATH: {share_internal_path}\n")
+                        except Exception:
+                            pass
+                    else:
+                        f.write(f"Status: FAILED\n")
+
+                    # Record the actual commands executed (quoted for copy/paste)
+                    if executed_cmds:
+                        f.write("\nCommands executed:\n")
+                        for c in executed_cmds:
+                            try:
+                                quoted = shlex.join(c)
+                            except Exception:
+                                quoted = ' '.join(shlex.quote(p) for p in c)
+                            f.write(quoted + "\n")
             else:
-                with open(log_file, 'a') as f:
-                    f.write(f"Directory {fastq_dir} does not exist, skipping link creation\n")
+                Path(log_file).write_text(f"Directory {fastq_dir} not found.")
+
         except Exception as e:
-            with open(log_file, 'a') as f:
-                f.write(f"\nError during processing:\n")
-                f.write(f"Exception type: {type(e).__name__}\n")
-                f.write(f"Exception message: {str(e)}\n")
-                f.write(f"Traceback:\n{traceback.format_exc()}\n")
-                f.write(f"NOTE: Rule will succeed despite error\n")
+            Path(log_file).write_text(f"Error: {str(e)}\n{traceback.format_exc()}")
         
-        # Always ensure the log file exists to satisfy the output requirement
-        # This makes the rule always succeed even if link creation fails
         Path(log_file).touch(exist_ok=True)
 
 rule rescan_nextcloud:
     input:
-        "logs/project_link_{config_id}_{project}.log"
+        "logs/project_link_{config_id}---{project}.log"
     output:
         touch("logs/nextcloud_scan_{config_id}_{project}.done")
     log:
         "logs/rescan_nextcloud_{config_id}_{project}.log"
     wildcard_constraints:
-        config_id = r"lane\d+_(R\d+-\d+(_[IR]\d+-\d+)*_R\d+-\d+|default)",
+        config_id = r"lane\d+_R\d+-\d+_I1-\d+_(?:I2-\d+|U-\d+)_R\d+-\d+",
         project = ".+"
     params:
-        nc_path = lambda wildcards: f"/DragenExt/{LIBRARY}_workflow/output/{wildcards.config_id}/{wildcards.project}"
+        nc_path = lambda wildcards: f"/{NEXTCLOUD_DIR_NAME}/{LIBRARY}/output/{wildcards.config_id}/{wildcards.project}"
     shell:
         """
-        ssh kstachel@precision.biochem.uci.edu "docker exec --user www-data nextcloud-aio-nextcloud php occ files:scan --path='{params.nc_path}'" > {log} 2>&1
+        # Read NC_PATH from the project_link log (written by project_link rule) and use that for scanning.
+        nc_log={input}
+        nc_path=$(grep '^NC_PATH:' "$nc_log" | sed 's/^NC_PATH: //') || true
+        nc_owner=$(grep '^NC_OWNER:' "$nc_log" | sed 's/^NC_OWNER: //') || true
+        nc_internal=$(grep '^NC_INTERNAL_PATH:' "$nc_log" | sed 's/^NC_INTERNAL_PATH: //') || true
+
+        # Prefer owner+internal_path if available (construct users/<owner>/files/<internal>)
+        if [ -n "$nc_owner" ] && [ -n "$nc_internal" ]; then
+            # strip leading slashes from internal
+            internal=$(echo "$nc_internal" | sed 's@^/*@@')
+            occ_path="users/$nc_owner/files/$internal"
+        elif [ -n "$nc_path" ]; then
+            occ_path="$nc_path"
+        else
+            echo "NC path information not found in $nc_log" > {log}
+            exit 1
+        fi
+
+        ssh kstachel@precision.biochem.uci.edu "docker exec --user www-data nextcloud-aio-nextcloud php occ files:scan --path='$occ_path'" > {log} 2>&1
         """
+
+
 
 rule verify_project_links:
     input:
-        project_link_log = "logs/project_link_{config_id}_{project}.log",
+        project_link_log = "logs/project_link_{config_id}---{project}.log",
         scan_done = "logs/nextcloud_scan_{config_id}_{project}.done"
     output:
         report = "logs/verify_project_link_{config_id}_{project}.txt"
     log:
         "logs/verify_project_link_{config_id}_{project}.log"
     wildcard_constraints:
-        config_id = r"lane\d+_(R\d+-\d+(_[IR]\d+-\d+)*_R\d+-\d+|default)",
+        config_id = r"lane\d+_R\d+-\d+_I1-\d+_(?:I2-\d+|U-\d+)_R\d+-\d+",
         project = ".+"
     run:
         import subprocess
@@ -1402,7 +1416,7 @@ rule verify_project_links:
                         '-u', 'kstachel:ucightf2025',
                         '-X', 'PROPFIND',
                         '-H', 'Depth: 1',
-                        f'https://precision.biochem.uci.edu/remote.php/dav/files/kstachel/DragenExt/{LIBRARY}_workflow/output/{config_id}/{project}/'
+                        f'https://precision.biochem.uci.edu/remote.php/dav/files/kstachel/{NEXTCLOUD_DIR_NAME}/{LIBRARY}/output/{config_id}/{project}/'
                     ]
                     
                     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -1464,3 +1478,24 @@ rule verify_project_links:
         with open(log[0], 'w') as f:
             f.write('\n'.join(report))
 
+
+# Diagnostic rule: print expected and actual .done and .log files for project_link
+rule debug_project_link_files:
+    run:
+        import os
+        print("\n=== DIAGNOSTIC: CONFIG_PROJECT_PAIRS ===")
+        for config_id, project in CONFIG_PROJECT_PAIRS:
+            print(f"PAIR: config_id={config_id}, project={project}")
+        print("\n=== DIAGNOSTIC: Expected .done files ===")
+        for config_id, project in CONFIG_PROJECT_PAIRS:
+            done_path = f"output/{config_id}/.done"
+            print(f"{done_path}: {'EXISTS' if os.path.exists(done_path) else 'MISSING'}")
+        print("\n=== DIAGNOSTIC: Expected .log files ===")
+        for config_id, project in CONFIG_PROJECT_PAIRS:
+            log_path = f"logs/project_link_{config_id}_{project}.log"
+            print(f"{log_path}: {'EXISTS' if os.path.exists(log_path) else 'MISSING'}")
+        print("\n=== DIAGNOSTIC: All files in logs/ matching project_link_*.log ===")
+        for fname in sorted(os.listdir('logs')):
+            if fname.startswith('project_link_') and fname.endswith('.log'):
+                print(fname)
+                
