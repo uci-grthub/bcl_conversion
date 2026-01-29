@@ -932,28 +932,10 @@ rule generate_renaming_map:
         echo "Copied sample sheet to renaming map for {wildcards.config_id}" > {log}
         """
 
-# Ensure renaming map is correct for BD Rhapsody ATACseq before bcl_convert
-rule update_renaming_map_bd_rhapsody:
-    input:
-        map = "results/renaming_map_{config_id}.csv",
-        sample_sheet = "results/SampleSheet_{config_id}.csv"
-    output:
-        map = "results/renaming_map_{config_id}.csv.bd_fixed"
-    log:
-        "logs/update_renaming_map_bd_rhapsody_{config_id}.log"
-    shell:
-        """
-        cp {input.map} {output.map}
-        if grep -q "BD Rhapsody_ATACseq\\|BD_Rhapsody_ATACseq" {input.sample_sheet}; then
-            echo "Updating renaming map for BD Rhapsody ATACseq: {wildcards.config_id}" >> {log}
-            bash src/rename_bd_rhapsody_atac.sh --map {output.map}
-        fi
-        """
-
 rule bcl_convert:
     input:
         sample_sheet=lambda wildcards: f"results/SampleSheet_{wildcards.config_id}.csv",
-        renaming_map = "results/renaming_map_{config_id}.csv.bd_fixed",
+        renaming_map = "results/renaming_map_{config_id}.csv",
         data_dir=DATA_DIR,
         _sheet_done=lambda wildcards: f"logs/generate_samplesheets_{wildcards.config_id}.done"
     output:
@@ -995,7 +977,7 @@ rule bcl_convert:
         src/run_rename.sh {wildcards.config_id} {output.output_dir} {input.renaming_map}
 
         # If BD Rhapsody ATACseq, run additional renaming for R1/R2/R3
-        if grep -q "BD Rhapsody_ATACseq\\|BD_Rhapsody_ATACseq" {input.sample_sheet}; then
+        if grep -q "BD Rhapsody_ATACseq\\|BD_Rhapsody_ATACseq\\|BD_ATAC" {input.sample_sheet}; then
             echo "Running BD Rhapsody ATACseq renaming for {wildcards.config_id}..."
             bash src/rename_bd_rhapsody_atac.sh {output.output_dir}
         fi
