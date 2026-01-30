@@ -233,7 +233,7 @@ for config in LANE_CONFIGS:
         FLEXBAR_CONFIGS.append(config['id'])
 
 CONFIG_PROJECT_PAIRS = get_config_project_pairs(SAMPLE_SHEETS_DICT)
-PROJECT_LINK_LOGS = [f"logs/project_link_{config_id}_{project}.log" for config_id, project in CONFIG_PROJECT_PAIRS]
+PROJECT_LINK_LOGS = [f"logs/project_link_{config_id}---{project}.log" for config_id, project in CONFIG_PROJECT_PAIRS]
 
 # print("CONFIG_PROJECT_PAIRS:", CONFIG_PROJECT_PAIRS)
 
@@ -1008,7 +1008,8 @@ rule calculate_md5sums:
 
 rule analyze_undetermined:
     input:
-        done = "output/{config_id}/.done"
+        done = "output/{config_id}/.done",
+        exclude_indexes = "results/exclude_indexes_{config_id}.txt"
     output:
         csv = "results/undetermined_indices/{config_id}.csv"
     log:
@@ -1018,30 +1019,25 @@ rule analyze_undetermined:
         input_pattern = lambda wildcards: f"output/{wildcards.config_id}/Undetermined_S0_*.fastq.gz"
     shell:
         """
-        python3 {params.script} "{params.input_pattern}" --output {output.csv} --limit 15000000 > {log} 2>&1
+        python3 {params.script} "{params.input_pattern}" --output {output.csv} --limit 15000000 --exclude-indexes {input.exclude_indexes} > {log} 2>&1
         """
 
 rule consolidate_project_links:
     input:
+        PROJECT_LINK_LOGS,
         expand("logs/nextcloud_scan_{config_id}_{project}.done", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS])
     output:
         "logs/project_links.yaml"
     log:
         "logs/consolidate_project_links.log"
-    input:
-        done = "output/{config_id}/.done",
-        exclude_indexes = "results/exclude_indexes_{config_id}.txt"
-    output:
-        csv = "results/undetermined_indices/{config_id}.csv"
-    log:
-        "logs/analyze_undetermined_{config_id}.log"
-    params:
-        script = /* Line 1016 omitted */
-        input_pattern = lambda wildcards: f"output/{wildcards.config_id}/Undetermined_S0_*.fastq.gz"
-    shell:
-        """
-        python3 {params.script} "{params.input_pattern}" --output {output.csv} --limit 15000000 --exclude-indexes {input.exclude_indexes} > {log} 2>&1
-        """
+    run:
+        import yaml
+        import os
+
+        links = {}
+        log_files = [f for f in input if f.endswith(".log")]
+        for log_file in log_files:
+            try:
                 with open(log_file, 'r') as f:
                     content = f.read()
 
