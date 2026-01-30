@@ -312,6 +312,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
     # First pass: load project-level md5s (these have the actual file checksums)
     for md5_file in glob.glob("output/*/*/md5sums.txt"):
         try:
+            project_from_path = os.path.basename(os.path.dirname(md5_file))
             with open(md5_file, 'r') as f:
                 for line in f:
                     line = line.strip()
@@ -327,7 +328,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                         md5_lookup[basename] = md5_hash
                         
                         # Also collect for this specific project
-                        if project in md5_file:
+                        if project == project_from_path:
                             md5_lines_for_report.append(f"{md5_hash}  {filepath_normalized}")
         except Exception as e:
             print(f"Error reading md5 file {md5_file}: {e}")
@@ -431,7 +432,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
         try:
             config_id = parts[-3]
             if config_id not in renaming_maps:
-                map_path = f"src/renaming_map_{config_id}.csv"
+                map_path = f"results/renaming_map_{config_id}.csv"
                 if os.path.exists(map_path):
                     try:
                         import pandas as pd
