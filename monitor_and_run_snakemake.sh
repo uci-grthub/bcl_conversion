@@ -26,7 +26,7 @@ if [ -f "$TARGET_FILE" ]; then
     RCFILE=$(mktemp)
     echo "source $(conda info --base)/etc/profile.d/conda.sh && conda activate perl_env" > "$RCFILE"
     # Start tmux session: source .env, activate perl_env, run snakemake, then start bash with rcfile
-    tmux new-session -d -c "$(pwd)" -s "$LIBRARY" "if [ -f ../.env ]; then source ../.env; fi; source $(conda info --base)/etc/profile.d/conda.sh && conda activate perl_env && snakemake --cores 8 -np; exec bash --rcfile $RCFILE"
+    tmux new-session -d -c "$(pwd)" -s "$LIBRARY" "if [ -f ../.env ]; then source ../.env; fi; source $(conda info --base)/etc/profile.d/conda.sh && conda activate perl_env && snakemake --profile default -np; exec bash --rcfile $RCFILE"
     if [ $? -ne 0 ]; then
       echo "Failed to start tmux session $LIBRARY."
       rm -f "$RCFILE"

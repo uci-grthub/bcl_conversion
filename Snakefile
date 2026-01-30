@@ -223,7 +223,6 @@ fix_runinfo_reverse_complement()
 SAMPLE_SHEETS_DICT = generate_lane_samplesheets(METADATA_FILE, LANE_CONFIGS, PROJECT_LOOKUP, MASKING_LOOKUP, "results", "src/RunInfo_nn.xml")
 
 # print(SAMPLE_SHEETS_DICT)
-# print(RUN_INFO_PATH)
 
 CONFIG_IDS = [c['id'] for c in LANE_CONFIGS] if LANE_CONFIGS else []
 # Fallback if no metadata
