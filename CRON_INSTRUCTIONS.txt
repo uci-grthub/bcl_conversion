@@ -1,0 +1,21 @@
+To set up a cron job to monitor for CopyComplete.txt and trigger Snakemake in a new tmux session named with the library from config.yaml:
+
+1. Ensure you have 'data_dir' and 'library_name' set in your snakemake_config.yaml, e.g.:
+   data_dir: /path/to/monitored/directory
+   library_name: xR081
+
+2. Make the script executable:
+   chmod +x /staging/nextcloud/testing_illumina/xR081/monitor_and_run_snakemake.sh
+
+3. Edit the script /staging/nextcloud/testing_illumina/xR081/monitor_and_run_snakemake.sh so that, instead of running snakemake directly, it launches snakemake in a new tmux session named after the library:
+
+   Replace the line:
+     snakemake --cores 8
+   with:
+     LIBRARY=$(python3 -c "import yaml; print(yaml.safe_load(open('snakemake_config.yaml')).get('library_name', 'snakemake'))")
+     tmux new-session -d -s "$LIBRARY" "snakemake --cores 8 -np"
+
+4. Add the following line to your crontab (edit with 'crontab -e') to check every hour:
+   0 * * * * /staging/nextcloud/testing_illumina/xR081/monitor_and_run_snakemake.sh >> /staging/nextcloud/testing_illumina/xR081/monitor_and_run_snakemake.log 2>&1
+
+This will check for the existence of CopyComplete.txt in the monitored directory every hour and, if found, start the Snakemake workflow in a new tmux session named after the library.

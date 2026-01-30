@@ -1,5 +1,4 @@
 
-
 import os
 import re
 import subprocess
@@ -7,7 +6,6 @@ import yaml
 import pandas as pd
 import xml.etree.ElementTree as ET
 from io import StringIO
-
 
 envvars: 
     "GMAIL_APP_PASSWORD",
@@ -63,6 +61,9 @@ NEXTCLOUD_DIR_PATH = config.get("nextcloud_dir_path", "nextcloud3")
 EMAIL_SENDER = config.get("email_sender", "kstachel@uci.edu")
 EMAIL_RECIPIENT = config.get("email_recipient", "kstachel@uci.edu")
 EMAIL_CC = config.get("email_cc", "kstachel@uci.edu")
+
+# Rule: rsync project to external drive specified in config.yaml
+EXTERNAL_DRIVE_PATH = config.get("external_drive_path", None)
 
 include: "src/workflow_defs.smk"
 
@@ -1494,4 +1495,37 @@ rule debug_project_link_files:
         for fname in sorted(os.listdir('logs')):
             if fname.startswith('project_link_') and fname.endswith('.log'):
                 print(fname)
-                
+
+rule rsync_to_external_drive:
+    input:
+        # Use the main output directory as the source for rsync
+        src_dir = FASTQDIR
+    output:
+        touch("logs/rsync_to_external_drive.done")
+    log:
+        "logs/rsync_to_external_drive.log"
+    params:
+        dest_dir = EXTERNAL_DRIVE_PATH,
+        project_name = LIBRARY
+    run:
+        import sys
+        import subprocess
+        sys.stderr = sys.stdout = open(log[0], 'w')
+        if not params.dest_dir:
+            print("No external_drive_path specified in config.yaml. Skipping rsync.")
+            with open(output[0], 'w') as f:
+                f.write('SKIPPED')
+            return
+        src = os.path.abspath(input.src_dir)
+        dest = os.path.join(params.dest_dir, params.project_name)
+        print(f"Rsyncing {src} to {dest}")
+        os.makedirs(dest, exist_ok=True)
+        cmd = [
+            "rsync", "-aW", src + "/", dest + "/"
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        print(result.stdout)
+        if result.stderr:
+            print("STDERR:", result.stderr)
+        with open(output[0], 'w') as f:
+            f.write('DONE')
