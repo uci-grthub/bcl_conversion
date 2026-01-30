@@ -51,7 +51,6 @@ LIBRARY = config.get("library_name", "xR079")  # From merged config (project-spe
 FASTQDIR = config.get("fastqdir", "output")
 START_S = config.get("start_s", 1)
 DRYRUN = config.get("dryrun", False)
-RUN_INFO_PATH = config.get("run_info_path", "src/RunInfo.xml")
 DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20260115_LH00626_0088_A233NM2LT4")  # From merged config
 TILES = config.get("tiles", "1_1101")
 
@@ -196,9 +195,32 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
 
 # Helper definitions are sourced from src/workflow_defs.smk
 
+
+# Function: Copy RunInfo.xml from data_dir to src/RunInfo_nn.xml and set IsReverseComplement="N" for Read Number="3"
+def fix_runinfo_reverse_complement():
+    import re, os
+    src = os.path.join(DATA_DIR, "RunInfo.xml")
+    dest = "src/RunInfo_nn.xml"
+    if not os.path.exists(src):
+        raise FileNotFoundError(f"Source RunInfo.xml not found: {src}")
+    with open(src, "r") as f:
+        content = f.read()
+    pattern = r'(<Read[^>]*Number="3"[^>]*IsReverseComplement=")[YN]"'
+    replacement = r'\1N"'
+    new_content = re.sub(pattern, replacement, content)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w") as f:
+        f.write(new_content)
+    # Optionally, log to a file
+    with open("logs/fix_runinfo_reverse_complement.log", "w") as lf:
+        lf.write("RunInfo.xml copied and IsReverseComplement set to N for Read Number=3\n")
+
+# Always fix RunInfo_nn.xml before workflow starts
+fix_runinfo_reverse_complement()
+
 # Generate sample sheets during parse time (needed for function calls below)
 # Rule generate_samplesheets will also ensure they're created as explicit dependencies
-SAMPLE_SHEETS_DICT = generate_lane_samplesheets(METADATA_FILE, LANE_CONFIGS, PROJECT_LOOKUP, MASKING_LOOKUP, "results", RUN_INFO_PATH)
+SAMPLE_SHEETS_DICT = generate_lane_samplesheets(METADATA_FILE, LANE_CONFIGS, PROJECT_LOOKUP, MASKING_LOOKUP, "results", "src/RunInfo_nn.xml")
 
 # print(SAMPLE_SHEETS_DICT)
 # print(RUN_INFO_PATH)
@@ -756,7 +778,7 @@ rule flexbar_per_config:
 rule generate_samplesheets:
     input:
         metadata = METADATA_FILE if METADATA_FILE else [],
-        run_info = RUN_INFO_PATH
+        run_info = "src/RunInfo_nn.xml"
     output:
         expand("results/SampleSheet_{config_id}.csv", config_id=CONFIG_IDS),
         expand("logs/generate_samplesheets_{config_id}.done", config_id=CONFIG_IDS)
@@ -939,7 +961,8 @@ rule bcl_convert:
         sample_sheet=lambda wildcards: f"results/SampleSheet_{wildcards.config_id}.csv",
         renaming_map = "results/renaming_map_{config_id}.csv",
         data_dir=DATA_DIR,
-        _sheet_done=lambda wildcards: f"logs/generate_samplesheets_{wildcards.config_id}.done"
+        _sheet_done=lambda wildcards: f"logs/generate_samplesheets_{wildcards.config_id}.done",
+        run_info = "src/RunInfo_nn.xml"
     output:
         output_dir = directory("output/{config_id}"),
         done_file = touch("output/{config_id}/.done")
@@ -952,7 +975,7 @@ rule bcl_convert:
     threads: 1
     params:
         lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', ''),
-        run_info_path = RUN_INFO_PATH,
+        run_info_path = "src/RunInfo_nn.xml",
         tiles = TILES
     shell:
         """
