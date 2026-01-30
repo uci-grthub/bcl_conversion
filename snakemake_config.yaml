@@ -2,11 +2,9 @@
 sample_sheet: "src/SampleSheet_default.csv"
 num_reads: 2
 library_name: "default"
-fastqdir: "output"
 start_s: 1
 lanes: [1,2,3,4,5,6,7,8]
 fastp_threads: 4
-fastp_outdir: "results/fastp"
 metadata: "metadata/default.xlsx"
 data_dir: "/staging/nextcloud/NovaseqX/default"
 tiles: ""
@@ -15,6 +13,7 @@ email_recipient: "kstachel@uci.edu"
 email_cc: "kstachel@uci.edu"
 nextcloud_dir_name: "dragenshare"
 nextcloud_dir_path: "nextcloud"
+external_drive_path: "/mnt/external_drive"
 
 # Report plot composition settings
 plots_total_width: 900  # Total width in pixels for composed plots (default: 900)

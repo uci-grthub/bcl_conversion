@@ -48,7 +48,6 @@ else:
 SAMPLE_SHEET = config.get("sample_sheet", "src/SampleSheet_default.csv")
 NUM_READS = config.get("num_reads", 2)
 LIBRARY = config.get("library_name", "xR079")  # From merged config (project-specific if exists)
-FASTQDIR = config.get("fastqdir", "output")
 START_S = config.get("start_s", 1)
 DRYRUN = config.get("dryrun", False)
 DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20260115_LH00626_0088_A233NM2LT4")  # From merged config
@@ -230,8 +229,6 @@ if not CONFIG_IDS and detected_lanes:
     CONFIG_IDS = [f"lane{l}_default" for l in detected_lanes]
 
 FASTP_THREADS = config.get("fastp_threads", 4)
-FASTP_OUTDIR = config.get("fastp_outdir", "results/fastp")
-FASTP_PLOTS_OUTDIR = config.get("fastp_plots_outdir", "results/fastp_plots")
 
 PROJECTS = get_all_projects(SAMPLE_SHEETS_DICT)
 
@@ -295,8 +292,8 @@ rule report_order_id:
     params:
         order_id = "{order_id}",
         output_base = "output",
-        fastp_plots_base = FASTP_PLOTS_OUTDIR,
-        fastp_base = FASTP_OUTDIR,
+        fastp_plots_base = "results/fastp_plots",
+        fastp_base = "results/fastp",
         report_dir = "Reports/order_{order_id}",
         projects = lambda wildcards: sorted(list(ORDER_ID_CONFIGS.get(wildcards.order_id, [])))
     run:
@@ -1518,10 +1515,13 @@ rule debug_project_link_files:
             if fname.startswith('project_link_') and fname.endswith('.log'):
                 print(fname)
 
+
 rule rsync_to_external_drive:
     input:
-        # Use the main output directory as the source for rsync
-        src_dir = FASTQDIR
+        # Ensure all reports are generated before running rsync
+        reports = ORDER_ID_REPORTS,
+        md5s = ORDER_ID_MD5S,
+        src_dir = lambda wildcards: os.getcwd()
     output:
         touch("logs/rsync_to_external_drive.done")
     log:
@@ -1531,7 +1531,6 @@ rule rsync_to_external_drive:
         project_name = LIBRARY
     run:
         import sys
-        import subprocess
         sys.stderr = sys.stdout = open(log[0], 'w')
         if not params.dest_dir:
             print("No external_drive_path specified in config.yaml. Skipping rsync.")
