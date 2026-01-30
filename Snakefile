@@ -1,4 +1,5 @@
 
+
 import os
 import re
 import subprocess
@@ -232,7 +233,7 @@ for config in LANE_CONFIGS:
         FLEXBAR_CONFIGS.append(config['id'])
 
 CONFIG_PROJECT_PAIRS = get_config_project_pairs(SAMPLE_SHEETS_DICT)
-PROJECT_LINK_LOGS = [f"logs/project_link_{config_id}_{project}.log" for config_id, project in CONFIG_PROJECT_PAIRS]
+PROJECT_LINK_LOGS = [f"logs/project_link_{config_id}---{project}.log" for config_id, project in CONFIG_PROJECT_PAIRS]
 
 # print("CONFIG_PROJECT_PAIRS:", CONFIG_PROJECT_PAIRS)
 
@@ -1005,9 +1006,26 @@ rule calculate_md5sums:
         ) > {log} 2>&1
         """
 
+# Rule: generate exclude-indexes file for each config_id
+rule generate_exclude_indexes:
+    input:
+        samplesheets = lambda wildcards: [f"results/SampleSheet_{other_id}.csv" for other_id in get_config_ids_for_lane(get_lane_for_config(wildcards.config_id)) if other_id != wildcards.config_id]
+    output:
+        txt = "results/exclude_indexes_{config_id}.txt"
+    run:
+        import sys
+        indexes = set()
+        for sheet in input.samplesheets:
+            indexes.update(get_index_sequences_from_samplesheet(sheet))
+        with open(output.txt, 'w') as f:
+            for idx in sorted(indexes):
+                f.write(f"{idx}\n")
+        print(f"Wrote {len(indexes)} exclude indexes for {wildcards.config_id}")
+
 rule analyze_undetermined:
     input:
-        done = "output/{config_id}/.done"
+        done = "output/{config_id}/.done",
+        exclude_indexes = "results/exclude_indexes_{config_id}.txt"
     output:
         csv = "results/undetermined_indices/{config_id}.csv"
     log:
@@ -1017,27 +1035,23 @@ rule analyze_undetermined:
         input_pattern = lambda wildcards: f"output/{wildcards.config_id}/Undetermined_S0_*.fastq.gz"
     shell:
         """
-        python3 {params.script} "{params.input_pattern}" --output {output.csv} --limit 15000000 > {log} 2>&1
+        python3 {params.script} "{params.input_pattern}" --output {output.csv} --limit 15000000 --exclude-indexes {input.exclude_indexes} > {log} 2>&1
         """
 
 rule consolidate_project_links:
     input:
+        PROJECT_LINK_LOGS,
         expand("logs/nextcloud_scan_{config_id}_{project}.done", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS])
     output:
         "logs/project_links.yaml"
     log:
         "logs/consolidate_project_links.log"
     run:
-        import sys
-        import glob
-        sys.stderr = sys.stdout = open(log[0], 'w')
-        
-        links = {}
-        
-        # Dynamically discover all project_link logs (now using '---' separator)
-        log_files = glob.glob("logs/project_link_*.log")
-        print(f"Found {len(log_files)} project link log files")
+        import yaml
+        import os
 
+        links = {}
+        log_files = [f for f in input if f.endswith(".log")]
         for log_file in log_files:
             try:
                 with open(log_file, 'r') as f:

@@ -23,7 +23,10 @@ def count_total_clusters(files_to_process):
 def get_top_indices(file_pattern, top_n=20, output_file=None, limit=None):
     index_counter = Counter()
     total_reads = 0
-    
+
+    # Exclusion logic: get exclude_index_prefixes from global scope
+    exclude_index_prefixes = globals().get('exclude_index_prefixes', set())
+
     files = sorted(glob.glob(file_pattern))
     if not files:
         print(f"No files found matching pattern: {file_pattern}")
@@ -31,7 +34,7 @@ def get_top_indices(file_pattern, top_n=20, output_file=None, limit=None):
 
     # Identify R1 files to process pairs
     r1_files = [f for f in files if "_R1_" in f]
-    
+
     # If no R1 files found, fall back to processing all files individually
     if not r1_files:
         print("No standard R1 files found. Processing all files individually...")
@@ -41,12 +44,12 @@ def get_top_indices(file_pattern, top_n=20, output_file=None, limit=None):
         print(f"Found {len(r1_files)} R1 files. Processing as pairs...")
         files_to_process = r1_files
         paired_mode = True
-    
+
     # Count total clusters in input files for accurate percentage
     total_clusters = count_total_clusters(files_to_process[0] if not paired_mode else files_to_process)
     if total_clusters:
         print(f"Total clusters in input files: {total_clusters:,}")
-    
+
     for file_path in files_to_process:
         if paired_mode:
             r2_path = file_path.replace("_R1_", "_R2_")
@@ -63,33 +66,44 @@ def get_top_indices(file_pattern, top_n=20, output_file=None, limit=None):
                     if limit and (i // 4) >= limit:
                         print(f"Reached limit of {limit} clusters for this file.")
                         break
-                    
+
                     # FASTQ format: 4 lines per record. Header is the 1st line (index 0, 4, 8...)
                     if i % 4 == 0:
                         # Illumina header format usually ends with index info
                         # Example: @... 1:N:0:ATGC+ATGC
                         # Optimization: rsplit is faster if we look from the end
                         # Optimization: avoid strip() if we know the structure
-                        
+
                         # Find the last colon
                         last_colon_idx = line.rfind(':')
                         if last_colon_idx != -1:
                             # The index sequence is everything after the last colon, but we need to be careful about newlines
                             index_sequence = line[last_colon_idx+1:].rstrip()
+
+                            # Exclude if index_sequence starts with any exclude_index_prefixes
+                            if exclude_index_prefixes:
+                                skip = False
+                                for prefix in exclude_index_prefixes:
+                                    if index_sequence.startswith(prefix):
+                                        skip = True
+                                        break
+                                if skip:
+                                    continue
+
                             index_counter[index_sequence] += 1
                             total_reads += 1
-                            
+
                             if total_reads % 1000000 == 0:
                                 print(f"Processed {total_reads} clusters...", end='\r')
         except Exception as e:
             print(f"Error reading {file_path}: {e}")
-            
+
     print(f"\nProcessed {total_reads} total clusters.")
 
     print(f"\nTop {top_n} detected index sequences:")
     print(f"{'Count':<10} {'Type':<10} {'Index Sequence'}")
     print("-" * 40)
-    
+
     for index, count in index_counter.most_common(top_n):
         index_type = "Dual" if "+" in index else "Single"
         print(f"{count:<10} {index_type:<10} {index}")
@@ -117,12 +131,35 @@ if __name__ == "__main__":
     parser.add_argument("input_pattern", nargs='?', default="data/FASTQ/Undetermined/Undetermined*L004*fastq.gz", help="Input file pattern (glob)")
     parser.add_argument("--output", "-o", help="Output CSV file path")
     parser.add_argument("--limit", type=int, help="Limit number of reads to process per file")
+    parser.add_argument("--exclude-indexes", help="File with index prefixes to exclude (one per line)")
 
     args = parser.parse_args()
-    
+
     search_path = args.input_pattern
     output_csv = args.output
     limit = args.limit
+    exclude_indexes_file = args.exclude_indexes
+
+    # Load exclude_index_prefixes if provided
+    exclude_index_prefixes = set()
+    if exclude_indexes_file:
+        try:
+            with open(exclude_indexes_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        # If CSV, take first column
+                        if ',' in line:
+                            prefix = line.split(',')[0].strip()
+                        else:
+                            prefix = line
+                        exclude_index_prefixes.add(prefix)
+            print(f"Loaded {len(exclude_index_prefixes)} index prefixes to exclude from {exclude_indexes_file}")
+        except Exception as e:
+            print(f"Warning: Could not load exclude indexes: {e}")
+
+    # Make available to get_top_indices via globals
+    globals()['exclude_index_prefixes'] = exclude_index_prefixes
 
     if output_csv is None:
         # Generate default output filename based on input pattern
@@ -132,9 +169,9 @@ if __name__ == "__main__":
             if base_name.endswith(ext):
                 base_name = base_name[:-len(ext)]
                 break
-        
+
         # Sanitize filename
         clean_name = base_name.replace('*', '_').replace('?', '_')
         output_csv = f"top_indices_{clean_name}.csv"
-        
+
     get_top_indices(search_path, output_file=output_csv, limit=limit)
