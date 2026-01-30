@@ -1348,19 +1348,3 @@ def get_index_sequences_from_samplesheet(samplesheet_path):
                     else:
                         indexes.add(idx)
     return indexes
-
-# Rule: generate exclude-indexes file for each config_id
-rule generate_exclude_indexes:
-    input:
-        samplesheets = lambda wildcards: [f"results/SampleSheet_{other_id}.csv" for other_id in get_config_ids_for_lane(get_lane_for_config(wildcards.config_id)) if other_id != wildcards.config_id]
-    output:
-        txt = "results/exclude_indexes_{config_id}.txt"
-    run:
-        import sys
-        indexes = set()
-        for sheet in input.samplesheets:
-            indexes.update(get_index_sequences_from_samplesheet(sheet))
-        with open(output.txt, 'w') as f:
-            for idx in sorted(indexes):
-                f.write(f"{idx}\n")
-        print(f"Wrote {len(indexes)} exclude indexes for {wildcards.config_id}")
