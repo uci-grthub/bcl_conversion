@@ -1320,3 +1320,47 @@ def get_bcl_convert_fastqs(wildcards):
         for read in ['R1', 'R2']:
             fastqs.append(f"{fqdir}/{stem}-{read}.fastq.gz")
     return fastqs
+
+# Helper: get lane for a config_id
+def get_lane_for_config(config_id):
+    for config in LANE_CONFIGS:
+        if config['id'] == config_id:
+            return config.get('lane')
+    return None
+
+# Helper: get all config_ids for a lane
+def get_config_ids_for_lane(lane):
+    return [config['id'] for config in LANE_CONFIGS if config.get('lane') == lane]
+
+# Helper: get index sequences from a SampleSheet CSV
+def get_index_sequences_from_samplesheet(samplesheet_path):
+    import csv
+    indexes = set()
+    if os.path.exists(samplesheet_path):
+        with open(samplesheet_path) as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                idx = row.get('index')
+                idx2 = row.get('index2')
+                if idx:
+                    if idx2:
+                        indexes.add(f"{idx}+{idx2}")
+                    else:
+                        indexes.add(idx)
+    return indexes
+
+# Rule: generate exclude-indexes file for each config_id
+rule generate_exclude_indexes:
+    input:
+        samplesheets = lambda wildcards: [f"results/SampleSheet_{other_id}.csv" for other_id in get_config_ids_for_lane(get_lane_for_config(wildcards.config_id)) if other_id != wildcards.config_id]
+    output:
+        txt = "results/exclude_indexes_{config_id}.txt"
+    run:
+        import sys
+        indexes = set()
+        for sheet in input.samplesheets:
+            indexes.update(get_index_sequences_from_samplesheet(sheet))
+        with open(output.txt, 'w') as f:
+            for idx in sorted(indexes):
+                f.write(f"{idx}\n")
+        print(f"Wrote {len(indexes)} exclude indexes for {wildcards.config_id}")

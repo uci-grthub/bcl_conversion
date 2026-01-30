@@ -1,4 +1,5 @@
 
+
 import os
 import re
 import subprocess
@@ -1027,19 +1028,20 @@ rule consolidate_project_links:
         "logs/project_links.yaml"
     log:
         "logs/consolidate_project_links.log"
-    run:
-        import sys
-        import glob
-        sys.stderr = sys.stdout = open(log[0], 'w')
-        
-        links = {}
-        
-        # Dynamically discover all project_link logs (now using '---' separator)
-        log_files = glob.glob("logs/project_link_*.log")
-        print(f"Found {len(log_files)} project link log files")
-
-        for log_file in log_files:
-            try:
+    input:
+        done = "output/{config_id}/.done",
+        exclude_indexes = "results/exclude_indexes_{config_id}.txt"
+    output:
+        csv = "results/undetermined_indices/{config_id}.csv"
+    log:
+        "logs/analyze_undetermined_{config_id}.log"
+    params:
+        script = /* Line 1016 omitted */
+        input_pattern = lambda wildcards: f"output/{wildcards.config_id}/Undetermined_S0_*.fastq.gz"
+    shell:
+        """
+        python3 {params.script} "{params.input_pattern}" --output {output.csv} --limit 15000000 --exclude-indexes {input.exclude_indexes} > {log} 2>&1
+        """
                 with open(log_file, 'r') as f:
                     content = f.read()
 
