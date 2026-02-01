@@ -946,11 +946,109 @@ rule generate_renaming_map:
         map = "results/renaming_map_{config_id}.csv"
     log:
         "logs/generate_renaming_map_{config_id}.log"
-    shell:
-        """
-        cp {input.sample_sheet} {output.map}
-        echo "Copied sample sheet to renaming map for {wildcards.config_id}" > {log}
-        """
+    params:
+        lane_configs = LANE_CONFIGS,
+        project_lookup = PROJECT_LOOKUP,
+        masking_lookup = MASKING_LOOKUP,
+        metadata = METADATA_FILE,
+        run_info = "src/RunInfo_nn.xml",
+        out_dir = "results",
+        library = LIBRARY
+    run:
+        import sys
+        sys.stderr = sys.stdout = open(log[0], 'w')
+        import os
+        import pandas as pd
+        from io import StringIO
+
+        required_cols = {"Sample_Name", "Sample_Project", "Lane", "index", "index2", "Run", "Group", "Position"}
+
+        def has_required_columns(path):
+            if not os.path.exists(path):
+                return False
+            try:
+                df = pd.read_csv(path)
+                return required_cols.issubset(set(df.columns))
+            except Exception:
+                return False
+
+        def build_map_from_samplesheet(samplesheet_path, out_path, default_run):
+            if not os.path.exists(samplesheet_path):
+                print(f"SampleSheet not found: {samplesheet_path}")
+                return False
+
+            with open(samplesheet_path, 'r') as f:
+                lines = f.readlines()
+
+            header_row = -1
+            for i, line in enumerate(lines):
+                if line.strip().startswith("[BCLConvert_Data]") or line.strip().startswith("[Data]"):
+                    header_row = i + 1
+                    break
+
+            if header_row == -1 or header_row >= len(lines):
+                print("Could not find [BCLConvert_Data] or [Data] section in SampleSheet.")
+                return False
+
+            data_str = "".join(lines[header_row:])
+            try:
+                ss_df = pd.read_csv(StringIO(data_str))
+            except Exception as e:
+                print(f"Error parsing SampleSheet data section: {e}")
+                return False
+
+            # Normalize columns
+            if "Sample_Project" not in ss_df.columns and "Project" in ss_df.columns:
+                ss_df["Sample_Project"] = ss_df["Project"]
+            if "Sample_Name" not in ss_df.columns and "Sample_ID" in ss_df.columns:
+                ss_df["Sample_Name"] = ss_df["Sample_ID"]
+
+            for col in ["index", "index2", "Lane", "Sample_Project", "Sample_Name"]:
+                if col not in ss_df.columns:
+                    ss_df[col] = ""
+
+            map_df = pd.DataFrame()
+            map_df["Sample_Name"] = ss_df["Sample_Name"]
+            map_df["Sample_Project"] = ss_df["Sample_Project"]
+            map_df["Lane"] = ss_df["Lane"]
+            map_df["index"] = ss_df["index"]
+            map_df["index2"] = ss_df["index2"]
+            map_df["Run"] = default_run
+            map_df["Group"] = "Undetermined"
+
+            positions = []
+            for i in range(len(map_df)):
+                positions.append(f"P{i+1:03d}")
+            map_df["Position"] = positions
+
+            map_df.to_csv(out_path, index=False)
+            print(f"Generated fallback renaming map from SampleSheet: {out_path}")
+            return True
+
+        # If map already exists and looks valid, keep it
+        if has_required_columns(output.map):
+            print(f"Renaming map already valid: {output.map}")
+            return
+
+        # Attempt to regenerate via metadata-driven function (preferred)
+        if params.metadata and os.path.exists(params.metadata):
+            try:
+                generate_lane_samplesheets(
+                    params.metadata,
+                    params.lane_configs,
+                    params.project_lookup,
+                    params.masking_lookup,
+                    params.out_dir,
+                    params.run_info
+                )
+                if has_required_columns(output.map):
+                    print(f"Regenerated renaming map using metadata: {output.map}")
+                    return
+            except Exception as e:
+                print(f"Error regenerating renaming map from metadata: {e}")
+
+        # Fallback: derive from SampleSheet data section
+        build_map_from_samplesheet(input.sample_sheet, output.map, params.library)
 
 rule bcl_convert:
     input:

@@ -4,6 +4,7 @@ import yaml
 import pandas as pd
 import xml.etree.ElementTree as ET
 from io import StringIO
+import csv
 
 # Sanitize Masking strings for filenames: strip appended project-like suffixes
 def sanitize_masking(masking):
@@ -159,6 +160,45 @@ def is_parse_or_10x(project_name):
     except Exception:
         p = ""
     return ("10x" in p) or ("parse" in p) or ("bd" in p)
+
+# Write renaming map with a fixed schema to avoid malformed CSVs
+def write_renaming_map(map_df, map_file):
+    required_cols = [
+        "Sample_Name",
+        "Sample_Project",
+        "Lane",
+        "index",
+        "index2",
+        "Run",
+        "Group",
+        "Position",
+    ]
+    for c in required_cols:
+        if c not in map_df.columns:
+            map_df[c] = ""
+
+    # Normalize Lane to int if possible
+    try:
+        map_df["Lane"] = map_df["Lane"].apply(lambda x: int(float(x)) if str(x).strip() != "" else "")
+    except Exception:
+        pass
+
+    # Ensure Position exists and is non-empty
+    if "Position" in map_df.columns:
+        missing_pos = map_df["Position"].isna() | (map_df["Position"].astype(str).str.strip() == "")
+        if missing_pos.any():
+            positions = []
+            counter = 1
+            for i in range(len(map_df)):
+                if missing_pos.iloc[i]:
+                    positions.append(f"P{counter:03d}")
+                    counter += 1
+                else:
+                    positions.append(map_df["Position"].iloc[i])
+            map_df["Position"] = positions
+
+    map_df = map_df[required_cols]
+    map_df.to_csv(map_file, index=False, quoting=csv.QUOTE_MINIMAL)
 
 def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name):
     """Generate sample sheets for MiSeq runs with simpler metadata format."""
@@ -336,7 +376,7 @@ def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name)
     map_df['Position'] = positions
     
     map_file = os.path.join(out_dir, f"renaming_map_{config_id}.csv")
-    map_df.to_csv(map_file, index=False)
+    write_renaming_map(map_df, map_file)
     print(f"Generated renaming map: {map_file}")
     
     return {config_id: outfile}
@@ -771,7 +811,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             map_df['Position'] = positions
             
             map_file = os.path.join(out_dir, f"renaming_map_{config['id']}.csv")
-            map_df.to_csv(map_file, index=False)
+            write_renaming_map(map_df, map_file)
         except Exception as e:
             print(f"Error generating renaming map for {config['id']}: {e}")
         
