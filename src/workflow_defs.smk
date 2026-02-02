@@ -613,6 +613,41 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         if lane_df.empty:
             print(f"No samples found for lane {lane} with masking {masking}")
             continue
+        
+        # VALIDATION: Check for duplicate indices in the same lane (different projects but same barcode)
+        # This is a sequencing error - BCL Convert cannot distinguish reads with identical barcodes
+        if 'index' in lane_df.columns:
+            # Check for duplicate index values (excluding empty/NaN indices)
+            valid_indices = lane_df['index'].dropna()
+            valid_indices = valid_indices[valid_indices.astype(str).str.strip() != '']
+            
+            if not valid_indices.empty:
+                duplicate_indices = valid_indices[valid_indices.duplicated(keep=False)]
+                
+                if not duplicate_indices.empty:
+                    # Get detailed information about duplicates
+                    dup_rows = lane_df[lane_df['index'].isin(duplicate_indices.unique())]
+                    error_msg = f"\n{'='*80}\n"
+                    error_msg += f"ERROR: Duplicate barcode indices detected in Lane {lane}!\n"
+                    error_msg += f"{'='*80}\n\n"
+                    error_msg += "The same barcode cannot be used for multiple samples in the same lane.\n"
+                    error_msg += "BCL Convert will not be able to distinguish which reads belong to which sample.\n\n"
+                    error_msg += "Duplicate entries:\n"
+                    error_msg += "-" * 80 + "\n"
+                    
+                    for idx_val in duplicate_indices.unique():
+                        dup_samples = dup_rows[dup_rows['index'] == idx_val]
+                        error_msg += f"\nIndex: {idx_val}\n"
+                        for _, row in dup_samples.iterrows():
+                            sample = row.get('Sample_Name', 'N/A')
+                            project = row.get('Project', 'N/A')
+                            error_msg += f"  - Sample: {sample}, Project: {project}\n"
+                    
+                    error_msg += "\n" + "=" * 80 + "\n"
+                    error_msg += "Please fix the metadata file to use unique barcodes for each sample.\n"
+                    error_msg += "=" * 80 + "\n"
+                    
+                    raise ValueError(error_msg)
             
         # Map columns
         # Target: Project,Lane,Sample_ID,Sample_Name,index,index2,Sample_Project
