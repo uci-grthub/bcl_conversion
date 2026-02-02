@@ -609,45 +609,55 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         if valid_indices.any():
             lane_df = lane_df[valid_indices]
 
-        # True de-duplication based on Lane + Project + index
-        # (prevents duplicate rows from multiple tabs like Barcode List)
-        lane_df = lane_df.drop_duplicates(subset=['Lane', 'Project', 'index'], keep='first')
+        # True de-duplication based on Lane + Project + index + index2
+        # (prevents duplicate rows from multiple tabs like Barcode List, but preserves dual-indexed samples)
+        lane_df = lane_df.drop_duplicates(subset=['Lane', 'Project', 'index', 'index2'], keep='first')
         
         if lane_df.empty:
             print(f"No samples found for lane {lane} with masking {masking}")
             continue
         
-        # VALIDATION: Check for duplicate indices in the same lane (different projects but same barcode)
-        # This is a sequencing error - BCL Convert cannot distinguish reads with identical barcodes
-        if 'index' in lane_df.columns:
-            # Check for duplicate index values (excluding empty/NaN indices)
-            valid_indices = lane_df['index'].dropna()
-            valid_indices = valid_indices[valid_indices.astype(str).str.strip() != '']
+        # VALIDATION: Check for duplicate barcode combinations (index + index2)
+        # This is a sequencing error - BCL Convert cannot distinguish reads with identical dual-index barcodes
+        # Note: Single i7 barcodes can be reused with different i5 barcodes (dual indexing is valid)
+        if 'index' in lane_df.columns and 'index2' in lane_df.columns:
+            # Create a combined barcode string (index + index2) for validation
+            lane_df['combined_barcode'] = lane_df['index'].astype(str) + ':' + lane_df['index2'].astype(str)
             
-            if not valid_indices.empty:
-                duplicate_indices = valid_indices[valid_indices.duplicated(keep=False)]
+            # Filter out rows with empty/NaN barcodes
+            valid_barcodes = lane_df[
+                (lane_df['index'].notna()) & 
+                (lane_df['index'].astype(str).str.strip() != '') & 
+                (lane_df['index'].astype(str).str.lower() != 'nan')
+            ].copy()
+            
+            if not valid_barcodes.empty:
+                # Check for duplicate combined barcodes
+                duplicate_mask = valid_barcodes['combined_barcode'].duplicated(keep=False)
+                duplicate_barcodes = valid_barcodes[duplicate_mask]['combined_barcode'].unique()
                 
-                if not duplicate_indices.empty:
+                if len(duplicate_barcodes) > 0:
                     # Get detailed information about duplicates
-                    dup_rows = lane_df[lane_df['index'].isin(duplicate_indices.unique())]
+                    dup_rows = valid_barcodes[valid_barcodes['combined_barcode'].isin(duplicate_barcodes)]
                     error_msg = f"\n{'='*80}\n"
-                    error_msg += f"ERROR: Duplicate barcode indices detected in Lane {lane}!\n"
+                    error_msg += f"ERROR: Duplicate dual-index barcode combinations detected in Lane {lane}!\n"
                     error_msg += f"{'='*80}\n\n"
-                    error_msg += "The same barcode cannot be used for multiple samples in the same lane.\n"
+                    error_msg += "The same combination of i7 and i5 barcodes cannot be used for multiple samples.\n"
                     error_msg += "BCL Convert will not be able to distinguish which reads belong to which sample.\n\n"
                     error_msg += "Duplicate entries:\n"
                     error_msg += "-" * 80 + "\n"
                     
-                    for idx_val in duplicate_indices.unique():
-                        dup_samples = dup_rows[dup_rows['index'] == idx_val]
-                        error_msg += f"\nIndex: {idx_val}\n"
+                    for combo in sorted(duplicate_barcodes):
+                        dup_samples = dup_rows[dup_rows['combined_barcode'] == combo]
+                        i7, i5 = combo.split(':')
+                        error_msg += f"\ni7={i7}, i5={i5}:\n"
                         for _, row in dup_samples.iterrows():
                             sample = row.get('Sample_Name', 'N/A')
                             project = row.get('Project', 'N/A')
                             error_msg += f"  - Sample: {sample}, Project: {project}\n"
                     
                     error_msg += "\n" + "=" * 80 + "\n"
-                    error_msg += "Please fix the metadata file to use unique barcodes for each sample.\n"
+                    error_msg += "Please fix the metadata file to use unique barcode combinations for each sample.\n"
                     error_msg += "=" * 80 + "\n"
                     
                     raise ValueError(error_msg)

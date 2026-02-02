@@ -63,6 +63,10 @@ EMAIL_CC = config.get("email_cc", "kstachel@uci.edu")
 # Rule: rsync project to external drive specified in config.yaml
 EXTERNAL_DRIVE_PATH = config.get("external_drive_path", None)
 
+# Skip rsync if working directory is on /mnt/ path (already on external drive)
+WORKING_DIR = os.getcwd()
+SKIP_RSYNC = WORKING_DIR.startswith("/mnt/")
+
 include: "src/workflow_defs.smk"
 
 # Sanitize Masking strings for filenames: strip appended project-like suffixes
@@ -273,7 +277,7 @@ rule all:
         f"Reports/{LIBRARY}_read_counts_email.done",
         expand("Reports/order_{order_id}/email_sent.done", order_id=ORDER_ID_CONFIGS.keys()),
         expand("logs/verify_project_link_{config_id}_{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
-        "logs/rsync_to_external_drive.done"
+        [] if SKIP_RSYNC else ["logs/rsync_to_external_drive.done"]
 
 rule bcl_convert_only:
     input:
@@ -530,7 +534,7 @@ rule compile_read_counts:
         import os
         import pandas as pd
 
-        lane_counts = {}
+        lane_group_counts = {}
 
         for map_path in input.maps:
             if not os.path.exists(map_path):
@@ -611,7 +615,8 @@ rule compile_read_counts:
                     print(f"Error reading {json_path}: {e}")
                     read_pairs = 0
 
-                lane_counts.setdefault(lane, {})
+                lane_group_key = (lane, group)
+                lane_group_counts.setdefault(lane_group_key, {})
 
                 # Preserve metadata order grouped by Group then row index
                 try:
@@ -626,10 +631,10 @@ rule compile_read_counts:
                     is_special = False
                 label = sample_name if is_special else stem
 
-                if label not in lane_counts[lane]:
-                    lane_counts[lane][label] = [group_order, idx, group, 0]
+                if label not in lane_group_counts[lane_group_key]:
+                    lane_group_counts[lane_group_key][label] = [group_order, idx, group, 0]
                 # Keep earliest group/index seen; always accumulate read pairs
-                existing = lane_counts[lane][label]
+                existing = lane_group_counts[lane_group_key][label]
                 existing[0] = min(existing[0], group_order)
                 existing[1] = min(existing[1], idx)
                 # Keep the group value from the earliest entry
@@ -637,34 +642,34 @@ rule compile_read_counts:
                     existing[2] = group
                 existing[3] += read_pairs
 
-        lanes_sorted = sorted(lane_counts.keys())
+        lane_group_pairs_sorted = sorted(lane_group_counts.keys())
 
-        if not lanes_sorted:
+        if not lane_group_pairs_sorted:
             os.makedirs(os.path.dirname(output.csv), exist_ok=True)
             open(output.csv, "w").close()
             return
 
-        per_lane = {}
-        for lane, samples in lane_counts.items():
+        per_lane_group = {}
+        for (lane, group), samples in lane_group_counts.items():
             # sort by (group_order, row_index)
             ordered = sorted(samples.items(), key=lambda x: (x[1][0], x[1][1]))
-            per_lane[lane] = [(name, group, total) for name, (_, _, group, total) in ordered]
+            per_lane_group[(lane, group)] = [(name, group, total) for name, (_, _, group, total) in ordered]
 
-        max_rows = max(len(v) for v in per_lane.values())
+        max_rows = max(len(v) for v in per_lane_group.values())
 
-        # Include explicit column headers: lane, group, sample, counts for each lane
+        # Include explicit column headers: lane, group, sample, counts for each lane-group pair
         header = [""]
-        for lane in lanes_sorted:
+        for (lane, group) in lane_group_pairs_sorted:
             header.extend(["lane", "group", "sample", "counts"])
 
         rows = []
         for i in range(max_rows):
             row = [""]  # Start with empty column to match header
-            for lane in lanes_sorted:
-                entries = per_lane.get(lane, [])
+            for (lane, group) in lane_group_pairs_sorted:
+                entries = per_lane_group.get((lane, group), [])
                 if i < len(entries):
-                    name, group, count = entries[i]
-                    row.extend([str(lane), group, name, f"{int(count):,}"])
+                    name, grp, count = entries[i]
+                    row.extend([str(lane), grp, name, f"{int(count):,}"])
                 else:
                     row.extend(["", "", "", ""])
             rows.append(row)
@@ -1388,6 +1393,9 @@ rule project_link:
                 with open(log_file, 'w') as f:
                     f.write(f"Project: {project}\n")
                     f.write(f"Config ID: {config_id}\n")
+                    # Always write Order ID and Group (needed for report generation)
+                    f.write(f"Order ID: {order_id}\n")
+                    f.write(f"Group: {group}\n")
                     # Write the Nextcloud path we attempted to share (for rescan parsing)
                     try:
                         f.write(f"NC_PATH: {nc_path}\n")
@@ -1631,6 +1639,11 @@ rule rsync_to_external_drive:
     run:
         import sys
         sys.stderr = sys.stdout = open(log[0], 'w')
+        if SKIP_RSYNC:
+            print(f"Working directory {WORKING_DIR} is on /mnt/ path. Skipping rsync.")
+            with open(output[0], 'w') as f:
+                f.write('SKIPPED: Already on /mnt/ path')
+            return
         if not params.dest_dir:
             print("No external_drive_path specified in config.yaml. Skipping rsync.")
             with open(output[0], 'w') as f:
