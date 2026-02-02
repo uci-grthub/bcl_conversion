@@ -270,6 +270,20 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                 'group': ''
             })
 
+    # Sort links by lane (numeric) then group (try numeric, fallback to string)
+    def sort_key(link_info):
+        try:
+            lane_num = int(link_info['lane']) if link_info['lane'] else 999999
+        except (ValueError, TypeError):
+            lane_num = 999999
+        try:
+            group_num = int(link_info['group']) if link_info['group'] else 999999
+        except (ValueError, TypeError):
+            group_num = 999999
+        return (lane_num, group_num, link_info['group'])
+    
+    all_download_links.sort(key=sort_key)
+
     # HTML for top "Your Download Links" section with metadata
     all_download_links_html = ""
     if all_download_links:
