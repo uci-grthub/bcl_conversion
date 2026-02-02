@@ -264,16 +264,34 @@ def main():
             df_r1 = _load_quality(args.files[0])
             df_r2 = _load_quality(args.files[1])
 
-        if df_r1 is None and df_r2 is None:
-             print("Error: Could not extract data from input files.")
-             return
+        def _valid_df(df):
+            return isinstance(df, pd.DataFrame) and not df.empty and {'Position', 'Mean_Phred'}.issubset(df.columns)
+
+        valid_r1 = _valid_df(df_r1)
+        valid_r2 = _valid_df(df_r2)
+
+        if not valid_r1 and not valid_r2:
+            print("Warning: No per-base quality data found. Generating placeholder plot.")
+            plt.figure(figsize=(10, 6))
+            plt.title(args.title if args.title else "Sequencing Data Quality", fontsize=14, fontweight='bold', fontname='serif')
+            plt.xlabel("Sequence Position", fontsize=12, fontweight='bold', fontname='serif')
+            plt.ylabel("Mean PHRED Quality Score", fontsize=12, fontweight='bold', fontname='serif')
+            plt.text(0.5, 0.5, "No per-base quality data", ha='center', va='center', transform=plt.gca().transAxes)
+            plt.grid(True, linestyle='--', alpha=0.7)
+            plt.tight_layout()
+            if args.out:
+                plt.savefig(args.out, dpi=300)
+                print(f"Saved plot to {args.out}")
+            else:
+                plt.show()
+            return
 
         plt.figure(figsize=(10, 6))
         
-        if df_r1 is not None:
+        if valid_r1:
             plt.plot(df_r1['Position'], df_r1['Mean_Phred'], label='READ 1', color='#3385ff', linewidth=2)
         
-        if df_r2 is not None:
+        if valid_r2:
             plt.plot(df_r2['Position'], df_r2['Mean_Phred'], label='READ 2', color='#e63939', linewidth=2)
 
         title = args.title if args.title else "Sequencing Data Quality"
