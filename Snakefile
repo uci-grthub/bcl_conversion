@@ -1641,7 +1641,7 @@ rule rsync_to_external_drive:
         print(f"Rsyncing {src} to {dest}")
         os.makedirs(dest, exist_ok=True)
         cmd = [
-            "rsync", "-aW", src + "/", dest + "/"
+            "rsync", "-aW", src + "/", dest + "/", "--exclude", "*Undetermined*"
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         print(result.stdout)

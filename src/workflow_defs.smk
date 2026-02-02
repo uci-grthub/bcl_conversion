@@ -164,6 +164,7 @@ def is_parse_or_10x(project_name):
 # Write renaming map with a fixed schema to avoid malformed CSVs
 def write_renaming_map(map_df, map_file):
     required_cols = [
+        "Sample_ID",
         "Sample_Name",
         "Sample_Project",
         "Lane",
@@ -363,6 +364,8 @@ def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name)
     
     # Generate renaming map
     map_df = pd.DataFrame()
+    # Sample_ID preserved as string from sample sheet
+    map_df['Sample_ID'] = df_samples['Sample_ID'].astype(str)
     map_df['Sample_Name'] = df_samples['Sample_Name']
     map_df['Sample_Project'] = df_samples['Sample_Project']
     map_df['Lane'] = df_samples['Lane']
@@ -833,6 +836,8 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         # Generate renaming map
         try:
             map_df = pd.DataFrame()
+            # Sample_ID is a string that could be numeric or text (e.g., "66" or "SMKL12")
+            map_df['Sample_ID'] = ss_data['Sample_ID'].astype(str)
             map_df['Sample_Name'] = ss_data['Sample_Name']
             map_df['Sample_Project'] = ss_data['Sample_Project']
             map_df['Lane'] = ss_data['Lane']
