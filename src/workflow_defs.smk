@@ -605,6 +605,10 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         valid_indices = lane_df['index'].apply(is_valid_index)
         if valid_indices.any():
             lane_df = lane_df[valid_indices]
+
+        # True de-duplication based on Lane + Project + index
+        # (prevents duplicate rows from multiple tabs like Barcode List)
+        lane_df = lane_df.drop_duplicates(subset=['Lane', 'Project', 'index'], keep='first')
         
         if lane_df.empty:
             print(f"No samples found for lane {lane} with masking {masking}")
@@ -661,7 +665,6 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         override_cycles = ""
         has_index1 = False
         has_index2 = False
-        
         # Allow per-config override: for single-cell ATAC projects there is no I2 index
         masking_for_cycles = masking
         try:
@@ -669,9 +672,17 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         except Exception:
             projects_upper = []
 
-        # If this config appears to be single-cell ATAC (project name contains 'ATAC' or BD_Rhapsody_ATACseq tab),
+        # Check if samples actually have index2 data
+        has_index2_data = False
+        try:
+            if 'index2' in lane_df.columns:
+                has_index2_data = lane_df['index2'].notna().any() and (lane_df['index2'].astype(str).str.strip() != '').any()
+        except Exception:
+            pass
+
+        # If this is BD_Rhapsody_ATACseq tab format OR ATAC project with NO index2 data,
         # remove any I2 component from masking when computing OverrideCycles so DRAGEN does not expect index2.
-        if bd_rhapsody_atac or any('ATAC' in p for p in projects_upper):
+        if bd_rhapsody_atac or (any('ATAC' in p for p in projects_upper) and not has_index2_data):
             try:
                 parts = [p.strip() for p in masking.split(',') if p and str(p).strip()]
                 parts = [p for p in parts if not p.strip().upper().startswith('I2:')]
@@ -705,7 +716,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                         actual_len = 0
                         is_indexed_read = False
                         if run_reads and i < len(run_reads):
-                            actual_len = run_reads[i]['NumCycles']
+                            actual_len = int(run_reads[i]['NumCycles'])
                             is_indexed_read = run_reads[i].get('IsIndexedRead') == 'Y'
                         
                         # Handle Y2 case: treat as UMI (U) matching actual length
