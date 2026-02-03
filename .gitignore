@@ -20,3 +20,4 @@ rulegraph_images/
 *.pptx
 *.svg
 *.txt
+*.bench
