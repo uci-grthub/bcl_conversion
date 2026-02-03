@@ -189,6 +189,27 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
     except Exception as e:
         print(f"Error reading metadata: {e}")
 
+# Read Barcode List to fill in PROJECT_ORDER_ID for projects not in Summary sheet
+try:
+    if METADATA_FILE and os.path.exists(METADATA_FILE):
+        xl = pd.ExcelFile(METADATA_FILE)
+        if 'Barcode List' in xl.sheet_names:
+            df_barcode = pd.read_excel(METADATA_FILE, sheet_name='Barcode List', header=1)
+            for idx, row in df_barcode.iterrows():
+                try:
+                    project = str(row.get('Project name', '')).strip()
+                    order_id = str(row.get('Order ID', '')).strip()
+                    if project and project.lower() != 'nan' and order_id and order_id.lower() != 'nan':
+                        # Normalize casing (e.g., '1225i-13' -> '1225I-13')
+                        order_id = order_id.replace('i', 'I')
+                        # Only add if not already in PROJECT_ORDER_ID (Summary takes precedence)
+                        if project not in PROJECT_ORDER_ID:
+                            PROJECT_ORDER_ID[project] = order_id
+                except:
+                    pass
+except Exception as e:
+    print(f"Note: Could not read Barcode List for order IDs: {e}")
+
 # print("LANE_CONFIGS:", LANE_CONFIGS)
 # print("PROJECT_LOOKUP:", PROJECT_LOOKUP)
 # print("MASKING_LOOKUP:", MASKING_LOOKUP)

@@ -433,6 +433,25 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
     # Get actual run read lengths
     run_reads = get_run_read_lengths(run_info_path)
     
+    # Read Barcode List to build Lane/Group -> (Project, Order ID) lookup
+    barcode_list_lookup = {}
+    try:
+        xl = pd.ExcelFile(metadata_file)
+        if 'Barcode List' in xl.sheet_names:
+            df_barcode = pd.read_excel(metadata_file, sheet_name='Barcode List', header=1)
+            # header=1 means second row is header
+            for idx, row in df_barcode.iterrows():
+                try:
+                    lane = int(float(row.get('Lane', pd.NA)))
+                    group = int(float(row.get('Group', pd.NA)))
+                    project = str(row.get('Project name', '')).strip()
+                    if project and project.lower() != 'nan':
+                        barcode_list_lookup[(lane, group)] = project
+                except:
+                    pass
+    except Exception as e:
+        print(f"Note: Could not read Barcode List: {e}")
+    
     all_samples = pd.DataFrame()
     
     try:
@@ -503,6 +522,10 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                         try:
                             l = int(float(row['Lane']))
                             g = int(float(row['Group']))
+                            # First check Barcode List lookup
+                            if (l, g) in barcode_list_lookup:
+                                return barcode_list_lookup[(l, g)]
+                            # Then fall back to project_lookup
                             return project_lookup.get((l, g), "")
                         except:
                             return row['Project']
