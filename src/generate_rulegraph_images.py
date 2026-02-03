@@ -2,11 +2,13 @@ import colorsys
 import os
 import re
 import subprocess
+import shutil
+import sys
 
 RULEGRAPH_FILE = "rulegraph.txt"
 OUTPUT_DIR = "rulegraph_images"
 DOT_CMD = "dot"
-OUTPUT_FORMAT = "svg"
+OUTPUT_FORMATS = ["svg", "png"]
 
 def parse_dot_file(dot_path):
     with open(dot_path) as f:
@@ -39,6 +41,11 @@ def _color_for_label(label):
     return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
 
 
+def _sanitize_filename(s):
+    # Replace non-alphanumeric characters with underscore and trim
+    return re.sub(r'[^0-9A-Za-z._-]', '_', s)[:200]
+
+
 def write_dot(sub_nodes, sub_edges, nodes, out_path):
     with open(out_path, "w") as f:
         f.write("digraph subdag {\n")
@@ -55,13 +62,21 @@ def write_dot(sub_nodes, sub_edges, nodes, out_path):
 def generate_images():
     nodes, edges = parse_dot_file(RULEGRAPH_FILE)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+    if shutil.which(DOT_CMD) is None:
+        print("Error: 'dot' (Graphviz) not found in PATH.\nInstall Graphviz (e.g. `apt install graphviz` or `conda install -c conda-forge graphviz`) and re-run.")
+        return
     for idx, label in nodes.items():
         sub_nodes, sub_edges = get_rule_subgraph(idx, nodes, edges)
-        dot_path = os.path.join(OUTPUT_DIR, f"{label}.dot")
-        svg_path = os.path.join(OUTPUT_DIR, f"{label}.{OUTPUT_FORMAT}")
+        safe_label = _sanitize_filename(label)
+        dot_path = os.path.join(OUTPUT_DIR, f"{safe_label}.dot")
         write_dot(sub_nodes, sub_edges, nodes, dot_path)
-        subprocess.run([DOT_CMD, f"-T{OUTPUT_FORMAT}", dot_path, "-o", svg_path])
-        print(f"Generated {svg_path}")
+        for fmt in OUTPUT_FORMATS:
+            out_path = os.path.join(OUTPUT_DIR, f"{safe_label}.{fmt}")
+            try:
+                subprocess.run([DOT_CMD, f"-T{fmt}", dot_path, "-o", out_path], check=True)
+                print(f"Generated {out_path}")
+            except subprocess.CalledProcessError as e:
+                print(f"Failed to generate {out_path}: {e}")
 
 if __name__ == "__main__":
     generate_images()

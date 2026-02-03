@@ -13,16 +13,17 @@ This Snakemake pipeline handles the complete sequencing data processing workflow
 2. **File Renaming** - Systematic renaming based on lane, group, position, and barcode
 3. **Quality Analysis** - FastP quality metrics for all samples
 4. **Visualization** - Quality plots (mean Phred scores, base composition)
-5. **Report Generation** - Per-project HTML reports with embedded plots and download instructions
-6. **Read Count Compilation** - Lane-level read counts formatted as CSV
-7. **Email Notifications** - Automated email delivery with read count attachments
+5. **Report Generation** - Comprehensive HTML reports grouped by Order ID with embedded plots and download instructions
+6. **Read Count Compilation** - Lane-level read counts formatted as CSV, aggregated per library
+7. **Email Notifications** - Automated email delivery of reports and read counts
 
 ## Key Files
 
 - **`Snakefile`** - Main workflow definition with all rules
-- **`snakemake_config.yaml`** - Configuration (paths, threads, email settings)
+- **`snakemake_config.yaml`** - Base configuration (paths, threads, email settings)
+- **`snakemake_config_project.yaml`** - Project-specific configuration (overrides base settings)
 - **`metadata/*.xlsx`** - Excel metadata with Summary sheet and per-project sheets
-- **`src/RunInfo.xml`** - Run configuration (read lengths, cycles)
+- **`src/RunInfo_nn.xml`** - Normalized run configuration (auto-generated)
 
 ## Configuration
 
@@ -81,15 +82,19 @@ snakemake --cores 4 results/fastp_plots_lane1_R1-151_I1-8_I2-8_R2-151.done
 - Generates mean Phred and base composition plots
 - Outputs PNG files to `results/fastp_plots/{config_id}/{project}/{sample}-*.png`
 
-### 5. Project Reports
+### 5. Project/Order Reports
 ```bash
-snakemake --cores 1 Reports/ProjectName/index.html
+snakemake --cores 1 Reports/order_12345/index.html
 ```
-- Creates comprehensive HTML reports per project
+- Creates comprehensive HTML reports grouped by `Order ID`
+- Includes summary of all projects associated with the order
 - Embeds quality plots as base64 images
-- Includes download instructions (browser, wget, HPC)
-- Calculates and includes md5 checksums (sorted by position)
-- Outputs `Reports/{project}/index.html` and `md5sums.txt`
+- Includes download instructions (browser, wget, HPC) and sorted md5 checksums
+- Outputs:
+  - `Reports/order_{id}/index.html`
+  - `Reports/order_{id}/md5sums.txt`
+  - `Reports/order_{id}/Download_Instructions.pdf`
+  - `Reports/{project}/lane{lane}/index.html`
 
 ### 6. Read Count Compilation
 ```bash
@@ -158,9 +163,15 @@ results/
   {library}-count.csv
 
 Reports/
-  {project}/
+  order_{id}/
     index.html
     md5sums.txt
+    Download_Instructions.pdf
+    email_sent.done
+  {project}/
+    lane{lane}/
+      index.html
+      md5sums.txt
   {library}_read_counts_email.done
 ```
 

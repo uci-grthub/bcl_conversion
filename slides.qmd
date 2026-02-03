@@ -1,0 +1,643 @@
+---
+title: "Automated Sequencing Post-Processing with Snakemake"
+format:
+  pptx:
+    default-image-extension: png
+---
+
+## Introduction
+
+Snakemake is a workflow management system designed to help you keep track of complex workflows without going **crazy**
+
+In sequencing facilities, Snakemake is especially useful for:
+- Automating BCL to FASTQ conversion (DRAGEN/BCL Convert)
+- Systematic renaming and organization of sequencing files
+- Automated quality control (FastP) and visualization
+- Generation of client-ready reports and MD5 checksums
+    The workflow automatically discovers lanes, manages dependencies, and integrates with DRAGEN for high-performance BCL-to-FASTQ conversion.
+Setting up a workflow requires some initial effort, but the time is more than made up in reproducibility and time not spent **re-doing** analyses.
+
+![](rulegraph_images/phd011406s.gif)
+
+---
+## What is a workflow management system?
+
+* __Divide and conquer:__ Complex analysis requires breaking projects into smaller, interconnected scripts and tools.
+
+* __Manual management fails as projects grow__; tracking dependencies and file updates becomes mentally exhausting and saps time better spent on actual design and data interpretation.
+
+* __Resource friction:__ Individual steps often have conflicting needs, such as high-power distributed computing vs. local runs, or ancient legacy software.
+
+* __Automation is essential__ for managing these complex workflows and environments efficiently.
+
+![](rulegraph_images/why-workflow-management.png){width=50% height=50%}
+
+    ## Running DRAGEN for BCL conversion
+
+    Use DRAGEN for fast, hardware-accelerated BCL-to-FASTQ conversion when available. The `bcl_convert` rule in this slide deck shows the required parameters and an example `dragen` invocation.
+
+    Example (DRAGEN CLI):
+
+    ```bash
+    dragen --bcl-conversion-only true \
+                --bcl-input-directory /path/to/Data/Intensities/BaseCalls \
+                --output-directory output/run_id \
+                --sample-sheet results/SampleSheet_run_id.csv
+    ```
+
+    Snakemake will still orchestrate downstream steps (renaming, QC, reporting) and can call DRAGEN where appropriate.
+
+---
+
+## Sequencing Workflow Overview
+
+In this environment, we use a complete sequencing post-processing workflow that:
+
+1. **Metadata Parsing** - Extract lane/project info from Excel
+    ## Quickstart: run locally and use DRAGEN for conversion
+
+    1. Ensure DRAGEN is available on the host that will perform BCL conversion.
+    2. Update `snakemake_config.yaml` with the current run details.
+    3. Test with a dry run to inspect the DAG: `snakemake -n`.
+    4. Run the workflow; Snakemake will call DRAGEN for BCL conversion and run downstream steps locally or via your profile.
+
+    ```bash
+    # Activate environment (if using conda)
+    conda activate snakemake
+
+    # Dry run
+    snakemake -n
+
+    # Run (example using a profile or local execution)
+    snakemake --use-conda --jobs 8
+    ```
+2. **BCL Conversion** - Run DRAGEN BCL-to-FASTQ per lane
+3. **Renaming** - systematic file naming: `{Run}-L{Lane}-G{Group}-P{Pos}-{Barcode}`
+4. **Quality Control** - FastP for all samples (JSON/HTML)
+5. **Quality Plots** - Generate Phred and base composition plots
+6. **Reporting** - Build HTML reports grouped by Order ID
+7. **Delivery** - Sync to Nextcloud and send summary emails
+
+The workflow automatically discovers lanes, manages dependencies, and can run on HPC with SLURM.
+
+---
+
+## Operational Procedure
+
+1. Receive sample sheet (`.xlsx`) from Seung-Ah.
+2. Create a new copy of the workflow from a template (clone the git repository) on DRAGEN staging.
+3. Upload the sample sheet (`.xlsx`) into the project's `metadata/` folder.
+4. Validate the sample sheet using the validation script; check:
+    - Required columns present
+    - No duplicate barcodes (same lane, same index)
+    - Project name consistency
+    - Masking string format validation
+    - Sample name uniqueness within projects
+5. Run the workflow on DRAGEN staging (the `bcl_convert` rule will invoke DRAGEN for BCL-to-FASTQ conversion).
+6. Once the run completes, copy results to the connected USB drive:
+    - Target drives: 3–4 TB or 14 TB
+    - Estimated copy time: ~3–4 hours (depends on I/O)
+7. Generate and validate project links on Nextcloud; send reports to kstachel@uci.edu.
+8. Forward reports to mloakes@uci.edu (CC: chungs@uci.edu).
+9. Clients download data from Nextcloud using the project links included in the emails.
+
+
+## Step 1: Configuration (`snakemake_config.yaml`)
+
+Post-processing workflows need extensive configuration. We use a YAML file for run-specific variables:
+
+
+```yaml
+library_name: "xR081"
+metadata: "metadata/SampleSheet_xR081.xlsx"
+data_dir: "/staging/nextcloud/NovaseqX/20260115_RunID..."
+fastp_threads: 4
+email_sender: "admin@uci.edu"
+email_recipient: "client@uci.edu"
+```
+
+
+---
+
+## Step 2: Load configuration and imports
+
+At the top of the `Snakefile`:
+
+
+```python
+import os
+import re
+import pandas as pd
+from io import StringIO
+
+# Load configuration
+configfile: "snakemake_config.yaml"
+
+# Load project-specific override if exists
+_PROJECT_CONFIG = "snakemake_config_project.yaml"
+if os.path.exists(_PROJECT_CONFIG):
+    configfile: _PROJECT_CONFIG
+
+# Extract variables
+LIBRARY = config.get("library_name", "xR079")
+DATA_DIR = config.get("data_dir")
+METADATA_FILE = config.get("metadata")
+```
+
+
+---
+
+## Step 3: Lane and Project Discovery
+
+Instead of hardcoding, we detect lanes from the data directory and projects from metadata:
+
+
+```python
+# Auto-detect lanes from data directory
+basecalls_path = DATA_DIR + "/Data/Intensities/BaseCalls"
+detected_lanes = [d[1:] for d in os.listdir(basecalls_path) if d.startswith('L')]
+
+# Parse metadata and generate sample sheets
+SAMPLE_SHEETS_DICT = generate_lane_samplesheets(
+    METADATA_FILE, LANE_CONFIGS, PROJECT_LOOKUP, "results"
+)
+```
+
+
+---
+
+## Step 4: Rule all - Define final outputs
+
+The `rule all` specifies the "end points" of the workflow:
+
+
+```python
+rule all:
+    input:
+        # BCL Conversion results for all lanes
+        expand("output/{config_id}/.done", config_id=CONFIG_IDS),
+        # QC metrics for all samples
+        expand("results/fastp_plots_{config_id}.done", config_id=CONFIG_IDS),
+        # Final consolidated reports grouped by Order ID
+        [f"Reports/order_{oid}/index.html" for oid in ORDER_ID_CONFIGS.keys()],
+        # Read count summary CSV
+        f"results/{LIBRARY}-count.csv",
+        # Notification completion
+        f"Reports/{LIBRARY}_read_counts_email.done"
+```
+
+
+This defines a complete pipeline from BCL data to client reports!
+
+---
+
+## The parts of a rule
+
+Every Snakemake rule has several key components:
+
+* **input**: Input files needed for this step
+* **output**: Output files that will be created
+* **params**: Parameters that aren't files (paths, settings, etc.)
+* **threads**: Number of CPU threads to use (parallelism)
+* **resources**: Memory, GPU, account info for cluster scheduling
+* **shell/script/run**: The actual command or Python code to execute
+
+Let's see these in action with our rules!
+
+---
+
+## Rule 1: BCL to FASTQ Conversion
+
+![](rulegraph_images/bcl_convert.png)
+
+
+```python
+rule bcl_convert:
+    input:
+        samplesheet = "results/SampleSheet_{config_id}.csv",
+        run_info = "src/RunInfo_nn.xml"
+    output:
+        done = touch("output/{config_id}/.done")
+    params:
+        data_dir = DATA_DIR,
+        output_dir = "output/{config_id}"
+    threads: 16
+    resources:
+        mem_mb = 64000,
+        cpus = 16
+    shell:
+        """
+        dragen --bcl-conversion-only true \
+               --bcl-input-directory {params.data_dir} \
+               --output-directory {params.output_dir} \
+               --sample-sheet {input.samplesheet}
+        """
+```
+
+
+---
+
+## Rule 2: Quality Analysis (FastP)
+
+![](rulegraph_images/fastp_sample.png)
+
+
+```python
+rule fastp_sample:
+    input:
+        done = "output/{config_id}/.done"
+    output:
+        json = "results/fastp/{config_id}/{sample_path}.json",
+        html = "results/fastp/{config_id}/{sample_path}.html"
+    params:
+        fastqs = get_fastp_sample_input  # <1>
+    threads: 4
+    shell:
+        """
+        fastp -i {params.fastqs[0]} -I {params.fastqs[1]} \
+              --json {output.json} --html {output.html} \
+              -w {threads}
+        """
+```
+
+
+1. **Lambda function** or helper to find FASTQs in the DRAGEN output structure.
+
+---
+
+## Rule 3: Grouped Reports (by Order ID)
+
+![](rulegraph_images/report_order_id.png)
+
+Reports are often needed per-client or per-order, spanning multiple projects/lanes:
+
+
+```python
+rule report_order_id:
+    input:
+        fastp_plots = lambda wildcards: get_order_id_plot_targets(wildcards.order_id),
+        md5_files = lambda wildcards: get_order_id_md5_files(wildcards.order_id)
+    output:
+        html = "Reports/order_{order_id}/index.html",
+        pdf = "Reports/order_{order_id}/Download_Instructions.pdf"
+    params:
+        projects = lambda wildcards: ORDER_ID_CONFIGS.get(wildcards.order_id, [])
+    run:
+        # Use Python to generate complex HTML from multiple data sources
+        generate_consolidated_report(
+            params.projects, 
+            input.fastp_plots, 
+            output.html
+        )
+```
+
+
+---
+
+## Rule 4: Data Notifications (Email)
+
+![](rulegraph_images/send_read_counts_email.png)
+
+
+```python
+rule send_read_counts_email:
+    input:
+        csv = f"results/{LIBRARY}-count.csv"
+    output:
+        touch(f"Reports/{LIBRARY}_read_counts_email.done")
+    params:
+        subject = f"Sequencing Stats for {LIBRARY}",
+        sender = EMAIL_SENDER,
+        receiver = EMAIL_RECIPIENT
+    shell:
+        "python3 src/send_email.py {params.sender} {params.receiver} \
+                '{params.subject}' 'Body text' {input.csv}"
+```
+
+
+---
+
+## Running the workflow
+
+Now let's run our complete workflow!
+
+
+```bash
+# Dry run to see what will be executed
+snakemake --cores 8 -n
+
+# Run the workflow
+snakemake --cores 8
+
+# Or run until a specific output
+snakemake --cores 8 Reports/order_12345/index.html
+```
+
+
+Snakemake will:
+1. Discover all lanes and projects from metadata
+2. Build the dependency graph
+3. Execute rules in the correct order
+4. Run multiple lanes in parallel
+5. Skip steps that are already complete
+
+---
+
+## Using conda environments
+
+Notice the `conda:` directive in rules:
+
+
+```python
+rule parse_all:
+    conda: "spipe"
+    shell: "split-pipe ..."
+
+rule parse_scvi_integration:
+    conda: "scvi-tools"
+    shell: "python src/parse_scvi_integration.py ..."
+```
+
+
+Create environment files (e.g., `spipe.yaml`):
+
+
+```yaml
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - split-pipe=1.0.3
+```
+
+
+Run with:
+
+```bash
+snakemake --use-conda --cores 8
+```
+
+
+---
+
+## Workflow hooks for notifications
+
+At the top of your Snakefile, add email notifications:
+
+
+```python
+EMAIL = "your.email@university.edu"
+
+onstart:
+    shell("mail -s 'Workflow STARTED' {EMAIL} < {log}")
+
+onsuccess:
+    shell("mail -s 'Workflow COMPLETED' {EMAIL} < {log}")
+
+onerror:
+    shell("mail -s 'Workflow ERROR' {EMAIL} < {log}")
+```
+
+
+Get notified when:
+- Workflow starts
+- All jobs complete successfully
+- Any job fails
+
+Perfect for automated post-processing!
+
+---
+
+## Viewing the dependency graph (DAG)
+
+Visualize the workflow structure:
+
+![](rulegraph_images/all.png)
+
+
+```bash
+snakemake --dag | dot -Tpng > dag.png
+```
+
+
+This creates a directed acyclic graph showing:
+- Each job as a node (colored by status)
+- Dependencies as arrows
+- Which jobs can run in parallel
+
+For a simpler rule-level view:
+
+
+```bash
+snakemake --rulegraph | dot -Tpng > rulegraph.png
+```
+
+---
+
+## Rerunning after changes
+
+One of Snakemake's best features: intelligent re-execution
+
+
+```bash
+# Nothing will run - everything is up to date
+snakemake --cores 8
+```
+
+
+
+```
+Nothing to be done (all requested files are present and up to date).
+```
+
+
+But if you:
+- Modify a metadata Excel file → reruns sample sheet and everything downstream
+- Change parameters in config → reruns only affected rules
+- Add a new project to metadata → processes only the new data
+- Modify a reporting script → reruns those reports and everything downstream
+
+---
+
+## Handling parameter changes
+
+Force re-run when parameters change:
+
+
+```bash
+# Force re-run of specific rule
+snakemake --forcerun bcl_convert --cores 8
+
+# Force re-run and all downstream rules
+snakemake -R bcl_convert --cores 8
+```
+
+
+Or use `--rerun-triggers`:
+
+
+```bash
+snakemake --rerun-triggers mtime params --cores 8
+```
+
+
+This reruns rules when:
+- Input files are modified (`mtime`)
+- Parameters in the rule change (`params`)
+
+---
+
+## Validate sample sheet 
+
+Tests performed:
+1. File format and structure validation
+2. Required columns presence
+3. Duplicate barcode detection (same lane, same index)
+4. Empty/missing critical fields
+5. Index sequence format validation
+6. Lane number validation
+7. Project name consistency
+8. Masking string format validation
+9. Sample name uniqueness within projects
+10. Cross-sheet consistency checks
+
+---
+
+## Software versioning and reproducibility
+
+Multiple approaches for reproducibility:
+
+**1. Module loading (HPC)**
+
+```python
+shell:
+    """
+    module load R/4.4.2
+    Rscript analysis.R
+    module unload R/4.4.2
+    """
+```
+
+
+**2. Conda environments**
+
+```python
+rule integrate:
+    conda: "envs/scvi-tools.yaml"
+    shell: "python src/integrate.py"
+```
+
+
+**3. Containers (Singularity/Docker)**
+
+```python
+params:
+    parse_container = config["parse_container"]
+shell:
+    "singularity exec {params.parse_container} split-pipe ..."
+```
+
+
+---
+
+## Creating a Snakemake report
+
+Generate an interactive HTML report:
+
+
+```bash
+snakemake --report snakemake_report.html
+```
+
+The report includes:
+- All rules that were run
+- Runtime statistics and resource usage
+- Input/output files
+- Code used for each step
+- Interactive dependency graph
+- Can embed plots and results
+
+Perfect for sharing with collaborators or for reproducibility!
+
+---
+
+## Best practices for sequencing workflows
+
+1. **Standardize Metadata** - Use consistent Excel templates for lane and project info
+2. **Automated Discovery** - Let the workflow detect lanes from the filesystem
+3. **Use SLURM natively** - Specify threads and memory per rule for better scheduling
+4. **Isolated Environments** - Maintain separate Conda environments for specific tools
+5. **Keep logs organized** - Use per-rule and per-lane log files for easier debugging
+6. **Automated MD5s** - Always calculate checksums immediately after generation
+7. **Consolidated Reports** - Group findings by Order ID for clinent convenience
+8. **Version Control** - Track changes to Snakefiles and config templates using git
+9. **Dry Runs First** - Always check the DAG with `snakemake -n` before execution
+10. **Data Archival** - Incorporate automated rsync/sync to storage as the final step
+
+---
+
+## Troubleshooting common issues
+
+- **Incomplete Metadata**: Ensure all lanes in `Data/Intensities/BaseCalls` are represented in the Summary sheet.
+- **BCL Conversion Failures**: Check DRAGEN logs for sample name collisions or barcode incompatibility.
+- **FastP JSON Errors**: Verify that renaming maps correctly link the DRAGEN outputs to expected sample IDs.
+- **MD5 Mismatches**: Use `calculate_md5sums` rule to regenerate checksums if files were moved.
+- **Email Delivery**: Verify host connectivity to `smtp.uci.edu` and check `onstart`/`onsuccess` hooks.
+
+
+---
+
+## Example: Complete workflow structure
+
+```
+sequencing_post_proc/
+├── Snakefile                    # Main workflow logic
+├── snakemake_config.yaml       # Base configuration
+├── metadata/
+│   └── run_metadata.xlsx       # Excel with Sample/Order info
+├── output/                     # DRAGEN BCL conversion outputs
+│   └── lane1_maskID/
+├── results/                    # FastP JSONs and Plots
+│   ├── fastp/
+│   └── fastp_plots/
+└── Reports/                    # Final HTML deliverables
+    ├── order_12345/
+    └── project_A/
+```
+
+---
+
+## Sequencing Resources
+
+- [DRAGEN BCL Convert Documentation](https://support.illumina.com/sequencing/sequencing_software/bcl-convert.html)
+- [FastP GitHub Repository](https://github.com/OpenGene/fastp)
+- [Snakemake Workflows Catalog](https://snakemake.github.io/snakemake-workflow-catalog/)
+
+---
+
+## General Snakemake resources
+
+- [Snakemake website](https://snakemake.github.io/)
+- [Snakemake tutorial slides](https://slides.com/johanneskoester/snakemake-tutorial)
+- [Snakemake documentation](https://snakemake.readthedocs.io/en/stable/index.html#)
+- Collection of blog posts from C Titus Brown:
+    - [Snakemake for doing bioinformatics - beginner's guide](http://ivory.idyll.org/blog/2023-snakemake-slithering-section-1.html)
+
+---
+
+## Summary
+
+Snakemake provides for sequencing workflows:
+- **Automatic dependency resolution** - No manual tracking of BCL vs FASTQ vs Plots
+- **Parallel execution** - Process multiple lanes/samples simultaneously
+- **Cluster integration** - Native SLURM support handles job submission/monitoring
+- **Reproducibility** - Fixed rules and configurations ensure consistent processing
+- **Intelligent re-execution** - Only rerun lanes or reports that change
+
+Start simple, add complexity as needed, and let Snakemake handle the orchestration!
+
+---
+
+## Questions?
+
+Please reach out to the core facility for further clarification.

@@ -63,6 +63,10 @@ EMAIL_CC = config.get("email_cc", "kstachel@uci.edu")
 # Rule: rsync project to external drive specified in config.yaml
 EXTERNAL_DRIVE_PATH = config.get("external_drive_path", None)
 
+# Skip rsync if working directory is on /mnt/ path (already on external drive)
+WORKING_DIR = os.getcwd()
+SKIP_RSYNC = WORKING_DIR.startswith("/mnt/")
+
 include: "src/workflow_defs.smk"
 
 # Sanitize Masking strings for filenames: strip appended project-like suffixes
@@ -273,11 +277,15 @@ rule all:
         f"Reports/{LIBRARY}_read_counts_email.done",
         expand("Reports/order_{order_id}/email_sent.done", order_id=ORDER_ID_CONFIGS.keys()),
         expand("logs/verify_project_link_{config_id}_{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
-        "logs/rsync_to_external_drive.done"
+        [] if SKIP_RSYNC else ["logs/rsync_to_external_drive.done"]
+    benchmark:
+        "benchmarks/all.bench"
 
 rule bcl_convert_only:
     input:
         expand("output/{config_id}/.done", config_id=CONFIG_IDS)
+    benchmark:
+        "benchmarks/bcl_convert_only.bench"
 
 rule report_order_id:
     input:
@@ -290,6 +298,8 @@ rule report_order_id:
         pdf = "Reports/order_{order_id}/Download_Instructions.pdf"
     log:
         "logs/report_order_{order_id}.log"
+    benchmark:
+        "benchmarks/report_order_id_{order_id}.bench"
     params:
         order_id = "{order_id}",
         output_base = "output",
@@ -378,6 +388,8 @@ rule send_order_email:
         touch("Reports/order_{order_id}/email_sent.done")
     log:
         "logs/send_order_email_{order_id}.log"
+    benchmark:
+        "benchmarks/send_order_email_{order_id}.bench"
     params:
         script = "src/send_email.py",
         sender = EMAIL_SENDER,
@@ -395,6 +407,8 @@ rule fastp_sample:
         html = "results/fastp/{config_id}/{sample_path}.html"
     log:
         "logs/fastp_sample/{config_id}/{sample_path}.log"
+    benchmark:
+        "benchmarks/fastp_sample_{config_id}_{sample_path}.bench"
     wildcard_constraints:
         config_id = "[^/]+",
         sample_path = ".*"
@@ -426,6 +440,8 @@ rule fastp_per_config:
         touch("results/fastp_{config_id}.done")
     log:
         "logs/fastp_per_config_{config_id}.log"
+    benchmark:
+        "benchmarks/fastp_per_config_{config_id}.bench"
     wildcard_constraints:
         config_id = "lane.*"
 
@@ -437,6 +453,8 @@ rule fastp_plots_sample:
         base = "results/fastp_plots/{config_id}/{sample_path}-base_comp.png"
     log:
         "logs/fastp_plots_sample/{config_id}/{sample_path}.log"
+    benchmark:
+        "benchmarks/fastp_plots_sample_{config_id}_{sample_path}.bench"
     wildcard_constraints:
         config_id = "[^/]+",
         sample_path = ".*"
@@ -461,6 +479,8 @@ rule fastp_plots_per_config:
         touch("results/fastp_plots_{config_id}.done")
     log:
         "logs/fastp_plots_per_config_{config_id}.log"
+    benchmark:
+        "benchmarks/fastp_plots_per_config_{config_id}.bench"
     wildcard_constraints:
         config_id = "lane.*"
 
@@ -471,6 +491,8 @@ rule summarize_project_reads:
         "results/read_counts_{project}.csv"
     log:
         "logs/summarize_project_reads_{project}.log"
+    benchmark:
+        "benchmarks/summarize_project_reads_{project}.bench"
     run:
         import sys
         sys.stderr = sys.stdout = open(log[0], 'w')
@@ -522,6 +544,8 @@ rule compile_read_counts:
         csv = f"results/{LIBRARY}-count.csv"
     log:
         "logs/compile_read_counts.log"
+    benchmark:
+        "benchmarks/compile_read_counts.bench"
     run:
         import sys
         sys.stderr = sys.stdout = open(log[0], 'w')
@@ -530,7 +554,7 @@ rule compile_read_counts:
         import os
         import pandas as pd
 
-        lane_counts = {}
+        lane_group_counts = {}
 
         for map_path in input.maps:
             if not os.path.exists(map_path):
@@ -611,7 +635,8 @@ rule compile_read_counts:
                     print(f"Error reading {json_path}: {e}")
                     read_pairs = 0
 
-                lane_counts.setdefault(lane, {})
+                lane_group_key = (lane, group)
+                lane_group_counts.setdefault(lane_group_key, {})
 
                 # Preserve metadata order grouped by Group then row index
                 try:
@@ -626,10 +651,10 @@ rule compile_read_counts:
                     is_special = False
                 label = sample_name if is_special else stem
 
-                if label not in lane_counts[lane]:
-                    lane_counts[lane][label] = [group_order, idx, group, 0]
+                if label not in lane_group_counts[lane_group_key]:
+                    lane_group_counts[lane_group_key][label] = [group_order, idx, group, 0]
                 # Keep earliest group/index seen; always accumulate read pairs
-                existing = lane_counts[lane][label]
+                existing = lane_group_counts[lane_group_key][label]
                 existing[0] = min(existing[0], group_order)
                 existing[1] = min(existing[1], idx)
                 # Keep the group value from the earliest entry
@@ -637,34 +662,34 @@ rule compile_read_counts:
                     existing[2] = group
                 existing[3] += read_pairs
 
-        lanes_sorted = sorted(lane_counts.keys())
+        lane_group_pairs_sorted = sorted(lane_group_counts.keys())
 
-        if not lanes_sorted:
+        if not lane_group_pairs_sorted:
             os.makedirs(os.path.dirname(output.csv), exist_ok=True)
             open(output.csv, "w").close()
             return
 
-        per_lane = {}
-        for lane, samples in lane_counts.items():
+        per_lane_group = {}
+        for (lane, group), samples in lane_group_counts.items():
             # sort by (group_order, row_index)
             ordered = sorted(samples.items(), key=lambda x: (x[1][0], x[1][1]))
-            per_lane[lane] = [(name, group, total) for name, (_, _, group, total) in ordered]
+            per_lane_group[(lane, group)] = [(name, group, total) for name, (_, _, group, total) in ordered]
 
-        max_rows = max(len(v) for v in per_lane.values())
+        max_rows = max(len(v) for v in per_lane_group.values())
 
-        # Include explicit column headers: lane, group, sample, counts for each lane
+        # Include explicit column headers: lane, group, sample, counts for each lane-group pair
         header = [""]
-        for lane in lanes_sorted:
+        for (lane, group) in lane_group_pairs_sorted:
             header.extend(["lane", "group", "sample", "counts"])
 
         rows = []
         for i in range(max_rows):
             row = [""]  # Start with empty column to match header
-            for lane in lanes_sorted:
-                entries = per_lane.get(lane, [])
+            for (lane, group) in lane_group_pairs_sorted:
+                entries = per_lane_group.get((lane, group), [])
                 if i < len(entries):
-                    name, group, count = entries[i]
-                    row.extend([str(lane), group, name, f"{int(count):,}"])
+                    name, grp, count = entries[i]
+                    row.extend([str(lane), grp, name, f"{int(count):,}"])
                 else:
                     row.extend(["", "", "", ""])
             rows.append(row)
@@ -682,6 +707,8 @@ rule send_read_counts_email:
         touch(f"Reports/{LIBRARY}_read_counts_email.done")
     log:
         f"logs/send_read_counts_email.log"
+    benchmark:
+        "benchmarks/send_read_counts_email.bench"
     params:
         script = "src/send_email.py",
         sender = EMAIL_SENDER,
@@ -699,6 +726,8 @@ rule fastp_plots_lane:
         touch("results/fastp_plots_summary_lane{lane}.done")
     log:
         "logs/fastp_plots_lane{lane}.log"
+    benchmark:
+        "benchmarks/fastp_plots_lane_{lane}.bench"
     wildcard_constraints:
         lane = r"\d+"
 
@@ -714,6 +743,8 @@ rule flexbar_per_config:
         touch("results/flexbar_{config_id}.done")
     log:
         "logs/flexbar_{config_id}.log"
+    benchmark:
+        "benchmarks/flexbar_per_config_{config_id}.bench"
     params:
         outdir = "output/{config_id}/flexbar",
         lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', ''),
@@ -781,6 +812,8 @@ rule generate_samplesheets:
         expand("logs/generate_samplesheets_{config_id}.done", config_id=CONFIG_IDS)
     log:
         "logs/generate_samplesheets.log"
+    benchmark:
+        "benchmarks/generate_samplesheets.bench"
     params:
         lane_configs = LANE_CONFIGS,
         project_lookup = PROJECT_LOOKUP,
@@ -947,6 +980,8 @@ rule generate_renaming_map:
         map = "results/renaming_map_{config_id}.csv"
     log:
         "logs/generate_renaming_map_{config_id}.log"
+    benchmark:
+        "benchmarks/generate_renaming_map_{config_id}.bench"
     params:
         lane_configs = LANE_CONFIGS,
         project_lookup = PROJECT_LOOKUP,
@@ -1063,6 +1098,8 @@ rule bcl_convert:
         done_file = touch("output/{config_id}/.done")
     log:
         "logs/bcl_convert_{config_id}.log"
+    benchmark:
+        "benchmarks/bcl_convert_{config_id}.bench"
     wildcard_constraints:
         config_id = "[^/]+"
     resources:
@@ -1113,6 +1150,8 @@ rule calculate_md5sums:
         md5 = "output/{config_id}/{project}/md5sums.txt"
     log:
         "logs/calculate_md5sums_{config_id}_{project}.log"
+    benchmark:
+        "benchmarks/calculate_md5sums_{config_id}_{project}.bench"
     wildcard_constraints:
         config_id = r"lane\d+_R\d+-\d+_I1-\d+_(?:I2-\d+|U-\d+)_R\d+-\d+",
         project = ".+"
@@ -1131,6 +1170,8 @@ rule generate_exclude_indexes:
         samplesheets = lambda wildcards: [f"results/SampleSheet_{other_id}.csv" for other_id in get_config_ids_for_lane(get_lane_for_config(wildcards.config_id)) if other_id != wildcards.config_id]
     output:
         txt = "results/exclude_indexes_{config_id}.txt"
+    benchmark:
+        "benchmarks/generate_exclude_indexes_{config_id}.bench"
     run:
         import sys
         indexes = set()
@@ -1149,6 +1190,8 @@ rule analyze_undetermined:
         csv = "results/undetermined_indices/{config_id}.csv"
     log:
         "logs/analyze_undetermined_{config_id}.log"
+    benchmark:
+        "benchmarks/analyze_undetermined_{config_id}.bench"
     params:
         script = "src/analyze_undetermined_indices.py",
         input_pattern = lambda wildcards: f"output/{wildcards.config_id}/Undetermined_S0_*.fastq.gz"
@@ -1165,6 +1208,8 @@ rule consolidate_project_links:
         "logs/project_links.yaml"
     log:
         "logs/consolidate_project_links.log"
+    benchmark:
+        "benchmarks/consolidate_project_links.bench"
     run:
         import yaml
         import os
@@ -1246,6 +1291,8 @@ rule project_link:
         done = "output/{config_id}/.done"
     output:
         log = "logs/project_link_{config_id}---{project}.log"
+    benchmark:
+        "benchmarks/project_link_{config_id}---{project}.bench"
     wildcard_constraints:
         # Relaxed to accept any lane-prefixed config with additional underscore-separated tokens
         config_id = "[^/]+",
@@ -1388,6 +1435,9 @@ rule project_link:
                 with open(log_file, 'w') as f:
                     f.write(f"Project: {project}\n")
                     f.write(f"Config ID: {config_id}\n")
+                    # Always write Order ID and Group (needed for report generation)
+                    f.write(f"Order ID: {order_id}\n")
+                    f.write(f"Group: {group}\n")
                     # Write the Nextcloud path we attempted to share (for rescan parsing)
                     try:
                         f.write(f"NC_PATH: {nc_path}\n")
@@ -1433,6 +1483,8 @@ rule rescan_nextcloud:
         touch("logs/nextcloud_scan_{config_id}_{project}.done")
     log:
         "logs/rescan_nextcloud_{config_id}_{project}.log"
+    benchmark:
+        "benchmarks/rescan_nextcloud_{config_id}_{project}.bench"
     wildcard_constraints:
         config_id = r"lane\d+_R\d+-\d+_I1-\d+_(?:I2-\d+|U-\d+)_R\d+-\d+",
         project = ".+"
@@ -1471,6 +1523,8 @@ rule verify_project_links:
         report = "logs/verify_project_link_{config_id}_{project}.txt"
     log:
         "logs/verify_project_link_{config_id}_{project}.log"
+    benchmark:
+        "benchmarks/verify_project_link_{config_id}_{project}.bench"
     wildcard_constraints:
         config_id = r"lane\d+_R\d+-\d+_I1-\d+_(?:I2-\d+|U-\d+)_R\d+-\d+",
         project = ".+"
@@ -1596,6 +1650,8 @@ rule verify_project_links:
 
 # Diagnostic rule: print expected and actual .done and .log files for project_link
 rule debug_project_link_files:
+    benchmark:
+        "benchmarks/debug_project_link_files.bench"
     run:
         import os
         print("\n=== DIAGNOSTIC: CONFIG_PROJECT_PAIRS ===")
@@ -1611,8 +1667,8 @@ rule debug_project_link_files:
             print(f"{log_path}: {'EXISTS' if os.path.exists(log_path) else 'MISSING'}")
         print("\n=== DIAGNOSTIC: All files in logs/ matching project_link_*.log ===")
         for fname in sorted(os.listdir('logs')):
-            if fname.startswith('project_link_') and fname.endswith('.log'):
-                print(fname)
+                if fname.startswith('project_link_') and fname.endswith('.log'):
+                    print(fname)
 
 
 rule rsync_to_external_drive:
@@ -1625,12 +1681,19 @@ rule rsync_to_external_drive:
         touch("logs/rsync_to_external_drive.done")
     log:
         "logs/rsync_to_external_drive.log"
+    benchmark:
+        "benchmarks/rsync_to_external_drive.bench"
     params:
         dest_dir = EXTERNAL_DRIVE_PATH,
         project_name = LIBRARY
     run:
         import sys
         sys.stderr = sys.stdout = open(log[0], 'w')
+        if SKIP_RSYNC:
+            print(f"Working directory {WORKING_DIR} is on /mnt/ path. Skipping rsync.")
+            with open(output[0], 'w') as f:
+                f.write('SKIPPED: Already on /mnt/ path')
+            return
         if not params.dest_dir:
             print("No external_drive_path specified in config.yaml. Skipping rsync.")
             with open(output[0], 'w') as f:
@@ -1641,7 +1704,7 @@ rule rsync_to_external_drive:
         print(f"Rsyncing {src} to {dest}")
         os.makedirs(dest, exist_ok=True)
         cmd = [
-            "rsync", "-aW", src + "/", dest + "/"
+            "rsync", "-aW", src + "/", dest + "/", "--exclude", "*Undetermined*"
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         print(result.stdout)
