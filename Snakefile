@@ -1703,8 +1703,10 @@ rule rsync_to_external_drive:
         dest = os.path.join(params.dest_dir, params.project_name)
         print(f"Rsyncing {src} to {dest}")
         os.makedirs(dest, exist_ok=True)
+        # Use resume-friendly rsync flags so interrupted transfers can be resumed.
+        # --partial preserves partially transferred files; --append-verify resumes and verifies.
         cmd = [
-            "rsync", "-aW", src + "/", dest + "/", "--exclude", "*Undetermined*"
+            "rsync", "-aW", "--partial", "--append-verify", src + "/", dest + "/", "--exclude", "*Undetermined*"
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         print(result.stdout)
