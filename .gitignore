@@ -16,3 +16,5 @@ src/flexbar/*.txt
 snakemake_config_*
 nextcloud_links.yaml
 .env
+rulegraph_images/
+*.pptx
