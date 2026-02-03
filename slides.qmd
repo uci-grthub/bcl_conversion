@@ -20,6 +20,7 @@ Setting up a workflow requires some initial effort, but the time is more than ma
 ![](rulegraph_images/phd011406s.gif)
 
 ---
+
 ## What is a workflow management system?
 
 * __Divide and conquer:__ Complex analysis requires breaking projects into smaller, interconnected scripts and tools.
@@ -32,20 +33,20 @@ Setting up a workflow requires some initial effort, but the time is more than ma
 
 ![](rulegraph_images/why-workflow-management.png){width=50% height=50%}
 
-    ## Running DRAGEN for BCL conversion
+## Running DRAGEN for BCL conversion
 
-    Use DRAGEN for fast, hardware-accelerated BCL-to-FASTQ conversion when available. The `bcl_convert` rule in this slide deck shows the required parameters and an example `dragen` invocation.
+Use DRAGEN for fast, hardware-accelerated BCL-to-FASTQ conversion when available. The `bcl_convert` rule in this slide deck shows the required parameters and an example `dragen` invocation.
 
-    Example (DRAGEN CLI):
+Example (DRAGEN CLI):
 
-    ```bash
-    dragen --bcl-conversion-only true \
-                --bcl-input-directory /path/to/Data/Intensities/BaseCalls \
-                --output-directory output/run_id \
-                --sample-sheet results/SampleSheet_run_id.csv
-    ```
+```bash
+dragen --bcl-conversion-only true \
+            --bcl-input-directory /path/to/Data/Intensities/BaseCalls \
+            --output-directory output/run_id \
+            --sample-sheet results/SampleSheet_run_id.csv
+```
 
-    Snakemake will still orchestrate downstream steps (renaming, QC, reporting) and can call DRAGEN where appropriate.
+Snakemake will still orchestrate downstream steps (renaming, QC, reporting) and can call DRAGEN where appropriate.
 
 ---
 
@@ -94,6 +95,8 @@ The workflow automatically discovers lanes, manages dependencies, and can run on
     - Masking string format validation
     - Sample name uniqueness within projects
 5. Run the workflow on DRAGEN staging (the `bcl_convert` rule will invoke DRAGEN for BCL-to-FASTQ conversion).
+    - 3-4 TB
+    - 3-4 hours (if no error)
 6. Once the run completes, copy results to the connected USB drive:
     - Target drives: 3–4 TB or 14 TB
     - Estimated copy time: ~3–4 hours (depends on I/O)

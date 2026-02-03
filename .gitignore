@@ -18,3 +18,4 @@ nextcloud_links.yaml
 .env
 rulegraph_images/
 *.pptx
+*.svg
