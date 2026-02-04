@@ -5,6 +5,220 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from io import StringIO
 import csv
+try:
+    import openpyxl
+    from openpyxl.styles import PatternFill, Font
+except Exception:
+    openpyxl = None
+
+
+def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
+    """Validate metadata Excel and write a highlighted copy + change list.
+
+    - out_xlsx: path to write validation workbook (xlsx). If openpyxl not available
+      a plain text log will be written to logs/metadata_validation.txt instead.
+    """
+    issues = []
+    if not metadata_file or not os.path.exists(metadata_file):
+        issues.append({'sheet': '', 'row': '', 'col': '', 'message': f'Metadata file not found: {metadata_file}'})
+        os.makedirs('logs', exist_ok=True)
+        with open('logs/metadata_validation.txt', 'w') as tf:
+            for it in issues:
+                tf.write(f"{it['sheet']}: {it['row']} {it['col']} - {it['message']}\n")
+        return
+
+    try:
+        xlf = pd.ExcelFile(metadata_file)
+    except Exception as e:
+        issues.append({'sheet': '', 'row': '', 'col': '', 'message': f'Could not open Excel: {e}'})
+        os.makedirs('logs', exist_ok=True)
+        with open('logs/metadata_validation.txt', 'w') as tf:
+            for it in issues:
+                tf.write(f"{it['sheet']}: {it['row']} {it['col']} - {it['message']}\n")
+        return
+
+    sheet_dfs = {}
+    header_rows = {}
+
+    for sheet in xlf.sheet_names:
+        try:
+            raw = pd.read_excel(metadata_file, sheet_name=sheet, header=None)
+        except Exception:
+            issues.append({'sheet': sheet, 'row': '', 'col': '', 'message': 'Could not read sheet'})
+            continue
+
+        # Attempt to propagate values from merged cells so header detection works
+        try:
+            # Fill left->right then right->left for horizontal merged cells,
+            # then fill top->down and bottom->up for vertical merges.
+            raw = raw.fillna(method='ffill', axis=1).fillna(method='bfill', axis=1)
+            raw = raw.fillna(method='ffill', axis=0).fillna(method='bfill', axis=0)
+        except Exception:
+            # If any unexpected structure, continue with original raw
+            pass
+
+        # Find header row heuristically, including multi-row headers (combine adjacent rows)
+        header_row = -1
+        nrows = raw.shape[0]
+        header_keywords = ['Lane', 'Sample_Project', 'Project name', 'Sample Name', 'Sample_Name', 'Sample_ID', 'Lab ID', 'Order ID', 'Email', 'Group', 'group']
+        for i in range(nrows):
+            row = raw.iloc[i]
+            row_vals = [str(x) if not pd.isna(x) else '' for x in row.values]
+
+            # Direct match in single row
+            if 'Lane' in row_vals and any(k in row_vals for k in ['Sample_Project', 'Project name', 'Sample Name', 'Sample_Name']):
+                header_row = i
+                break
+
+            # Try combining with the next one or two rows to handle split/multi-line headers
+            combined_vals = list(row_vals)
+            for j in (1, 2):
+                if i + j < nrows:
+                    next_row = raw.iloc[i + j]
+                    next_vals = [str(x) if not pd.isna(x) else '' for x in next_row.values]
+                    combined_vals.extend(next_vals)
+                    if 'Lane' in combined_vals and any(k in combined_vals for k in ['Sample_Project', 'Project name', 'Sample Name', 'Sample_Name', 'Lab ID', 'Order ID', 'Email', 'group', 'Group']):
+                        # Prefer the lower row index if it contains the majority of header keywords
+                        matches_curr = sum(1 for k in header_keywords if k in row_vals)
+                        matches_next = sum(1 for k in header_keywords if k in next_vals)
+                        header_row = i + j if matches_next >= matches_curr else i
+                        break
+                else:
+                    break
+            if header_row != -1:
+                break
+
+        if header_row == -1:
+            issues.append({'sheet': sheet, 'row': '', 'col': '', 'message': 'Header row not found'})
+            # store raw as-is to copy into workbook
+            df_sheet = raw.copy()
+            sheet_dfs[sheet] = df_sheet
+            header_rows[sheet] = None
+            continue
+
+        try:
+            df = pd.read_excel(metadata_file, sheet_name=sheet, header=header_row)
+        except Exception as e:
+            issues.append({'sheet': sheet, 'row': '', 'col': '', 'message': f'Error parsing sheet with detected header: {e}'})
+            sheet_dfs[sheet] = raw
+            header_rows[sheet] = None
+            continue
+
+        sheet_dfs[sheet] = df
+        header_rows[sheet] = header_row
+
+        # Basic checks
+        if 'Lane' not in df.columns:
+            issues.append({'sheet': sheet, 'row': '', 'col': 'Lane', 'message': 'Missing Lane column'})
+        else:
+            # non-numeric lanes
+            try:
+                bad_lane = df[pd.to_numeric(df['Lane'], errors='coerce').isna()]
+                if not bad_lane.empty:
+                    for ridx in bad_lane.index.tolist():
+                        issues.append({'sheet': sheet, 'row': int(ridx), 'col': 'Lane', 'message': 'Non-numeric Lane value'})
+            except Exception:
+                pass
+
+        # Project column existence
+        if not any(c in df.columns for c in ['Sample_Project', 'Project name', 'Project']):
+            issues.append({'sheet': sheet, 'row': '', 'col': '', 'message': 'Missing Project column (Sample_Project or Project name)'})
+
+        # Duplicate combined barcodes
+        if 'index' in df.columns:
+            idx1 = df['index'].fillna('').astype(str)
+            idx2 = df['index2'].fillna('').astype(str) if 'index2' in df.columns else pd.Series([''] * len(df))
+            combined = (idx1 + ':' + idx2).replace('nan', '')
+            dup_mask = combined.duplicated(keep=False) & (combined != ':')
+            if dup_mask.any():
+                dup_idxs = df.index[dup_mask].tolist()
+                for ridx in dup_idxs:
+                    issues.append({'sheet': sheet, 'row': int(ridx), 'col': 'index', 'message': 'Duplicate barcode combination (index+index2)'})
+
+        # Missing indexes when others exist
+        if 'index' in df.columns:
+            has_any = df['index'].notna() & (df['index'].astype(str).str.strip() != '')
+            if has_any.any() and (~has_any).any():
+                for ridx in df.index[~has_any].tolist():
+                    issues.append({'sheet': sheet, 'row': int(ridx), 'col': 'index', 'message': 'Missing index while other rows have index'})
+
+    # Write validation workbook if possible
+    os.makedirs('logs', exist_ok=True)
+    if out_xlsx is None:
+        out_xlsx = os.path.join('logs', f"metadata_validation_{os.path.basename(metadata_file)}.xlsx")
+
+    if openpyxl is None:
+        # fallback: dump issues to text file
+        with open('logs/metadata_validation.txt', 'w') as tf:
+            for it in issues:
+                tf.write(f"{it['sheet']}: row={it['row']} col={it['col']} - {it['message']}\n")
+        return
+
+    # Use pandas to write sheets, then highlight rows with issues
+    try:
+        with pd.ExcelWriter(out_xlsx, engine='openpyxl') as writer:
+            for sheet, df in sheet_dfs.items():
+                # If df has numeric header rows (raw), write as-is
+                try:
+                    df.to_excel(writer, sheet_name=sheet, index=False)
+                except Exception:
+                    # fallback to writing raw values
+                    pd.DataFrame(df).to_excel(writer, sheet_name=sheet, index=False)
+
+            # Write recommended changes sheet
+            if issues:
+                issues_df = pd.DataFrame(issues)
+            else:
+                issues_df = pd.DataFrame([{'sheet': 'OK', 'row': '', 'col': '', 'message': 'No issues detected'}])
+            issues_df.to_excel(writer, sheet_name='RECOMMENDED_CHANGES', index=False)
+
+        # Apply highlighting
+        wb = openpyxl.load_workbook(out_xlsx)
+        red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
+        bold = Font(bold=True)
+
+        # Group issues by sheet and highlight entire row where issue occurred
+        for it in issues:
+            sh = it.get('sheet')
+            r = it.get('row')
+            if sh in wb.sheetnames and isinstance(r, (int, float)):
+                ws = wb[sh]
+                # header offset: find header row in sheet_dfs mapping
+                hr = header_rows.get(sh)
+                if hr is None:
+                    # cannot map, skip
+                    continue
+                excel_row = int(hr) + 2 + int(r)  # header_row index +1 header +1 for excel 1-based
+                max_col = ws.max_column
+                for c in range(1, max_col + 1):
+                    cell = ws.cell(row=excel_row, column=c)
+                    try:
+                        cell.fill = red_fill
+                    except Exception:
+                        pass
+
+        # Bold header rows where header detected
+        for sh, hr in header_rows.items():
+            if hr is None or sh not in wb.sheetnames:
+                continue
+            ws = wb[sh]
+            excel_header = int(hr) + 1
+            for c in range(1, ws.max_column + 1):
+                try:
+                    cell = ws.cell(row=excel_header, column=c)
+                    cell.font = bold
+                except Exception:
+                    pass
+
+        wb.save(out_xlsx)
+    except Exception as e:
+        # final fallback: write issues to text file
+        with open('logs/metadata_validation.txt', 'w') as tf:
+            tf.write(f'Error writing validation workbook: {e}\n')
+            for it in issues:
+                tf.write(f"{it['sheet']}: row={it['row']} col={it['col']} - {it['message']}\n")
+    return
+
 
 # Sanitize Masking strings for filenames: strip appended project-like suffixes
 def sanitize_masking(masking):
@@ -478,6 +692,12 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
     
     # Use provided library_name (e.g., "xR081_B_Side") as run name
     run_name = library_name
+
+    # Produce a metadata validation workbook (highlighted copy + RECOMMENDED_CHANGES tab)
+    try:
+        validate_metadata_and_write_report(metadata_file, out_xlsx=os.path.join('logs', f"metadata_validation_{os.path.basename(metadata_file)}.xlsx"))
+    except Exception as e:
+        print(f"Warning: metadata validation report generation failed: {e}")
     
     # Detect metadata format: MiSeq (simple) vs NovaSeqX (complex with Summary sheet)
     try:
