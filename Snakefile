@@ -244,7 +244,7 @@ fix_runinfo_reverse_complement()
 
 # Generate sample sheets during parse time (needed for function calls below)
 # Rule generate_samplesheets will also ensure they're created as explicit dependencies
-SAMPLE_SHEETS_DICT = generate_lane_samplesheets(METADATA_FILE, LANE_CONFIGS, PROJECT_LOOKUP, MASKING_LOOKUP, "results", "src/RunInfo_nn.xml")
+SAMPLE_SHEETS_DICT = generate_lane_samplesheets(METADATA_FILE, LANE_CONFIGS, PROJECT_LOOKUP, MASKING_LOOKUP, "results", "src/RunInfo_nn.xml", LIBRARY)
 
 # print(SAMPLE_SHEETS_DICT)
 
@@ -262,6 +262,15 @@ ORDER_ID_CONFIGS = get_order_id_configs(SAMPLE_SHEETS_DICT)
 # If no order_id found in metadata, use a single default order_id
 if not ORDER_ID_CONFIGS or all(not v for v in ORDER_ID_CONFIGS.values()):
     ORDER_ID_CONFIGS = {"default": PROJECTS}
+
+# Ensure all order_ids from PROJECT_ORDER_ID are included in ORDER_ID_CONFIGS
+# even if they don't have samples yet (they might be added later or have been filtered)
+if PROJECT_ORDER_ID:
+    all_order_ids = set(PROJECT_ORDER_ID.values())
+    for oid in all_order_ids:
+        if oid and oid not in ORDER_ID_CONFIGS:
+            # Add empty list for order_ids not yet in configs
+            ORDER_ID_CONFIGS[oid] = []
 
 ORDER_ID_REPORTS = [f"Reports/order_{oid}/index.html" for oid in ORDER_ID_CONFIGS.keys()]
 ORDER_ID_MD5S = [f"Reports/order_{oid}/md5sums.txt" for oid in ORDER_ID_CONFIGS.keys()]
@@ -839,7 +848,8 @@ rule generate_samplesheets:
         lane_configs = LANE_CONFIGS,
         project_lookup = PROJECT_LOOKUP,
         masking_lookup = MASKING_LOOKUP,
-        output_dir = "results"
+        output_dir = "results",
+        library = LIBRARY
     run:
         import sys
         sys.stderr = sys.stdout = open(log[0], 'w')
@@ -933,7 +943,8 @@ rule generate_samplesheets:
                 params.project_lookup,
                 params.masking_lookup,
                 params.output_dir,
-                input.run_info
+                input.run_info,
+                params.library
             )
             
             print(f"Generated sample sheets: {generated_sheets}")
@@ -1096,7 +1107,8 @@ rule generate_renaming_map:
                     params.project_lookup,
                     params.masking_lookup,
                     params.out_dir,
-                    params.run_info
+                    params.run_info,
+                    params.library
                 )
                 if has_required_columns(output.map):
                     print(f"Regenerated renaming map using metadata: {output.map}")

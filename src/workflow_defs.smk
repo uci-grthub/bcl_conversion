@@ -201,6 +201,73 @@ def write_renaming_map(map_df, map_file):
     map_df = map_df[required_cols]
     map_df.to_csv(map_file, index=False, quoting=csv.QUOTE_MINIMAL)
 
+def filldown_and_make_unique_sample_names(df):
+    """
+    Fill down missing Sample Names and make them unique within each project.
+    
+    For each project:
+    1. Fill down: use the last non-null Sample_Name for rows with missing names
+    2. Make unique: if duplicates exist within the project, append a suffix (_1, _2, etc.)
+    
+    Args:
+        df: DataFrame with 'Project' and 'Sample_Name' columns
+    
+    Returns:
+        Modified DataFrame with filled and unique Sample_Name values
+    """
+    df = df.copy()
+    
+    # Fill down Sample_Name within each project group
+    for project in df['Project'].unique():
+        if pd.isna(project) or str(project).strip() == '' or str(project).lower() == 'nan':
+            continue
+        
+        project_mask = df['Project'] == project
+        
+        # Within this project, fill down missing Sample_Name values
+        missing_mask = (df.loc[project_mask, 'Sample_Name'].isna() | 
+                       (df.loc[project_mask, 'Sample_Name'].astype(str).str.strip() == '') |
+                       (df.loc[project_mask, 'Sample_Name'].astype(str).str.lower() == 'nan'))
+        
+        if missing_mask.any():
+            # Forward-fill the Sample_Name within the project group
+            indices = df[project_mask].index
+            for idx in indices[1:]:
+                if missing_mask[idx]:
+                    # Find the last non-null Sample_Name before this index
+                    prev_indices = indices[indices < idx]
+                    for prev_idx in prev_indices[::-1]:
+                        prev_val = df.loc[prev_idx, 'Sample_Name']
+                        if (not pd.isna(prev_val) and 
+                            str(prev_val).strip() != '' and 
+                            str(prev_val).lower() != 'nan'):
+                            df.loc[idx, 'Sample_Name'] = prev_val
+                            break
+    
+    # Make Sample_Name unique within each project by appending suffixes
+    for project in df['Project'].unique():
+        if pd.isna(project) or str(project).strip() == '' or str(project).lower() == 'nan':
+            continue
+        
+        project_mask = df['Project'] == project
+        project_indices = df[project_mask].index
+        
+        # Count occurrences of each Sample_Name within this project
+        sample_name_counts = df.loc[project_indices, 'Sample_Name'].value_counts()
+        
+        # For Sample_Names that appear more than once, add suffixes
+        for sample_name, count in sample_name_counts.items():
+            if count > 1:
+                # Find all occurrences of this Sample_Name in this project
+                dup_mask = (df['Project'] == project) & (df['Sample_Name'] == sample_name)
+                dup_indices = df[dup_mask].index
+                
+                # Append suffix to each duplicate (_1, _2, etc.)
+                for i, idx in enumerate(dup_indices, start=1):
+                    df.loc[idx, 'Sample_Name'] = f"{sample_name}_{i}"
+    
+    return df
+
 def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name):
     """Generate sample sheets for MiSeq runs with simpler metadata format."""
     
@@ -402,23 +469,15 @@ def get_run_read_lengths(run_info_path):
         print(f"Error parsing RunInfo.xml: {e}")
         return []
 
-def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, masking_lookup, out_dir, run_info_path=None):
+def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, masking_lookup, out_dir, run_info_path=None, library_name="Run"):
     if not metadata_file or not os.path.exists(metadata_file):
         print("Metadata file not found.")
         return {}
         
     # print(f"Generating sample sheets from {metadata_file}")
     
-    # Extract run name from metadata filename
-    run_name = "Run"
-    try:
-        base = os.path.basename(metadata_file)
-        name_part = os.path.splitext(base)[0]
-        parts = name_part.split('_')
-        if parts:
-            run_name = parts[-1]
-    except:
-        pass
+    # Use provided library_name (e.g., "xR081_B_Side") as run name
+    run_name = library_name
     
     # Detect metadata format: MiSeq (simple) vs NovaSeqX (complex with Summary sheet)
     try:
@@ -593,6 +652,9 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             return ""
             
     df['Masking'] = df.apply(get_sample_masking, axis=1)
+    
+    # Fill down and make unique Sample_Name values within each project
+    df = filldown_and_make_unique_sample_names(df)
     
     generated_files = {}
     
