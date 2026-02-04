@@ -47,9 +47,7 @@ def generate_download_instructions_pdf(output_path):
 
     elements.append(Paragraph("<b>Cyberduck (Windows & macOS)</b>", body_style))
     elements.append(Paragraph("1. Download and install from cyberduck.io.<br/>2. Click <b>Open Connection</b> and choose <b>WebDAV (HTTPS)</b>.<br/>3. Server: https://precision.biochem.uci.edu/public.php/webdav/<br/>4. Enter your share token as the username (leave password blank if instructed).", body_style))
-
-    elements.append(Paragraph("<b>WinSCP (Windows)</b>", body_style))
-    elements.append(Paragraph("1. Choose <b>WebDAV</b> as the protocol and use TLS/SSL if available.<br/>2. Hostname: https://precision.biochem.uci.edu/public.php/webdav/<br/>3. If resumable transfers fail, try Cyberduck instead.", body_style))
+    elements.append(Paragraph("<b>Note:</b> The share token is the trailing string in the project link (the part after <code>/s/</code>). For example, in https://precision.biochem.uci.edu/s/eXampLeToKEN the share token is <b>eXampLeToKEN</b>.", body_style))
     elements.append(Spacer(1, 0.1*inch))
 
     # Method 2: Mounting as a Network Drive
@@ -58,16 +56,25 @@ def generate_download_instructions_pdf(output_path):
     
     elements.append(Paragraph("<b>Windows & macOS:</b>", body_style))
     elements.append(Paragraph("• <b>Windows:</b> Right-click 'This PC' → 'Map network drive' → Enter https://precision.biochem.uci.edu/public.php/webdav/.<br/>• <b>macOS:</b> Finder → Command+K → Enter https://precision.biochem.uci.edu/public.php/webdav/ → Enter the Share token as username and leave the password blank.", body_style))
+    elements.append(Paragraph("<b>Note:</b> The share token is the trailing string in the project link (the part after <code>/s/</code>). For example, in https://precision.biochem.uci.edu/s/eXampLeToKEN the share token is <b>eXampLeToKEN</b>.", body_style))
     
     elements.append(Paragraph("<b>Linux (HPC/Command Line):</b>", body_style))
     elements.append(Paragraph("Mount using davfs2 and sync with rsync for the best CLI experience:", body_style))
-    linux_cmds = "sudo mount -t davfs https://precision.biochem.uci.edu/public.php/webdav/ /mnt/nextcloud\nrsync -avP /mnt/nextcloud/project_folder/ /home/user/local_data/"
+    linux_cmds = (
+        "sudo mkdir /mnt/nextcloud\n"
+        "sudo mount -t davfs https://precision.biochem.uci.edu/public.php/webdav/ /mnt/nextcloud\n"
+        "Username: {enter <share-token>}\n"
+        "Password: {hit Enter to leave blank}\n"
+        "rsync -avP /mnt/nextcloud/<project_folder>/ <your/example/download/location>"
+    )
     elements.append(Preformatted(linux_cmds, code_style))
+    elements.append(Paragraph("<b>Note:</b> The share token is the trailing string in the project link (the part after <code>/s/</code>). For example, in https://precision.biochem.uci.edu/s/eXampLeToKEN the share token is <b>eXampLeToKEN</b>.", body_style))
     elements.append(Spacer(1, 0.1*inch))
 
     # Method 3: HPC / rclone
     elements.append(Paragraph("Method 3: HPC / Remote Servers (rclone)", heading_style))
     elements.append(Paragraph("For cluster environments, rclone is a good choice for high-performance WebDAV transfers.", body_style))
+    elements.append(Paragraph("<b>Note:</b> The share token is the trailing string in the project link (the part after <code>/s/</code>). For example, in https://precision.biochem.uci.edu/s/eXampLeToKEN the share token is <b>eXampLeToKEN</b>.", body_style))
     rclone_cmds = "rclone config  # Create a WebDAV remote\nrclone copy -P myremote:project_folder ./local_folder"
     elements.append(Preformatted(rclone_cmds, code_style))
     elements.append(Spacer(1, 0.1*inch))
