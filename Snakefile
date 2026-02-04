@@ -34,15 +34,10 @@ _PROJECT_CONFIG = f"snakemake_config_project.yaml"
 
 if os.path.exists(_PROJECT_CONFIG):
     import yaml as _yaml
-    import sys as _sys
     with open(_PROJECT_CONFIG, 'r') as _f:
         _project_config = _yaml.safe_load(_f) or {}
     # Merge: project-specific config overrides default config
     config.update(_project_config)
-    _sys.stderr.write(f"Loaded project-specific config: {_PROJECT_CONFIG}\n")
-else:
-    import sys as _sys
-    _sys.stderr.write(f"No project-specific config found ({_PROJECT_CONFIG}), using defaults\n")
 
 # All config values read AFTER merge - project-specific config takes priority
 SAMPLE_SHEET = config.get("sample_sheet", "src/SampleSheet_default.csv")
@@ -1407,11 +1402,12 @@ rule project_link:
                 abs_path = os.path.abspath(fastq_dir)
                 nc_path = f"/{NEXTCLOUD_DIR_NAME}/" + abs_path.split(f"/{NEXTCLOUD_DIR_PATH}/", 1)[1] if f"/{NEXTCLOUD_DIR_PATH}/" in abs_path else abs_path
                 
-                max_retries = 5
+                max_retries = 30  # Retry up to 30 times with exponential backoff
                 retry_count = 0
                 share_url = None
                 share_token = None
                 rate_limited = False
+                last_error = None
                 
                 while retry_count < max_retries and not share_url:
                     retry_count += 1
@@ -1437,32 +1433,54 @@ rule project_link:
 
                         if http_code == '429':
                             rate_limited = True
-                        elif share_xml:
+                            last_error = f"Rate limited (HTTP {http_code})"
+                        elif http_code == '200' or http_code == '201':
+                            # Success - extract data from response
                             share_url = extract_share_url(share_xml)
                             share_token = extract_share_token(share_xml)
-
-                        # If POST failed (often because share exists), try GET
-                        if not share_url and http_code != '429':
+                            if share_url and share_token:
+                                try:
+                                    owner = extract_share_owner(share_xml)
+                                    internal_path = extract_internal_path(share_xml)
+                                except Exception:
+                                    owner = None
+                                    internal_path = None
+                                share_owner = owner
+                                share_internal_path = internal_path
+                                break
+                            else:
+                                last_error = f"Valid response but could not extract URL/token (HTTP {http_code})"
+                        elif http_code == '400' or http_code == '403':
+                            # 403 usually means "already exists" - try GET to fetch existing share
                             share_xml = fetch_existing_share(nc_path, None)
                             share_url = extract_share_url(share_xml)
                             share_token = extract_share_token(share_xml)
+                            if share_url and share_token:
+                                try:
+                                    owner = extract_share_owner(share_xml)
+                                    internal_path = extract_internal_path(share_xml)
+                                except Exception:
+                                    owner = None
+                                    internal_path = None
+                                share_owner = owner
+                                share_internal_path = internal_path
+                                break
+                            else:
+                                last_error = f"Share may exist but could not fetch via GET (HTTP {http_code})"
+                        else:
+                            last_error = f"HTTP {http_code}: {share_xml[:100] if share_xml else 'No response'}"
 
-                        if share_url and share_token:
-                            # try to extract owner/internal path from response
-                            try:
-                                owner = extract_share_owner(share_xml)
-                                internal_path = extract_internal_path(share_xml)
-                            except Exception:
-                                owner = None
-                                internal_path = None
-                            share_owner = owner
-                            share_internal_path = internal_path
-                            break
-                        
-                        if retry_count < max_retries: time.sleep(wait_time)
+                        if retry_count < max_retries and not share_url:
+                            time.sleep(wait_time)
 
+                    except subprocess.TimeoutExpired:
+                        last_error = "Request timed out (30 seconds)"
+                        if retry_count < max_retries:
+                            time.sleep(wait_time)
                     except Exception as e:
-                        if retry_count < max_retries: time.sleep(wait_time)
+                        last_error = f"Exception: {str(e)}"
+                        if retry_count < max_retries:
+                            time.sleep(wait_time)
 
                 # --- LOGGING WEB DAV CREDENTIALS AND EXECUTED COMMANDS ---
                 with open(log_file, 'w') as f:
@@ -1491,6 +1509,8 @@ rule project_link:
                             pass
                     else:
                         f.write(f"Status: FAILED\n")
+                        f.write(f"Reason: {last_error}\n")
+                        f.write(f"Retries: {retry_count}/{max_retries}\n")
 
                     # Record the actual commands executed (quoted for copy/paste)
                     if executed_cmds:
