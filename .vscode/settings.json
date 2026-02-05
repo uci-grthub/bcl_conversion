@@ -1,3 +1,4 @@
 {
-    "python.defaultInterpreterPath": "/home/kstachel/miniforge3/envs/perl_env/bin/python"
+    "python.defaultInterpreterPath": "/home/kstachel/miniforge3/envs/perl_env/bin/python",
+    "python.terminal.activateEnvironment": true
 }
