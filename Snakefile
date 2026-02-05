@@ -422,7 +422,7 @@ rule send_order_email:
         cc_email = EMAIL_CC,
         subject = lambda wildcards: f"Sequencing Report for Order {wildcards.order_id}"
     shell:
-        "python3 {params.script} {params.sender} {params.receiver} \"{params.subject}\" {input.html} \"{input.md5};{input.pdf}\" {params.cc_email} > {log} 2>&1 && touch {output}"
+        "python3 src/send_email_retry.py {params.script} {params.sender} {params.receiver} \"{params.subject}\" {input.html} \"{input.md5};{input.pdf}\" {params.cc_email} {wildcards.order_id} > {log} 2>&1 && touch {output}"
 
 rule fastp_sample:
     input:
