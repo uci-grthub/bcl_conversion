@@ -2,6 +2,7 @@
 import os
 import re
 import subprocess
+import glob
 import yaml
 import pandas as pd
 import xml.etree.ElementTree as ET
@@ -1230,6 +1231,25 @@ rule analyze_undetermined:
     shell:
         """
         python3 {params.script} "{params.input_pattern}" --output {output.csv} --limit 15000000 --exclude-indexes {input.exclude_indexes} > {log} 2>&1
+        """
+
+rule check_index_rc_swap:
+    """Run the index reverse-complement/swap analysis script across generated
+    SampleSheet CSVs and undetermined indices CSVs.
+    """
+    input:
+        samples = lambda wildcards: sorted(glob.glob("results/SampleSheet_*.csv")),
+        undetermined = lambda wildcards: sorted(glob.glob("results/undetermined_indices/*.csv"))
+    output:
+        "results/check_index_rc_swap.txt"
+    log:
+        "logs/check_index_rc_swap.log"
+    params:
+        script = "scripts/check_index_rc_swap.py"
+    threads: 1
+    shell:
+        """
+        python3 {params.script} --samples {input.samples} --undetermined {input.undetermined} > {output} 2> {log}
         """
 
 rule consolidate_project_links:
