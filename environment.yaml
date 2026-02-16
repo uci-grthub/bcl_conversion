@@ -1,4 +1,4 @@
-name: perl_env
+name: bcl_convert
 channels:
   - bioconda
   - conda-forge

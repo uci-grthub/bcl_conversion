@@ -1,6 +1,6 @@
 # Snakemake BCL Conversion Pipeline
 
-Automated workflow for NovaSeq data processing, quality control, and report generation.
+Automated workflow for NovaSeqX data processing, quality control, and report generation.
 
 ## Workflow Diagram
 
@@ -33,12 +33,8 @@ Edit `snakemake_config.yaml` to customize:
 library_name: "xR077"                    # Run identifier
 metadata: "metadata/251219_23G5F2LT3_10B_PE151_xR077.xlsx"
 data_dir: "/staging/nextcloud/NovaseqX/..." # BCL data location
-basecalls_path: "/path/to/BaseCalls"    # For lane auto-detection
-run_info_path: "src/RunInfo_nn.xml"
-fastp_threads: 4
 email_sender: "kstachel@uci.edu"
 email_recipient: "kstachel@uci.edu"
-tiles: ""                                # Optional: specific tiles (e.g., "1_1101")
 ```
 
 ## Metadata Format
@@ -138,7 +134,12 @@ snakemake --cores 1 results/undetermined_indices/lane1_R1-151_I1-8_I2-8_R2-151.c
 snakemake --cores 4 -R compile_read_counts
 ```
 
-**View dependency graph:**
+**View rule graph:**
+```bash
+snakemake --rulegraph | dot -Tpdf > rulegraph.pdf
+```
+
+**View complete dependency graph:**
 ```bash
 snakemake --dag | dot -Tpdf > dag.pdf
 ```
