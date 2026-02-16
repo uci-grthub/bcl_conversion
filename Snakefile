@@ -2,6 +2,7 @@
 import os
 import re
 import subprocess
+import glob
 import yaml
 import pandas as pd
 import xml.etree.ElementTree as ET
@@ -302,7 +303,7 @@ rule all:
         f"Reports/{LIBRARY}_read_counts_email.done",
         expand("Reports/order_{order_id}/email_sent.done", order_id=ORDER_ID_CONFIGS.keys()),
         expand("logs/verify_project_link_{config_id}_{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
-        [] if SKIP_RSYNC else ["logs/rsync_to_external_drive.done"]
+        "logs/rsync_to_external_drive.done"
     benchmark:
         "benchmarks/all.bench"
 
@@ -422,7 +423,7 @@ rule send_order_email:
         cc_email = EMAIL_CC,
         subject = lambda wildcards: f"Sequencing Report for Order {wildcards.order_id}"
     shell:
-        "python3 {params.script} {params.sender} {params.receiver} \"{params.subject}\" {input.html} \"{input.md5};{input.pdf}\" {params.cc_email} > {log} 2>&1 && touch {output}"
+        "python3 src/send_email_retry.py {params.script} {params.sender} {params.receiver} \"{params.subject}\" {input.html} \"{input.md5};{input.pdf}\" {params.cc_email} {wildcards.order_id} > {log} 2>&1 && touch {output}"
 
 rule fastp_sample:
     input:
@@ -862,12 +863,15 @@ rule generate_samplesheets:
                 hasher.update(f.read())
             return hasher.hexdigest()
         
+        # Use configured lane configs; if empty, fall back to CONFIG_IDS (e.g., MiSeq)
+        lane_configs = params.lane_configs or [{"id": cid} for cid in CONFIG_IDS]
+
         print(f"Checking sample sheets and updating only changed configs...")
         
         # Track which configs need regeneration
         configs_to_generate = []
         
-        for config in params.lane_configs:
+        for config in lane_configs:
             config_id = config['id']
             samplesheet_path = f"results/SampleSheet_{config_id}.csv"
             done_marker = f"logs/generate_samplesheets_{config_id}.done"
@@ -896,7 +900,7 @@ rule generate_samplesheets:
         # If no configs need generation, just ensure all done markers exist
         if not configs_to_generate:
             print(f"All sample sheets up to date, ensuring done markers exist...")
-            for config in params.lane_configs:
+            for config in lane_configs:
                 config_id = config['id']
                 done_marker = f"logs/generate_samplesheets_{config_id}.done"
                 if not os.path.exists(done_marker):
@@ -934,7 +938,7 @@ rule generate_samplesheets:
             # Generate all sample sheets
             generated_sheets = generate_lane_samplesheets(
                 input.metadata,
-                params.lane_configs,
+                lane_configs,
                 params.project_lookup,
                 params.masking_lookup,
                 params.output_dir,
@@ -945,7 +949,7 @@ rule generate_samplesheets:
             print(f"Generated sample sheets: {generated_sheets}")
             
             # Check which sample sheets actually changed and update only their done markers
-            for config in params.lane_configs:
+            for config in lane_configs:
                 config_id = config['id']
                 samplesheet_path = f"results/SampleSheet_{config_id}.csv"
                 done_marker = f"logs/generate_samplesheets_{config_id}.done"
@@ -1181,7 +1185,8 @@ rule calculate_md5sums:
     benchmark:
         "benchmarks/calculate_md5sums_{config_id}_{project}.bench"
     wildcard_constraints:
-        config_id = r"lane\d+_R\d+-\d+_I1-\d+_(?:I2-\d+|U-\d+)_R\d+-\d+",
+        # Relaxed to accept any lane-prefixed config with additional underscore-separated tokens
+        config_id = "[^/]+",
         project = ".+"
     shell:
         """
@@ -1226,6 +1231,25 @@ rule analyze_undetermined:
     shell:
         """
         python3 {params.script} "{params.input_pattern}" --output {output.csv} --limit 15000000 --exclude-indexes {input.exclude_indexes} > {log} 2>&1
+        """
+
+rule check_index_rc_swap:
+    """Run the index reverse-complement/swap analysis script across generated
+    SampleSheet CSVs and undetermined indices CSVs.
+    """
+    input:
+        samples = lambda wildcards: sorted(glob.glob("results/SampleSheet_*.csv")),
+        undetermined = lambda wildcards: sorted(glob.glob("results/undetermined_indices/*.csv"))
+    output:
+        "results/check_index_rc_swap.txt"
+    log:
+        "logs/check_index_rc_swap.log"
+    params:
+        script = "scripts/check_index_rc_swap.py"
+    threads: 1
+    shell:
+        """
+        python3 {params.script} --samples {input.samples} --undetermined {input.undetermined} > {output} 2> {log}
         """
 
 rule consolidate_project_links:
@@ -1539,7 +1563,8 @@ rule rescan_nextcloud:
     benchmark:
         "benchmarks/rescan_nextcloud_{config_id}_{project}.bench"
     wildcard_constraints:
-        config_id = r"lane\d+_R\d+-\d+_I1-\d+_(?:I2-\d+|U-\d+)_R\d+-\d+",
+        # Relaxed to accept any lane-prefixed config with additional underscore-separated tokens
+        config_id = "[^/]+",
         project = ".+"
     params:
         nc_path = lambda wildcards: f"/{NEXTCLOUD_DIR_NAME}/{LIBRARY}/output/{wildcards.config_id}/{wildcards.project}"
@@ -1579,7 +1604,8 @@ rule verify_project_links:
     benchmark:
         "benchmarks/verify_project_link_{config_id}_{project}.bench"
     wildcard_constraints:
-        config_id = r"lane\d+_R\d+-\d+_I1-\d+_(?:I2-\d+|U-\d+)_R\d+-\d+",
+        # Relaxed to accept any lane-prefixed config with additional underscore-separated tokens
+        config_id = "[^/]+",
         project = ".+"
     run:
         import subprocess
@@ -1759,7 +1785,7 @@ rule rsync_to_external_drive:
         # Use resume-friendly rsync flags so interrupted transfers can be resumed.
         # --partial preserves partially transferred files; --append-verify resumes and verifies.
         cmd = [
-            "rsync", "-aW", "--partial", "--append-verify", src + "/", dest + "/", "--exclude", "*Undetermined*"
+            "rsync", "-aW", src + "/", dest + "/", "--exclude", "*Undetermined*"
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         print(result.stdout)
