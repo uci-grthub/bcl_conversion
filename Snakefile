@@ -129,7 +129,7 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
                          g = int(float(row['Gr']))
                          
                          if 'Project Name' in df.columns:
-                            p = str(row['Project Name']).strip()
+                            p = str(row['Project Name']).strip().replace(' ', '_')
                             PROJECT_LOOKUP[(l, g)] = p
                             
                             # Check for Fastq Link
@@ -152,7 +152,7 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
                             MASKING_LOOKUP[(l, g)] = m
                          
                          if 'Order ID' in df.columns:
-                            order_id = str(row['Order ID']).strip()
+                            order_id = str(row['Order ID']).strip().replace(' ', '_')
                             if order_id and order_id.lower() != 'nan':
                                 # Normalize common casing issue (e.g., '1225i-13' -> '1225I-13')
                                 order_id = order_id.replace('i', 'I')
@@ -193,8 +193,8 @@ try:
             df_barcode = pd.read_excel(METADATA_FILE, sheet_name='Barcode List', header=1)
             for idx, row in df_barcode.iterrows():
                 try:
-                    project = str(row.get('Project name', '')).strip()
-                    order_id = str(row.get('Order ID', '')).strip()
+                    project = str(row.get('Project name', '')).strip().replace(' ', '_')
+                    order_id = str(row.get('Order ID', '')).strip().replace(' ', '_')
                     if project and project.lower() != 'nan' and order_id and order_id.lower() != 'nan':
                         # Normalize casing (e.g., '1225i-13' -> '1225I-13')
                         order_id = order_id.replace('i', 'I')
@@ -244,7 +244,7 @@ SAMPLE_SHEETS_DICT = generate_lane_samplesheets(METADATA_FILE, LANE_CONFIGS, PRO
 
 # print(SAMPLE_SHEETS_DICT)
 
-CONFIG_IDS = [c['id'] for c in LANE_CONFIGS] if LANE_CONFIGS else []
+CONFIG_IDS = list(SAMPLE_SHEETS_DICT.keys()) if SAMPLE_SHEETS_DICT else []
 # Fallback if no metadata
 if not CONFIG_IDS and detected_lanes:
     CONFIG_IDS = [f"lane{l}_default" for l in detected_lanes]
@@ -302,7 +302,7 @@ rule all:
         f"results/{LIBRARY}-count.csv",
         f"Reports/{LIBRARY}_read_counts_email.done",
         expand("Reports/order_{order_id}/email_sent.done", order_id=ORDER_ID_CONFIGS.keys()),
-        expand("logs/verify_project_link_{config_id}_{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
+        expand("logs/verify_project_link_{config_id}---{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         "logs/rsync_to_external_drive.done"
     benchmark:
         "benchmarks/all.bench"
@@ -1255,7 +1255,7 @@ rule check_index_rc_swap:
 rule consolidate_project_links:
     input:
         PROJECT_LINK_LOGS,
-        expand("logs/nextcloud_scan_{config_id}_{project}.done", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS])
+        expand("logs/nextcloud_scan_{config_id}---{project}.done", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS])
     output:
         "logs/project_links.yaml"
     log:
@@ -1557,7 +1557,7 @@ rule rescan_nextcloud:
     input:
         "logs/project_link_{config_id}---{project}.log"
     output:
-        touch("logs/nextcloud_scan_{config_id}_{project}.done")
+        touch("logs/nextcloud_scan_{config_id}---{project}.done")
     log:
         "logs/rescan_nextcloud_{config_id}_{project}.log"
     benchmark:
@@ -1596,13 +1596,13 @@ rule rescan_nextcloud:
 rule verify_project_links:
     input:
         project_link_log = "logs/project_link_{config_id}---{project}.log",
-        scan_done = "logs/nextcloud_scan_{config_id}_{project}.done"
+        scan_done = "logs/nextcloud_scan_{config_id}---{project}.done"
     output:
-        report = "logs/verify_project_link_{config_id}_{project}.txt"
+        report = "logs/verify_project_link_{config_id}---{project}.txt"
     log:
-        "logs/verify_project_link_{config_id}_{project}.log"
+        "logs/verify_project_link_{config_id}---{project}.log"
     benchmark:
-        "benchmarks/verify_project_link_{config_id}_{project}.bench"
+        "benchmarks/verify_project_link_{config_id}---{project}.bench"
     wildcard_constraints:
         # Relaxed to accept any lane-prefixed config with additional underscore-separated tokens
         config_id = "[^/]+",
