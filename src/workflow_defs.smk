@@ -54,8 +54,11 @@ def get_organized_dir_name(project, config_id, lab_id, run_name, project_lookup,
     except:
         pass
     
-    # Get order_id for this project
-    order_id = project_order_id.get(project, "NOORDER")
+    # Get order_id for this project+lane
+    try:
+        order_id = project_order_id.get((project, int(lane)), "NOORDER")
+    except (ValueError, TypeError):
+        order_id = project_order_id.get((project, 0), "NOORDER")
     
     # Sanitize components for filename
     lab_id_clean = lab_id.replace(" ", "-").replace("_", "-")
@@ -493,8 +496,11 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
     run_name = library_name
 
     # Produce a metadata validation workbook (highlighted copy + RECOMMENDED_CHANGES tab)
+    # Only regenerate if metadata is newer than the existing report
     try:
-        validate_metadata_and_write_report(metadata_file, out_xlsx=os.path.join('logs', f"metadata_validation_{os.path.basename(metadata_file)}.xlsx"))
+        out_xlsx = os.path.join('logs', f"metadata_validation_{os.path.basename(metadata_file)}.xlsx")
+        if not os.path.exists(out_xlsx) or os.path.getmtime(metadata_file) > os.path.getmtime(out_xlsx):
+            validate_metadata_and_write_report(metadata_file, out_xlsx=out_xlsx)
     except Exception as e:
         print(f"Warning: metadata validation report generation failed: {e}")
     
@@ -1046,14 +1052,18 @@ def get_order_id_configs(sample_sheets_dict):
                 df = pd.read_csv(map_path)
                 df['Sample_Project'] = df['Sample_Project'].astype(str)
                 
+                # Extract lane from config_id for lane-aware order lookup
+                lane_match = re.match(r'lane(\d+)', config_id)
+                config_lane = int(lane_match.group(1)) if lane_match else 0
+
                 for project in df['Sample_Project'].unique():
                     project = str(project).strip()
                     if not project or project.lower() == 'nan':
                         continue
-                    
-                    # Get order_id for this project
-                    order_id = PROJECT_ORDER_ID.get(project, "")
-                    
+
+                    # Get order_id for this project+lane
+                    order_id = PROJECT_ORDER_ID.get((project, config_lane), "")
+
                     if order_id:
                         if order_id not in order_id_to_projects:
                             order_id_to_projects[order_id] = set()

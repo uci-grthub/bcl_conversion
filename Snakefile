@@ -105,7 +105,7 @@ MASKING_LOOKUP = {}
 PROJECT_LINKS = {}
 PROJECT_LINKS_BY_LANE = {}
 ORDER_ID_LOOKUP = {}
-PROJECT_ORDER_ID = {}
+PROJECT_ORDER_ID = {}  # keyed by (project, lane) -> order_id
 
 if METADATA_FILE and os.path.exists(METADATA_FILE):
     try:
@@ -129,7 +129,7 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
                          g = int(float(row['Gr']))
                          
                          if 'Project Name' in df.columns:
-                            p = str(row['Project Name']).strip()
+                            p = str(row['Project Name']).strip().replace(' ', '_')
                             PROJECT_LOOKUP[(l, g)] = p
                             
                             # Check for Fastq Link
@@ -152,13 +152,13 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
                             MASKING_LOOKUP[(l, g)] = m
                          
                          if 'Order ID' in df.columns:
-                            order_id = str(row['Order ID']).strip()
+                            order_id = str(row['Order ID']).strip().replace(' ', '_')
                             if order_id and order_id.lower() != 'nan':
                                 # Normalize common casing issue (e.g., '1225i-13' -> '1225I-13')
                                 order_id = order_id.replace('i', 'I')
                                 ORDER_ID_LOOKUP[(l, g)] = order_id
                                 if p and p.lower() != 'nan':
-                                    PROJECT_ORDER_ID[p] = order_id
+                                    PROJECT_ORDER_ID[(p, l)] = order_id
                      except:
                          pass
             
@@ -193,14 +193,19 @@ try:
             df_barcode = pd.read_excel(METADATA_FILE, sheet_name='Barcode List', header=1)
             for idx, row in df_barcode.iterrows():
                 try:
-                    project = str(row.get('Project name', '')).strip()
-                    order_id = str(row.get('Order ID', '')).strip()
+                    project = str(row.get('Project name', '')).strip().replace(' ', '_')
+                    order_id = str(row.get('Order ID', '')).strip().replace(' ', '_')
+                    lane_val = row.get('Lane', None)
                     if project and project.lower() != 'nan' and order_id and order_id.lower() != 'nan':
                         # Normalize casing (e.g., '1225i-13' -> '1225I-13')
                         order_id = order_id.replace('i', 'I')
                         # Only add if not already in PROJECT_ORDER_ID (Summary takes precedence)
-                        if project not in PROJECT_ORDER_ID:
-                            PROJECT_ORDER_ID[project] = order_id
+                        try:
+                            lane_int = int(float(lane_val))
+                        except (ValueError, TypeError):
+                            lane_int = 0
+                        if (project, lane_int) not in PROJECT_ORDER_ID:
+                            PROJECT_ORDER_ID[(project, lane_int)] = order_id
                 except:
                     pass
 except Exception as e:
@@ -235,8 +240,11 @@ def fix_runinfo_reverse_complement():
     with open("logs/fix_runinfo_reverse_complement.log", "w") as lf:
         lf.write("RunInfo.xml copied and IsReverseComplement set to N for Read Number=3\n")
 
-# Always fix RunInfo_nn.xml before workflow starts
-fix_runinfo_reverse_complement()
+# Only fix RunInfo_nn.xml if source is newer than the existing copy
+_src_runinfo = os.path.join(DATA_DIR, "RunInfo.xml")
+_dest_runinfo = "src/RunInfo_nn.xml"
+if not os.path.exists(_dest_runinfo) or (os.path.exists(_src_runinfo) and os.path.getmtime(_src_runinfo) > os.path.getmtime(_dest_runinfo)):
+    fix_runinfo_reverse_complement()
 
 # Generate sample sheets during parse time (needed for function calls below)
 # Rule generate_samplesheets will also ensure they're created as explicit dependencies
@@ -244,7 +252,7 @@ SAMPLE_SHEETS_DICT = generate_lane_samplesheets(METADATA_FILE, LANE_CONFIGS, PRO
 
 # print(SAMPLE_SHEETS_DICT)
 
-CONFIG_IDS = [c['id'] for c in LANE_CONFIGS] if LANE_CONFIGS else []
+CONFIG_IDS = list(SAMPLE_SHEETS_DICT.keys()) if SAMPLE_SHEETS_DICT else []
 # Fallback if no metadata
 if not CONFIG_IDS and detected_lanes:
     CONFIG_IDS = [f"lane{l}_default" for l in detected_lanes]
@@ -302,7 +310,7 @@ rule all:
         f"results/{LIBRARY}-count.csv",
         f"Reports/{LIBRARY}_read_counts_email.done",
         expand("Reports/order_{order_id}/email_sent.done", order_id=ORDER_ID_CONFIGS.keys()),
-        expand("logs/verify_project_link_{config_id}_{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
+        expand("logs/verify_project_link_{config_id}---{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         "logs/rsync_to_external_drive.done"
     benchmark:
         "benchmarks/all.bench"
@@ -1255,7 +1263,7 @@ rule check_index_rc_swap:
 rule consolidate_project_links:
     input:
         PROJECT_LINK_LOGS,
-        expand("logs/nextcloud_scan_{config_id}_{project}.done", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS])
+        expand("logs/nextcloud_scan_{config_id}---{project}.done", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS])
     output:
         "logs/project_links.yaml"
     log:
@@ -1296,9 +1304,12 @@ rule consolidate_project_links:
                 
                 # If order_id not found in log or is empty, look it up from PROJECT_ORDER_ID
                 if not order_id:
-                    order_id = PROJECT_ORDER_ID.get(project, "")
+                    # Extract lane from config_id for lane-aware lookup
+                    _lane_m = re.match(r'lane(\d+)', config_id)
+                    _lane_int = int(_lane_m.group(1)) if _lane_m else 0
+                    order_id = PROJECT_ORDER_ID.get((project, _lane_int), "")
                     if order_id:
-                        print(f"Order ID for {project} not in log, using PROJECT_ORDER_ID: {order_id}")
+                        print(f"Order ID for {project} (lane {_lane_int}) not in log, using PROJECT_ORDER_ID: {order_id}")
                 # Normalize casing (e.g., '1225i-13' -> '1225I-13')
                 if order_id:
                     order_id = order_id.replace('i', 'I')
@@ -1351,7 +1362,7 @@ rule project_link:
         project = ".+"
     params:
         work_dir = os.getcwd(),
-        order_id = lambda wildcards: PROJECT_ORDER_ID.get(wildcards.project, ""),
+        order_id = lambda wildcards: PROJECT_ORDER_ID.get((wildcards.project, int(m.group(1))) if (m := re.match(r'lane(\d+)', wildcards.config_id)) else (wildcards.project, 0), ""),
         group = lambda wildcards: get_project_group(wildcards.project, wildcards.config_id)
     run:
         import traceback
@@ -1557,7 +1568,7 @@ rule rescan_nextcloud:
     input:
         "logs/project_link_{config_id}---{project}.log"
     output:
-        touch("logs/nextcloud_scan_{config_id}_{project}.done")
+        touch("logs/nextcloud_scan_{config_id}---{project}.done")
     log:
         "logs/rescan_nextcloud_{config_id}_{project}.log"
     benchmark:
@@ -1596,13 +1607,13 @@ rule rescan_nextcloud:
 rule verify_project_links:
     input:
         project_link_log = "logs/project_link_{config_id}---{project}.log",
-        scan_done = "logs/nextcloud_scan_{config_id}_{project}.done"
+        scan_done = "logs/nextcloud_scan_{config_id}---{project}.done"
     output:
-        report = "logs/verify_project_link_{config_id}_{project}.txt"
+        report = "logs/verify_project_link_{config_id}---{project}.txt"
     log:
-        "logs/verify_project_link_{config_id}_{project}.log"
+        "logs/verify_project_link_{config_id}---{project}.log"
     benchmark:
-        "benchmarks/verify_project_link_{config_id}_{project}.bench"
+        "benchmarks/verify_project_link_{config_id}---{project}.bench"
     wildcard_constraints:
         # Relaxed to accept any lane-prefixed config with additional underscore-separated tokens
         config_id = "[^/]+",
