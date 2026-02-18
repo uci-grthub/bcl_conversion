@@ -396,8 +396,209 @@ class MetadataValidator:
         self.add_info("✓ Sample name validation complete")
         return True
     
+    def validate_project_name_variations(self):
+        """Test 10a: List all project names across all sources and flag near-duplicate variations"""
+        from difflib import SequenceMatcher
+
+        # Collect project names from Summary sheet
+        summary_projects = {}  # (lane, group) -> project_name
+        barcode_projects = {}  # (lane, group) -> project_name
+
+        if self.xl:
+            # Summary sheet
+            try:
+                df_sum = pd.read_excel(self.excel_path, sheet_name='Summary', header=2)
+                if 'Project Name' in df_sum.columns:
+                    for _, row in df_sum.iterrows():
+                        try:
+                            l = int(float(row['Lane']))
+                            g = int(float(row['Gr']))
+                            p = str(row['Project Name']).strip()
+                            if p and p.lower() != 'nan':
+                                summary_projects[(l, g)] = p
+                        except Exception:
+                            pass
+            except Exception as e:
+                self.add_warning(f"Could not read Summary for project name validation: {e}")
+
+            # Barcode List sheet
+            try:
+                if 'Barcode List' in self.xl.sheet_names:
+                    df_bl = pd.read_excel(self.excel_path, sheet_name='Barcode List', header=1)
+                    for _, row in df_bl.iterrows():
+                        try:
+                            l = int(float(row.get('Lane', 0)))
+                            g = int(float(row.get('Group', 0)))
+                            p = str(row.get('Project name', '')).strip()
+                            if p and p.lower() != 'nan':
+                                barcode_projects[(l, g)] = p
+                        except Exception:
+                            pass
+            except Exception as e:
+                self.add_warning(f"Could not read Barcode List for project name validation: {e}")
+
+        # Collect all unique project names
+        all_names = sorted(set(list(summary_projects.values()) + list(barcode_projects.values())))
+
+        self.add_info(f"All project names found ({len(all_names)} unique):")
+        for name in all_names:
+            self.add_info(f"  {name}")
+
+        # Flag cross-sheet naming mismatches for same (lane, group)
+        common_keys = set(summary_projects.keys()) & set(barcode_projects.keys())
+        for key in sorted(common_keys):
+            s_name = summary_projects[key]
+            b_name = barcode_projects[key]
+            if s_name != b_name:
+                self.add_error(
+                    f"Lane {key[0]} Gr {key[1]}: Project name mismatch between Summary "
+                    f"('{s_name}') and Barcode List ('{b_name}')"
+                )
+
+        # Flag near-duplicate project names (similar but not identical)
+        def normalize(name):
+            return re.sub(r'[_\-\s]', '', name.lower())
+
+        seen_pairs = set()
+        for i, a in enumerate(all_names):
+            for b in all_names[i+1:]:
+                pair = (a, b)
+                if pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+                ratio = SequenceMatcher(None, normalize(a), normalize(b)).ratio()
+                if ratio >= 0.8 and a != b:
+                    self.add_warning(
+                        f"Similar project names (similarity {ratio:.0%}): '{a}' vs '{b}' — "
+                        f"verify these are distinct projects"
+                    )
+
+        self.add_info("✓ Project name variation check complete")
+        return True
+
+    def validate_order_ids(self):
+        """Test 10b: Flag Summary rows that lack an Order ID, and flag data sheet tabs missing an Order ID column"""
+        ok = True
+
+        # --- Check Summary sheet row-by-row ---
+        if self.xl and 'Summary' in self.xl.sheet_names:
+            try:
+                df = pd.read_excel(self.excel_path, sheet_name='Summary', header=2)
+                if 'Order ID' not in df.columns or 'Project Name' not in df.columns:
+                    self.add_warning("Summary sheet missing 'Order ID' or 'Project Name' column")
+                else:
+                    missing = []
+                    for _, row in df.iterrows():
+                        project = str(row.get('Project Name', '')).strip()
+                        order_id = str(row.get('Order ID', '')).strip()
+                        if project and project.lower() != 'nan':
+                            if not order_id or order_id.lower() == 'nan':
+                                try:
+                                    lane = int(float(row['Lane']))
+                                    gr = int(float(row['Gr']))
+                                except Exception:
+                                    lane, gr = '?', '?'
+                                missing.append(f"Lane {lane} Gr {gr}: '{project}'")
+                    if missing:
+                        ok = False
+                        for entry in missing:
+                            self.add_error(f"Missing Order ID in Summary — {entry}")
+                    else:
+                        self.add_info("✓ All Summary rows have an Order ID")
+            except Exception as e:
+                self.add_warning(f"Could not read Summary for order ID validation: {e}")
+
+        # --- Check each loaded data sheet tab for Order ID column ---
+        for sheet_name, df in self.all_sheets_data.items():
+            # Look for any order-id-like column (case-insensitive)
+            order_cols = [c for c in df.columns if re.search(r'order.?id', str(c), re.IGNORECASE)]
+            if not order_cols:
+                ok = False
+                self.add_error(
+                    f"Sheet '{sheet_name}' has no 'Order ID' column — "
+                    f"order ID cannot be assigned to samples in this tab"
+                )
+            else:
+                # Check for rows where Order ID is blank
+                col = order_cols[0]
+                blank = df[df[col].isna() | (df[col].astype(str).str.strip().isin(['', 'nan']))]
+                if not blank.empty:
+                    ok = False
+                    self.add_error(
+                        f"Sheet '{sheet_name}': {len(blank)} row(s) have a blank '{col}'"
+                    )
+
+        return ok
+
+    def validate_lane_conflicts(self):
+        """Test 10c: Flag projects with conflicting lane assignments between Summary and Barcode List"""
+        if not self.xl:
+            return True
+
+        # Build project -> set of (lane, group) from Summary
+        summary_map = defaultdict(set)
+        barcode_map = defaultdict(set)
+
+        try:
+            df_sum = pd.read_excel(self.excel_path, sheet_name='Summary', header=2)
+            if 'Project Name' in df_sum.columns:
+                for _, row in df_sum.iterrows():
+                    try:
+                        p = str(row['Project Name']).strip()
+                        l = int(float(row['Lane']))
+                        g = int(float(row['Gr']))
+                        if p and p.lower() != 'nan':
+                            summary_map[p].add((l, g))
+                    except Exception:
+                        pass
+        except Exception as e:
+            self.add_warning(f"Could not read Summary for lane conflict check: {e}")
+
+        try:
+            if 'Barcode List' in self.xl.sheet_names:
+                df_bl = pd.read_excel(self.excel_path, sheet_name='Barcode List', header=1)
+                for _, row in df_bl.drop_duplicates(subset=['Lane', 'Group', 'Project name']).iterrows():
+                    try:
+                        p = str(row.get('Project name', '')).strip()
+                        l = int(float(row.get('Lane', 0)))
+                        g = int(float(row.get('Group', 0)))
+                        if p and p.lower() != 'nan':
+                            barcode_map[p].add((l, g))
+                    except Exception:
+                        pass
+        except Exception as e:
+            self.add_warning(f"Could not read Barcode List for lane conflict check: {e}")
+
+        # Check consistency
+        all_projects = set(summary_map.keys()) | set(barcode_map.keys())
+        found_conflict = False
+        for project in sorted(all_projects):
+            s_lanes = summary_map.get(project, set())
+            b_lanes = barcode_map.get(project, set())
+
+            if s_lanes and b_lanes and s_lanes != b_lanes:
+                found_conflict = True
+                only_in_summary = s_lanes - b_lanes
+                only_in_barcode = b_lanes - s_lanes
+                msg = f"Project '{project}' has lane/group conflicts:"
+                if only_in_summary:
+                    msg += f"\n    In Summary only: {sorted(only_in_summary)}"
+                if only_in_barcode:
+                    msg += f"\n    In Barcode List only: {sorted(only_in_barcode)}"
+                self.add_error(msg)
+
+            if s_lanes and not b_lanes:
+                self.add_info(f"Project '{project}' is in Summary but not Barcode List (OK for 10x/Parse/BD)")
+            elif b_lanes and not s_lanes:
+                self.add_warning(f"Project '{project}' is in Barcode List but not Summary")
+
+        if not found_conflict:
+            self.add_info("✓ No lane/group conflicts between Summary and Barcode List")
+
+        return not found_conflict
+
     def validate_masking_format(self):
-        """Test 10: Validate masking string format if present"""
+        """Test 10d: Validate masking string format if present"""
         masking_pattern = re.compile(r'^[RIYNUryn]+\d+[;,]?')  # Basic pattern
         
         for sheet_name, df in self.all_sheets_data.items():
@@ -501,6 +702,9 @@ class MetadataValidator:
             ("Lane Numbers", self.validate_lane_numbers),
             ("Project Names", self.validate_project_names),
             ("Sample Names", self.validate_sample_names),
+            ("Project Name Variations", self.validate_project_name_variations),
+            ("Order IDs", self.validate_order_ids),
+            ("Lane Conflicts", self.validate_lane_conflicts),
             ("Masking Format", self.validate_masking_format),
         ]
         
