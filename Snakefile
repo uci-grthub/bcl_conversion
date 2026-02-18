@@ -211,6 +211,14 @@ try:
 except Exception as e:
     print(f"Note: Could not read Barcode List for order IDs: {e}")
 
+# Build reverse lookup: order_id -> sorted list of unique lanes
+ORDER_ID_TO_LANE = {}
+for (_lane, _group), _oid in ORDER_ID_LOOKUP.items():
+    if _oid not in ORDER_ID_TO_LANE:
+        ORDER_ID_TO_LANE[_oid] = []
+    if _lane not in ORDER_ID_TO_LANE[_oid]:
+        ORDER_ID_TO_LANE[_oid].append(_lane)
+
 # print("LANE_CONFIGS:", LANE_CONFIGS)
 # print("PROJECT_LOOKUP:", PROJECT_LOOKUP)
 # print("MASKING_LOOKUP:", MASKING_LOOKUP)
@@ -311,7 +319,8 @@ rule all:
         f"Reports/{LIBRARY}_read_counts_email.done",
         expand("Reports/order_{order_id}/email_sent.done", order_id=ORDER_ID_CONFIGS.keys()),
         expand("logs/verify_project_link_{config_id}---{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
-        "logs/rsync_to_external_drive.done"
+        "logs/rsync_to_external_drive.done",
+        # "results/check_index_rc_swap.txt"
     benchmark:
         "benchmarks/all.bench"
 
@@ -324,7 +333,14 @@ rule bcl_convert_only:
 rule report_order_id:
     input:
         fastp_plots = lambda wildcards: get_order_id_plot_targets(wildcards.order_id),
-        md5_files = lambda wildcards: [f"output/{c}/{p}/md5sums.txt" for c, p in CONFIG_PROJECT_PAIRS if p in ORDER_ID_CONFIGS.get(wildcards.order_id, [])],
+        md5_files = lambda wildcards: [
+            f"output/{c}/{p}/md5sums.txt" for c, p in CONFIG_PROJECT_PAIRS
+            if p in ORDER_ID_CONFIGS.get(wildcards.order_id, [])
+            and (
+                not ORDER_ID_TO_LANE.get(wildcards.order_id)
+                or (re.match(r'lane(\d+)', c) and int(re.match(r'lane(\d+)', c).group(1)) in ORDER_ID_TO_LANE.get(wildcards.order_id, []))
+            )
+        ],
         links_yaml = "logs/project_links.yaml"
     output:
         html = "Reports/order_{order_id}/index.html",
@@ -351,6 +367,10 @@ rule report_order_id:
         projects = params.projects
         report_dir = params.report_dir
         log_file = log[0]
+
+        # Determine lane filter: if this order_id maps to a single lane, filter by it
+        _lanes_for_order = ORDER_ID_TO_LANE.get(order_id, [])
+        lane_arg = str(_lanes_for_order[0]) if len(_lanes_for_order) == 1 else "None"
         
         os.makedirs(report_dir, exist_ok=True)
         
@@ -373,7 +393,7 @@ rule report_order_id:
                 params.fastp_base,
                 report_dir,
                 fastq_links,
-                "None",  # lane_filter
+                lane_arg,  # lane_filter
                 input.links_yaml,
                 order_id,
                 LIBRARY,  # library_name
@@ -1796,7 +1816,7 @@ rule rsync_to_external_drive:
         # Use resume-friendly rsync flags so interrupted transfers can be resumed.
         # --partial preserves partially transferred files; --append-verify resumes and verifies.
         cmd = [
-            "rsync", "-aW", src + "/", dest + "/", "--exclude", "*Undetermined*"
+            "rsync", "-aW", "--delete", "--exclude='.snakemake/'", src + "/", dest + "/", "--exclude", "*Undetermined*"
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         print(result.stdout)
