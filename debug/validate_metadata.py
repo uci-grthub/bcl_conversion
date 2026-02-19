@@ -513,8 +513,7 @@ class MetadataValidator:
             # Look for any order-id-like column (case-insensitive)
             order_cols = [c for c in df.columns if re.search(r'order.?id', str(c), re.IGNORECASE)]
             if not order_cols:
-                ok = False
-                self.add_error(
+                self.add_warning(
                     f"Sheet '{sheet_name}' has no 'Order ID' column — "
                     f"order ID cannot be assigned to samples in this tab"
                 )
@@ -523,8 +522,7 @@ class MetadataValidator:
                 col = order_cols[0]
                 blank = df[df[col].isna() | (df[col].astype(str).str.strip().isin(['', 'nan']))]
                 if not blank.empty:
-                    ok = False
-                    self.add_error(
+                    self.add_warning(
                         f"Sheet '{sheet_name}': {len(blank)} row(s) have a blank '{col}'"
                     )
 
