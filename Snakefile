@@ -1786,7 +1786,6 @@ rule rsync_to_external_drive:
         # Ensure all reports are generated before running rsync
         reports = ORDER_ID_REPORTS,
         md5s = ORDER_ID_MD5S,
-        src_dir = lambda wildcards: os.getcwd()
     output:
         touch("logs/rsync_to_external_drive.done")
     log:
@@ -1795,7 +1794,8 @@ rule rsync_to_external_drive:
         "benchmarks/rsync_to_external_drive.bench"
     params:
         dest_dir = EXTERNAL_DRIVE_PATH,
-        project_name = LIBRARY
+        project_name = LIBRARY,
+        src_dir = lambda wildcards: os.getcwd()
     run:
         import sys
         sys.stderr = sys.stdout = open(log[0], 'w')
@@ -1809,7 +1809,7 @@ rule rsync_to_external_drive:
             with open(output[0], 'w') as f:
                 f.write('SKIPPED')
             return
-        src = os.path.abspath(input.src_dir)
+        src = os.path.abspath(params.src_dir)
         dest = os.path.join(params.dest_dir, params.project_name)
         print(f"Rsyncing {src} to {dest}")
         os.makedirs(dest, exist_ok=True)
