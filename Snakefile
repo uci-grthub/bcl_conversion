@@ -49,6 +49,8 @@ DRYRUN = config.get("dryrun", False)
 DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20260115_LH00626_0088_A233NM2LT4")  # From merged config
 TILES = config.get("tiles", "1_1101")
 
+SCRATCH_DIR = config.get("scratch_dir", "")
+
 NEXTCLOUD_DIR_NAME = config.get("nextcloud_dir_name", "DragenExt3")
 NEXTCLOUD_DIR_PATH = config.get("nextcloud_dir_path", "nextcloud3")
 
@@ -1168,20 +1170,31 @@ rule bcl_convert:
     params:
         lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', ''),
         run_info_path = "src/RunInfo_nn.xml",
-        tiles = TILES
+        tiles = TILES,
+        scratch_dir = SCRATCH_DIR
     shell:
         """
         (
         # Masking is now handled by OverrideCycles in the sample sheet
-        
+
         tiles_arg=""
         if [ ! -z "{params.tiles}" ]; then
             tiles_arg="--tiles {params.tiles}"
         fi
-        
+
+        # Use fast local scratch for DRAGEN output if configured, to avoid writing
+        # large FASTQs directly to the slower JBOD RAID mount. Files are moved to
+        # the final output directory after conversion and renaming are complete.
+        if [ -n "{params.scratch_dir}" ]; then
+            dragen_out="{params.scratch_dir}/output/{wildcards.config_id}"
+            mkdir -p "$dragen_out"
+        else
+            dragen_out="{output.output_dir}"
+        fi
+
         dragen --bcl-conversion-only true \
         --bcl-input-directory {input.data_dir} \
-        --output-directory {output.output_dir} \
+        --output-directory "$dragen_out" \
         --force \
         --bcl-sampleproject-subdirectories true \
         --sample-sheet {input.sample_sheet} \
@@ -1189,14 +1202,21 @@ rule bcl_convert:
         --bcl-only-lane {params.lane} \
         --run-info {params.run_info_path} \
         $tiles_arg
-        
+
         # Rename FASTQ files
-        src/run_rename.sh {wildcards.config_id} {output.output_dir} {input.renaming_map}
+        src/run_rename.sh {wildcards.config_id} "$dragen_out" {input.renaming_map}
 
         # If BD Rhapsody ATACseq, run additional renaming for R1/R2/R3
         if grep -q "BD Rhapsody_ATACseq\\|BD_Rhapsody_ATACseq\\|BD_ATAC" {input.sample_sheet}; then
             echo "Running BD Rhapsody ATACseq renaming for {wildcards.config_id}..."
-            bash src/rename_bd_rhapsody_atac.sh {output.output_dir}
+            bash src/rename_bd_rhapsody_atac.sh "$dragen_out"
+        fi
+
+        # Move from scratch to final JBOD output path
+        if [ -n "{params.scratch_dir}" ]; then
+            mkdir -p "$(dirname {output.output_dir})"
+            mv "$dragen_out" "{output.output_dir}"
+            rmdir --ignore-fail-on-non-empty "{params.scratch_dir}/output" 2>/dev/null || true
         fi
 
         touch {output.done_file}

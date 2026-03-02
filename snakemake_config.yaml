@@ -15,6 +15,11 @@ nextcloud_dir_name: "dragenshare"
 nextcloud_dir_path: "nextcloud"
 external_drive_path: "/mnt/external_drive"
 
+# Fast local NVMe scratch for DRAGEN bcl-convert output (avoids writing directly to slow JBOD RAID).
+# DRAGEN writes FASTQs here first; files are moved to the final output/ path after conversion.
+# Set to "" or omit to write directly to output/ (slower if on network/JBOD storage).
+scratch_dir: "/staging/scratch"
+
 # Report plot composition settings
 plots_total_width: 900  # Total width in pixels for composed plots (default: 900)
 plots_quality: 35       # JPEG quality for composed plots, 1-95 (default: 35, lower = smaller file)
