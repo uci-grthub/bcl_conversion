@@ -26,9 +26,9 @@ def read_entries(path):
 
 def main():
     repo_root = os.getcwd()
-    entries_csv = os.path.join(repo_root, 'reports', 'timeline_entries.csv')
+    entries_csv = os.path.join(repo_root, 'reports', 'benchmark_entries.csv')
     if not os.path.exists(entries_csv):
-        print('timeline_entries.csv not found; run parse_timeline.py first')
+        print('benchmark_entries.csv not found; run parse_timeline.py first')
         return 2
 
     durations = read_entries(entries_csv)
