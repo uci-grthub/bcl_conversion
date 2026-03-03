@@ -116,4 +116,5 @@ try:
     print(f"Email sent successfully to {receiver_email} (cc: {cc_email})!")
 except Exception as e:
     print(f"Error: {e}")
+    sys.exit(1)
 
