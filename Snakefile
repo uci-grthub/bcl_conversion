@@ -49,6 +49,8 @@ DRYRUN = config.get("dryrun", False)
 DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20260115_LH00626_0088_A233NM2LT4")  # From merged config
 TILES = config.get("tiles", "1_1101")
 
+SCRATCH_DIR = config.get("scratch_dir", "")
+
 NEXTCLOUD_DIR_NAME = config.get("nextcloud_dir_name", "DragenExt3")
 NEXTCLOUD_DIR_PATH = config.get("nextcloud_dir_path", "nextcloud3")
 
@@ -319,7 +321,7 @@ rule all:
         f"Reports/{LIBRARY}_read_counts_email.done",
         expand("Reports/order_{order_id}/email_sent.done", order_id=ORDER_ID_CONFIGS.keys()),
         expand("logs/verify_project_link_{config_id}---{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
-        "logs/rsync_to_external_drive.done",
+        # "logs/rsync_to_external_drive.done",
         # "results/check_index_rc_swap.txt"
     benchmark:
         "benchmarks/all.bench"
@@ -1168,20 +1170,31 @@ rule bcl_convert:
     params:
         lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', ''),
         run_info_path = "src/RunInfo_nn.xml",
-        tiles = TILES
+        tiles = TILES,
+        scratch_dir = SCRATCH_DIR
     shell:
         """
         (
         # Masking is now handled by OverrideCycles in the sample sheet
-        
+
         tiles_arg=""
         if [ ! -z "{params.tiles}" ]; then
             tiles_arg="--tiles {params.tiles}"
         fi
-        
+
+        # Use fast local scratch for DRAGEN output if configured, to avoid writing
+        # large FASTQs directly to the slower JBOD RAID mount. Files are moved to
+        # the final output directory after conversion and renaming are complete.
+        if [ -n "{params.scratch_dir}" ]; then
+            dragen_out="{params.scratch_dir}/output/{wildcards.config_id}"
+            mkdir -p "$dragen_out"
+        else
+            dragen_out="{output.output_dir}"
+        fi
+
         dragen --bcl-conversion-only true \
         --bcl-input-directory {input.data_dir} \
-        --output-directory {output.output_dir} \
+        --output-directory "$dragen_out" \
         --force \
         --bcl-sampleproject-subdirectories true \
         --sample-sheet {input.sample_sheet} \
@@ -1189,14 +1202,21 @@ rule bcl_convert:
         --bcl-only-lane {params.lane} \
         --run-info {params.run_info_path} \
         $tiles_arg
-        
+
         # Rename FASTQ files
-        src/run_rename.sh {wildcards.config_id} {output.output_dir} {input.renaming_map}
+        src/run_rename.sh {wildcards.config_id} "$dragen_out" {input.renaming_map}
 
         # If BD Rhapsody ATACseq, run additional renaming for R1/R2/R3
         if grep -q "BD Rhapsody_ATACseq\\|BD_Rhapsody_ATACseq\\|BD_ATAC" {input.sample_sheet}; then
             echo "Running BD Rhapsody ATACseq renaming for {wildcards.config_id}..."
-            bash src/rename_bd_rhapsody_atac.sh {output.output_dir}
+            bash src/rename_bd_rhapsody_atac.sh "$dragen_out"
+        fi
+
+        # Move from scratch to final JBOD output path
+        if [ -n "{params.scratch_dir}" ]; then
+            mkdir -p "$(dirname {output.output_dir})"
+            mv "$dragen_out" "{output.output_dir}"
+            rmdir --ignore-fail-on-non-empty "{params.scratch_dir}/output" 2>/dev/null || true
         fi
 
         touch {output.done_file}
@@ -1786,7 +1806,6 @@ rule rsync_to_external_drive:
         # Ensure all reports are generated before running rsync
         reports = ORDER_ID_REPORTS,
         md5s = ORDER_ID_MD5S,
-        src_dir = lambda wildcards: os.getcwd()
     output:
         touch("logs/rsync_to_external_drive.done")
     log:
@@ -1795,7 +1814,8 @@ rule rsync_to_external_drive:
         "benchmarks/rsync_to_external_drive.bench"
     params:
         dest_dir = EXTERNAL_DRIVE_PATH,
-        project_name = LIBRARY
+        project_name = LIBRARY,
+        src_dir = lambda wildcards: os.getcwd()
     run:
         import sys
         sys.stderr = sys.stdout = open(log[0], 'w')
@@ -1809,7 +1829,7 @@ rule rsync_to_external_drive:
             with open(output[0], 'w') as f:
                 f.write('SKIPPED')
             return
-        src = os.path.abspath(input.src_dir)
+        src = os.path.abspath(params.src_dir)
         dest = os.path.join(params.dest_dir, params.project_name)
         print(f"Rsyncing {src} to {dest}")
         os.makedirs(dest, exist_ok=True)
