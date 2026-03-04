@@ -535,6 +535,42 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                     pass
     except Exception as e:
         print(f"Note: Could not read Barcode List: {e}")
+
+    # Build lookup from Summary sheet: (lane, sheet_tab_normalized) -> global_group
+    # Only include entries where a sheet tab maps to exactly ONE group per lane.
+    # Sheets like "Barcode List" appear multiple times per lane (multiple groups) and
+    # must be excluded so we don't incorrectly override their multi-group assignments.
+    sheet_tab_group_lookup = {}
+    try:
+        xl = pd.ExcelFile(metadata_file)
+        if 'Summary' in xl.sheet_names:
+            df_summary = pd.read_excel(metadata_file, sheet_name='Summary', header=2)
+            if 'Lane' in df_summary.columns and 'Gr' in df_summary.columns and 'Sample sheet tab' in df_summary.columns:
+                # Count how many groups each (lane, tab) has
+                tab_counts = {}
+                for _, row in df_summary.iterrows():
+                    try:
+                        l = int(float(row['Lane']))
+                        g = int(float(row['Gr']))
+                        tab = str(row['Sample sheet tab']).strip()
+                        tab_norm = tab.replace('_', ' ').strip().lower()
+                        if tab_norm and tab_norm != 'nan':
+                            tab_counts.setdefault((l, tab_norm), set()).add(g)
+                    except:
+                        pass
+                # Only include tabs that map to exactly one group per lane
+                for _, row in df_summary.iterrows():
+                    try:
+                        l = int(float(row['Lane']))
+                        g = int(float(row['Gr']))
+                        tab = str(row['Sample sheet tab']).strip()
+                        tab_norm = tab.replace('_', ' ').strip().lower()
+                        if tab_norm and tab_norm != 'nan' and len(tab_counts.get((l, tab_norm), set())) == 1:
+                            sheet_tab_group_lookup[(l, tab_norm)] = g
+                    except:
+                        pass
+    except Exception as e:
+        print(f"Note: Could not build sheet_tab_group_lookup: {e}")
     
     all_samples = pd.DataFrame()
     
@@ -589,6 +625,19 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                     sheet_samples['Group'] = df['group']
                 else:
                     sheet_samples['Group'] = pd.NA
+
+                # Override local group with global group from Summary sheet if available.
+                # Application-specific sheets (e.g., BD Rhapsody_WTA) use local group
+                # numbering that may not match the global group from the Summary sheet.
+                tab_norm = str(sheet).replace('_', ' ').strip().lower()
+                for lane_val in sheet_samples['Lane'].unique():
+                    try:
+                        l = int(float(lane_val))
+                        if (l, tab_norm) in sheet_tab_group_lookup:
+                            global_grp = sheet_tab_group_lookup[(l, tab_norm)]
+                            sheet_samples.loc[sheet_samples['Lane'] == lane_val, 'Group'] = global_grp
+                    except:
+                        pass
 
                 # Project
                 if 'Project name' in df.columns:
