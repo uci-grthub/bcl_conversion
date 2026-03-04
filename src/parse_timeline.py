@@ -10,6 +10,16 @@ from statistics import mean, median
 import math
 
 
+def format_time_hms(seconds):
+    """Format seconds into HH:MM:SS format."""
+    if not seconds or not math.isfinite(seconds):
+        return ""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
 def parse_benchmark_file(path):
     """Parse a single .bench file and return the duration in seconds."""
     with open(path, 'r', encoding='utf8') as fh:
@@ -101,20 +111,38 @@ def main():
             'rule': rule,
             'count': cnt,
             'total_seconds': f"{total:.6f}",
+            'total_hms': format_time_hms(total),
             'mean_seconds': f"{avg:.6f}" if avg else '',
             'median_seconds': f"{med:.6f}" if med else '',
             'min_seconds': f"{mn:.6f}",
             'max_seconds': f"{mx:.6f}"
         })
 
+    # Calculate grand total
+    grand_total_seconds = sum(float(r['total_seconds']) for r in agg_rows)
+    total_count = sum(r['count'] for r in agg_rows)
+    
     with open(agg_csv, 'w', newline='', encoding='utf8') as fh:
-        writer = csv.DictWriter(fh, fieldnames=['rule', 'count', 'total_seconds', 'mean_seconds', 'median_seconds', 'min_seconds', 'max_seconds'])
+        writer = csv.DictWriter(fh, fieldnames=['rule', 'count', 'total_seconds', 'total_hms', 'mean_seconds', 'median_seconds', 'min_seconds', 'max_seconds'])
         writer.writeheader()
         for r in agg_rows:
             writer.writerow(r)
+        
+        # Add total row
+        writer.writerow({
+            'rule': 'TOTAL',
+            'count': total_count,
+            'total_seconds': f"{grand_total_seconds:.6f}",
+            'total_hms': format_time_hms(grand_total_seconds),
+            'mean_seconds': '',
+            'median_seconds': '',
+            'min_seconds': '',
+            'max_seconds': ''
+        })
 
     print('Wrote', entries_csv)
     print('Wrote', agg_csv)
+    print(f'Total processing time: {grand_total_seconds:.2f} seconds ({grand_total_seconds/3600:.2f} hours)')
     return 0
 
 
