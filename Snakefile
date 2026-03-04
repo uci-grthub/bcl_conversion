@@ -1261,6 +1261,7 @@ rule generate_exclude_indexes:
         with open(output.txt, 'w') as f:
             for idx in sorted(indexes):
                 f.write(f"{idx}\n")
+        import os; os.utime(output.txt)
         print(f"Wrote {len(indexes)} exclude indexes for {wildcards.config_id}")
 
 rule analyze_undetermined:
