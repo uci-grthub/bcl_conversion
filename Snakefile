@@ -470,21 +470,37 @@ rule fastp_sample:
         sample_path = ".*"
     params:
         threads = FASTP_THREADS,
-        fastqs = get_fastp_sample_input
+        fastqs = get_fastp_sample_input,
+        scratch_dir = SCRATCH_DIR
     threads: 4
     shell:
         """
         (
         mkdir -p $(dirname {output.json})
-        
+
+        if [ -n "{params.scratch_dir}" ]; then
+            scratch_base="{params.scratch_dir}/fastp/{wildcards.config_id}/{wildcards.sample_path}"
+            mkdir -p "$(dirname "$scratch_base")"
+            out_json="$scratch_base.json"
+            out_html="$scratch_base.html"
+        else
+            out_json="{output.json}"
+            out_html="{output.html}"
+        fi
+
         files=({params.fastqs})
         r1="${{files[0]}}"
-        
+
         if [ ${{#files[@]}} -gt 1 ]; then
             r2="${{files[1]}}"
-            fastp -i "$r1" -I "$r2" --json "{output.json}" --html "{output.html}" -w {params.threads}
+            fastp -i "$r1" -I "$r2" --json "$out_json" --html "$out_html" -w {threads}
         else
-            fastp -i "$r1" --json "{output.json}" --html "{output.html}" -w {params.threads}
+            fastp -i "$r1" --json "$out_json" --html "$out_html" -w {threads}
+        fi
+
+        if [ -n "{params.scratch_dir}" ]; then
+            mv "$out_json" "{output.json}"
+            mv "$out_html" "{output.html}"
         fi
         ) > {log} 2>&1
         """
@@ -1164,6 +1180,7 @@ rule bcl_convert:
         "benchmarks/bcl_convert_{config_id}.bench"
     wildcard_constraints:
         config_id = "[^/]+"
+    priority: 100
     resources:
         serial_operation=1
     threads: 1
@@ -1214,9 +1231,55 @@ rule bcl_convert:
 
         # Move from scratch to final JBOD output path
         if [ -n "{params.scratch_dir}" ]; then
-            mkdir -p "$(dirname {output.output_dir})"
-            mv "$dragen_out" "{output.output_dir}"
+            echo "Moving output from scratch directory to final destination..."
+            echo "Source: $dragen_out"
+            echo "Destination: {output.output_dir}"
+            file_count=$(find "$dragen_out" -mindepth 1 -maxdepth 1 | wc -l)
+            echo "Files/directories to move: $file_count"
+            echo "Starting move operation..."
+            mkdir -p "{output.output_dir}"
+            find "$dragen_out" -mindepth 1 -maxdepth 1 -exec mv -t "{output.output_dir}" {{}} +
+            echo "Move operation completed successfully"
+            rmdir "$dragen_out"
             rmdir --ignore-fail-on-non-empty "{params.scratch_dir}/output" 2>/dev/null || true
+            echo "Cleaned up scratch directory"
+
+            # Verify FASTQ integrity after move (fast EOF trailer check)
+            echo "Verifying FASTQ integrity after move..."
+            python3 - "{output.output_dir}" <<'PYEOF'
+import struct, sys, os, glob
+
+output_dir = sys.argv[1]
+corrupt = []
+for f in glob.glob(os.path.join(output_dir, '**', '*.fastq.gz'), recursive=True):
+    try:
+        size = os.path.getsize(f)
+        if size < 20:
+            corrupt.append((f, 'file too small'))
+            continue
+        with open(f, 'rb') as fh:
+            magic = fh.read(2)
+            if magic != bytes.fromhex('1f8b'):
+                corrupt.append((f, 'invalid gzip header'))
+                continue
+            # Check gzip EOF trailer: last 8 bytes = CRC32 (4) + ISIZE mod 2^32 (4)
+            # A truncated file will have an ISIZE of 0 despite substantial file size
+            fh.seek(-8, 2)
+            crc, isize = struct.unpack('<II', fh.read(8))
+            if isize == 0 and size > 10000:
+                corrupt.append((f, 'isize=0 (truncated), file_size=' + str(size)))
+    except Exception as e:
+        corrupt.append((f, str(e)))
+
+if corrupt:
+    print('ERROR: %d corrupt FASTQ file(s) detected after move from scratch:' % len(corrupt), flush=True)
+    for f, reason in corrupt:
+        print('  CORRUPT: ' + f + ' (' + reason + ')', flush=True)
+    sys.exit(1)
+
+total = len(glob.glob(os.path.join(output_dir, '**', '*.fastq.gz'), recursive=True))
+print('FASTQ integrity check passed, %d files OK' % total, flush=True)
+PYEOF
         fi
 
         touch {output.done_file}
@@ -1266,8 +1329,7 @@ rule generate_exclude_indexes:
 
 rule analyze_undetermined:
     input:
-        done = "output/{config_id}/.done",
-        exclude_indexes = "results/exclude_indexes_{config_id}.txt"
+        done = "output/{config_id}/.done"
     output:
         csv = "results/undetermined_indices/{config_id}.csv"
     log:
@@ -1275,12 +1337,31 @@ rule analyze_undetermined:
     benchmark:
         "benchmarks/analyze_undetermined_{config_id}.bench"
     params:
-        script = "src/analyze_undetermined_indices.py",
-        input_pattern = lambda wildcards: f"output/{wildcards.config_id}/Undetermined_S0_*.fastq.gz"
-    shell:
-        """
-        python3 {params.script} "{params.input_pattern}" --output {output.csv} --limit 15000000 --exclude-indexes {input.exclude_indexes} > {log} 2>&1
-        """
+        barcodes = lambda wildcards: f"output/{wildcards.config_id}/Reports/Top_Unknown_Barcodes.csv"
+    run:
+        import csv as csv_mod
+        import os
+
+        with open(log[0], 'w') as logf:
+            rows = []
+            with open(params.barcodes) as f:
+                reader = csv_mod.DictReader(f)
+                for r in reader:
+                    idx1 = r.get('index', '').strip()
+                    idx2 = r.get('index2', '').strip()
+                    count = int(r.get('# Reads', '0'))
+                    seq = f"{idx1}+{idx2}" if idx2 else idx1
+                    index_type = "Dual" if idx2 else "Single"
+                    rows.append((count, index_type, seq))
+
+            os.makedirs(os.path.dirname(output.csv), exist_ok=True)
+            with open(output.csv, 'w', newline='') as f:
+                writer = csv_mod.writer(f)
+                writer.writerow(['Count', 'Type', 'Index Sequence'])
+                for count, itype, seq in rows:
+                    writer.writerow([count, itype, seq])
+
+            logf.write(f"Converted {len(rows)} barcodes from {params.barcodes}\n")
 
 rule check_index_rc_swap:
     """Run the index reverse-complement/swap analysis script across generated

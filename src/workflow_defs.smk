@@ -1343,14 +1343,27 @@ def get_fastp_targets(wildcards):
 def get_fastp_sample_input(wildcards):
     config_id = wildcards.config_id
     sample_path = wildcards.sample_path
-    
+
     # Try to use renaming map first
     map_path = f"results/renaming_map_{config_id}.csv"
     if not os.path.exists(map_path):
         raise ValueError(f"Renaming map not found: {map_path}")
-        
+
+    # Retry on EmptyDataError — the map may be briefly empty if generate_lane_samplesheets
+    # is rewriting it concurrently for another config_id.
+    import time as _time
+    df = None
+    for _attempt in range(5):
+        try:
+            df = pd.read_csv(map_path)
+            break
+        except pd.errors.EmptyDataError:
+            print(f"Renaming map {map_path} is empty (attempt {_attempt + 1}/5), retrying in 2s...")
+            _time.sleep(2)
+    if df is None:
+        raise RuntimeError(f"Renaming map {map_path} still empty after 5 attempts")
+
     try:
-        df = pd.read_csv(map_path)
         for idx, row in df.iterrows():
             project = str(row.get('Sample_Project', '')).strip()
             sample_name = str(row.get('Sample_Name', '')).strip()
