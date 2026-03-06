@@ -1229,6 +1229,13 @@ rule bcl_convert:
             bash src/rename_bd_rhapsody_atac.sh "$dragen_out"
         fi
 
+        # Delete Undetermined reads from scratch directory before moving
+        if [ -n "{params.scratch_dir}" ]; then
+            echo "Deleting Undetermined reads from scratch directory..."
+            find "$dragen_out" -name "Undetermined*" -delete
+            echo "Undetermined reads deleted"
+        fi
+
         # Move from scratch to final JBOD output path
         if [ -n "{params.scratch_dir}" ]; then
             echo "Moving output from scratch directory to final destination..."
