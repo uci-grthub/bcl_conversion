@@ -457,7 +457,7 @@ rule send_order_email:
 
 rule fastp_sample:
     input:
-        done = "output/{config_id}/.done"
+        done = lambda wildcards: f"output/{wildcards.config_id}/{wildcards.sample_path.split('/')[0]}/.project_done"
     output:
         json = "results/fastp/{config_id}/{sample_path}.json",
         html = "results/fastp/{config_id}/{sample_path}.html"
@@ -471,36 +471,20 @@ rule fastp_sample:
     params:
         threads = FASTP_THREADS,
         fastqs = get_fastp_sample_input,
-        scratch_dir = SCRATCH_DIR
     threads: 4
     shell:
         """
         (
         mkdir -p $(dirname {output.json})
 
-        if [ -n "{params.scratch_dir}" ]; then
-            scratch_base="{params.scratch_dir}/fastp/{wildcards.config_id}/{wildcards.sample_path}"
-            mkdir -p "$(dirname "$scratch_base")"
-            out_json="$scratch_base.json"
-            out_html="$scratch_base.html"
-        else
-            out_json="{output.json}"
-            out_html="{output.html}"
-        fi
-
         files=({params.fastqs})
         r1="${{files[0]}}"
 
         if [ ${{#files[@]}} -gt 1 ]; then
             r2="${{files[1]}}"
-            fastp -i "$r1" -I "$r2" --json "$out_json" --html "$out_html" -w {threads}
+            fastp -i "$r1" -I "$r2" --json "{output.json}" --html "{output.html}" -w {threads}
         else
-            fastp -i "$r1" --json "$out_json" --html "$out_html" -w {threads}
-        fi
-
-        if [ -n "{params.scratch_dir}" ]; then
-            mv "$out_json" "{output.json}"
-            mv "$out_html" "{output.html}"
+            fastp -i "$r1" --json "{output.json}" --html "{output.html}" -w {threads}
         fi
         ) > {log} 2>&1
         """
@@ -1187,8 +1171,7 @@ rule bcl_convert:
     params:
         lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', ''),
         run_info_path = "src/RunInfo_nn.xml",
-        tiles = TILES,
-        scratch_dir = SCRATCH_DIR
+        tiles = TILES
     shell:
         """
         (
@@ -1199,19 +1182,9 @@ rule bcl_convert:
             tiles_arg="--tiles {params.tiles}"
         fi
 
-        # Use fast local scratch for DRAGEN output if configured, to avoid writing
-        # large FASTQs directly to the slower JBOD RAID mount. Files are moved to
-        # the final output directory after conversion and renaming are complete.
-        if [ -n "{params.scratch_dir}" ]; then
-            dragen_out="{params.scratch_dir}/output/{wildcards.config_id}"
-            mkdir -p "$dragen_out"
-        else
-            dragen_out="{output.output_dir}"
-        fi
-
         dragen --bcl-conversion-only true \
         --bcl-input-directory {input.data_dir} \
-        --output-directory "$dragen_out" \
+        --output-directory "{output.output_dir}" \
         --force \
         --bcl-sampleproject-subdirectories true \
         --sample-sheet {input.sample_sheet} \
@@ -1220,82 +1193,41 @@ rule bcl_convert:
         --run-info {params.run_info_path} \
         $tiles_arg
 
+        # Delete Undetermined reads
+        find "{output.output_dir}" -name "Undetermined*" -delete
+        echo "Undetermined reads deleted"
+
         # Rename FASTQ files
-        src/run_rename.sh {wildcards.config_id} "$dragen_out" {input.renaming_map}
+        src/run_rename.sh {wildcards.config_id} "{output.output_dir}" {input.renaming_map}
 
         # If BD Rhapsody ATACseq, run additional renaming for R1/R2/R3
         if grep -q "BD Rhapsody_ATACseq\\|BD_Rhapsody_ATACseq\\|BD_ATAC" {input.sample_sheet}; then
             echo "Running BD Rhapsody ATACseq renaming for {wildcards.config_id}..."
-            bash src/rename_bd_rhapsody_atac.sh "$dragen_out"
-        fi
-
-        # Delete Undetermined reads from scratch directory before moving
-        if [ -n "{params.scratch_dir}" ]; then
-            echo "Deleting Undetermined reads from scratch directory..."
-            find "$dragen_out" -name "Undetermined*" -delete
-            echo "Undetermined reads deleted"
-        fi
-
-        # Move from scratch to final JBOD output path
-        if [ -n "{params.scratch_dir}" ]; then
-            echo "Moving output from scratch directory to final destination..."
-            echo "Source: $dragen_out"
-            echo "Destination: {output.output_dir}"
-            file_count=$(find "$dragen_out" -mindepth 1 -maxdepth 1 | wc -l)
-            echo "Files/directories to move: $file_count"
-            echo "Starting move operation..."
-            mkdir -p "{output.output_dir}"
-            find "$dragen_out" -mindepth 1 -maxdepth 1 -exec mv -t "{output.output_dir}" {{}} +
-            echo "Move operation completed successfully"
-            rmdir "$dragen_out"
-            rmdir --ignore-fail-on-non-empty "{params.scratch_dir}/output" 2>/dev/null || true
-            echo "Cleaned up scratch directory"
-
-            # Verify FASTQ integrity after move (fast EOF trailer check)
-            echo "Verifying FASTQ integrity after move..."
-            python3 - "{output.output_dir}" <<'PYEOF'
-import struct, sys, os, glob
-
-output_dir = sys.argv[1]
-corrupt = []
-for f in glob.glob(os.path.join(output_dir, '**', '*.fastq.gz'), recursive=True):
-    try:
-        size = os.path.getsize(f)
-        if size < 20:
-            corrupt.append((f, 'file too small'))
-            continue
-        with open(f, 'rb') as fh:
-            magic = fh.read(2)
-            if magic != bytes.fromhex('1f8b'):
-                corrupt.append((f, 'invalid gzip header'))
-                continue
-            # Check gzip EOF trailer: last 8 bytes = CRC32 (4) + ISIZE mod 2^32 (4)
-            # A truncated file will have an ISIZE of 0 despite substantial file size
-            fh.seek(-8, 2)
-            crc, isize = struct.unpack('<II', fh.read(8))
-            if isize == 0 and size > 10000:
-                corrupt.append((f, 'isize=0 (truncated), file_size=' + str(size)))
-    except Exception as e:
-        corrupt.append((f, str(e)))
-
-if corrupt:
-    print('ERROR: %d corrupt FASTQ file(s) detected after move from scratch:' % len(corrupt), flush=True)
-    for f, reason in corrupt:
-        print('  CORRUPT: ' + f + ' (' + reason + ')', flush=True)
-    sys.exit(1)
-
-total = len(glob.glob(os.path.join(output_dir, '**', '*.fastq.gz'), recursive=True))
-print('FASTQ integrity check passed, %d files OK' % total, flush=True)
-PYEOF
+            bash src/rename_bd_rhapsody_atac.sh "{output.output_dir}"
         fi
 
         touch {output.done_file}
         ) > {log} 2>&1
         """
 
+rule bcl_project_done:
+    """Per-project sentinel created after bcl_convert completes.
+
+    Uses ancient() on the lane .done so that re-running bcl_convert for one
+    project does NOT re-trigger downstream rules for projects whose
+    .project_done already exists.
+    """
+    input:
+        done = ancient("output/{config_id}/.done")
+    output:
+        sentinel = touch("output/{config_id}/{project}/.project_done")
+    wildcard_constraints:
+        config_id = "[^/]+",
+        project = "[^/]+"
+
 rule calculate_md5sums:
     input:
-        done = "output/{config_id}/.done"
+        done = "output/{config_id}/{project}/.project_done"
     output:
         md5 = "output/{config_id}/{project}/md5sums.txt"
     log:
@@ -1480,7 +1412,7 @@ rule consolidate_project_links:
 
 rule project_link:
     input:
-        done = "output/{config_id}/.done"
+        done = "output/{config_id}/{project}/.project_done"
     output:
         log = "logs/project_link_{config_id}---{project}.log"
     benchmark:
