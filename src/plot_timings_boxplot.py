@@ -76,6 +76,13 @@ def main():
         patch.set_facecolor('#007bff')
         patch.set_alpha(0.6)
 
+    # overlay individual points with jitter
+    import numpy as np
+    rng = np.random.default_rng(42)
+    for i, vals in enumerate(data, start=1):
+        jitter = rng.uniform(-0.2, 0.2, size=len(vals))
+        ax.scatter(vals, [i + j for j in jitter], color='black', alpha=0.4, s=12, zorder=3)
+
     ax.set_xlabel('Duration (minutes)')
     ax.set_title('Rule timings (per-job, outliers removed)')
     plt.tight_layout()
