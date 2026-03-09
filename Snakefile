@@ -316,7 +316,7 @@ rule all:
         expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
         expand("results/read_counts_{project}.csv", project=PROJECTS),
         # expand("logs/project_link_{config_id}_{project}.log", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
-        "logs/project_links.yaml",
+        expand("logs/project_links_{config_id}---{project}.yaml", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         f"results/{LIBRARY}-count.csv",
         f"Reports/{LIBRARY}_read_counts_email.done",
         expand("Reports/order_{order_id}/email_sent.done", order_id=ORDER_ID_CONFIGS.keys()),
@@ -343,7 +343,11 @@ rule report_order_id:
                 or (re.match(r'lane(\d+)', c) and int(re.match(r'lane(\d+)', c).group(1)) in ORDER_ID_TO_LANE.get(wildcards.order_id, []))
             )
         ],
-        links_yaml = "logs/project_links.yaml"
+        links_yamls = lambda wildcards: [
+            f"logs/project_links_{c}---{p}.yaml"
+            for c, p in CONFIG_PROJECT_PAIRS
+            if p in ORDER_ID_CONFIGS.get(wildcards.order_id, [])
+        ]
     output:
         html = "Reports/order_{order_id}/index.html",
         md5 = "Reports/order_{order_id}/md5sums.txt",
@@ -357,35 +361,54 @@ rule report_order_id:
         output_base = "output",
         fastp_plots_base = "results/fastp_plots",
         fastp_base = "results/fastp",
-        report_dir = "Reports/order_{order_id}",
-        projects = lambda wildcards: sorted(list(ORDER_ID_CONFIGS.get(wildcards.order_id, [])))
+        report_dir = "Reports/order_{order_id}"
     run:
         import subprocess
         import sys
         import os
         sys.path.insert(0, workflow.basedir)
         
+        import yaml as _yaml
+
         order_id = params.order_id
-        projects = params.projects
         report_dir = params.report_dir
         log_file = log[0]
 
         # Determine lane filter: if this order_id maps to a single lane, filter by it
         _lanes_for_order = ORDER_ID_TO_LANE.get(order_id, [])
         lane_arg = str(_lanes_for_order[0]) if len(_lanes_for_order) == 1 else "None"
-        
+
         os.makedirs(report_dir, exist_ok=True)
-        
+
+        # Merge individual per-project yaml files into a single dict
+        merged_links = {}
+        for yaml_path in input.links_yamls:
+            if os.path.exists(yaml_path):
+                with open(yaml_path) as _yf:
+                    _data = _yaml.safe_load(_yf) or {}
+                for _proj, _proj_data in _data.items():
+                    if _proj not in merged_links:
+                        merged_links[_proj] = {}
+                    for _cfg, _cfg_data in _proj_data.items():
+                        merged_links[_proj][_cfg] = _cfg_data
+        merged_yaml_path = os.path.join(report_dir, "_merged_links.yaml")
+        with open(merged_yaml_path, 'w') as _yf:
+            _yaml.dump(merged_links, _yf, default_flow_style=False)
+
+        # Derive projects from merged input yamls (robust to subprocess re-evaluation
+        # of ORDER_ID_CONFIGS without the original --configfile)
+        projects = sorted(merged_links.keys())
+
         # Open log file
         with open(log_file, 'w') as lf:
             lf.write(f"Generating report for order_id: {order_id}\n")
             lf.write(f"Projects: {projects}\n\n")
-        
+
         # Generate report for each project in this order_id
         for project in projects:
             # Get fastq links for this project in this order_id
-            fastq_links = get_project_links_from_yaml(input.links_yaml, project, lane=None, order_id=order_id)
-            
+            fastq_links = get_project_links_from_yaml(merged_yaml_path, project, lane=None, order_id=order_id)
+
             # Call generate_report.py for this project
             cmd = [
                 "python3", "src/generate_report.py",
@@ -396,7 +419,7 @@ rule report_order_id:
                 report_dir,
                 fastq_links,
                 lane_arg,  # lane_filter
-                input.links_yaml,
+                merged_yaml_path,
                 order_id,
                 LIBRARY,  # library_name
                 str(config.get('plots_total_width', 900)),
@@ -1171,7 +1194,8 @@ rule bcl_convert:
     params:
         lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', ''),
         run_info_path = "src/RunInfo_nn.xml",
-        tiles = TILES
+        tiles = TILES,
+        scratch_dir = SCRATCH_DIR
     shell:
         """
         (
@@ -1182,9 +1206,19 @@ rule bcl_convert:
             tiles_arg="--tiles {params.tiles}"
         fi
 
-        dragen --bcl-conversion-only true \
+        # Use fast local scratch for DRAGEN output if configured, to avoid
+        # watchdog timeouts caused by slow writes to JBOD storage.
+        if [ ! -z "{params.scratch_dir}" ]; then
+            dragen_out="{params.scratch_dir}/{wildcards.config_id}"
+        else
+            dragen_out="{output.output_dir}"
+        fi
+
+        mkdir -p "$dragen_out"
+
+        timeout 7200 dragen --bcl-conversion-only true \
         --bcl-input-directory {input.data_dir} \
-        --output-directory "{output.output_dir}" \
+        --output-directory "$dragen_out" \
         --force \
         --bcl-sampleproject-subdirectories true \
         --sample-sheet {input.sample_sheet} \
@@ -1192,6 +1226,27 @@ rule bcl_convert:
         --bcl-only-lane {params.lane} \
         --run-info {params.run_info_path} \
         $tiles_arg
+
+        # Transfer from scratch to final output dir using rsync with checksum
+        # verification to catch any corruption, with up to 3 retries.
+        if [ ! -z "{params.scratch_dir}" ]; then
+            echo "Syncing from scratch to output with checksum verification..."
+            mkdir -p "{output.output_dir}"
+            sync_ok=false
+            for attempt in 1 2 3; do
+                if rsync -a --checksum --delete "$dragen_out/" "{output.output_dir}/"; then
+                    sync_ok=true
+                    break
+                fi
+                echo "rsync attempt $attempt failed, retrying..."
+            done
+            if [ "$sync_ok" != "true" ]; then
+                echo "ERROR: rsync failed after 3 attempts. Scratch data preserved at $dragen_out"
+                exit 1
+            fi
+            rm -rf "$dragen_out"
+            echo "Scratch data removed after successful sync."
+        fi
 
         # Delete Undetermined reads
         find "{output.output_dir}" -name "Undetermined*" -delete
@@ -1321,100 +1376,12 @@ rule check_index_rc_swap:
         python3 {params.script} --samples {input.samples} --undetermined {input.undetermined} > {output} 2> {log}
         """
 
-rule consolidate_project_links:
-    input:
-        PROJECT_LINK_LOGS,
-        expand("logs/nextcloud_scan_{config_id}---{project}.done", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS])
-    output:
-        "logs/project_links.yaml"
-    log:
-        "logs/consolidate_project_links.log"
-    benchmark:
-        "benchmarks/consolidate_project_links.bench"
-    run:
-        import yaml
-        import os
-
-        links = {}
-        log_files = [f for f in input if f.endswith(".log")]
-        for log_file in log_files:
-            try:
-                with open(log_file, 'r') as f:
-                    content = f.read()
-
-                # Filename format: logs/project_link_{config_id}---{project}.log
-                basename = os.path.basename(log_file)
-                filename_no_prefix = basename.replace("project_link_", "").replace(".log", "")
-
-                # Split on the delimiter '---'
-                if '---' in filename_no_prefix:
-                    config_id, project = filename_no_prefix.split('---', 1)
-                else:
-                    print(f"Could not parse filename (no delimiter): {basename}")
-                    continue
-                
-                # Extract Order ID and Group from log content
-                order_id = ""
-                group = ""
-                lines = content.split('\n')
-                for line in lines:
-                    if line.startswith("Order ID:"):
-                        order_id = line.split("Order ID:", 1)[1].strip()
-                    elif line.startswith("Group:"):
-                        group = line.split("Group:", 1)[1].strip()
-                
-                # If order_id not found in log or is empty, look it up from PROJECT_ORDER_ID
-                if not order_id:
-                    # Extract lane from config_id for lane-aware lookup
-                    _lane_m = re.match(r'lane(\d+)', config_id)
-                    _lane_int = int(_lane_m.group(1)) if _lane_m else 0
-                    order_id = PROJECT_ORDER_ID.get((project, _lane_int), "")
-                    if order_id:
-                        print(f"Order ID for {project} (lane {_lane_int}) not in log, using PROJECT_ORDER_ID: {order_id}")
-                # Normalize casing (e.g., '1225i-13' -> '1225I-13')
-                if order_id:
-                    order_id = order_id.replace('i', 'I')
-                
-                # Try to find share URL in the log content (support multiple labels)
-                share_url = None
-                for line in lines:
-                    if line.startswith("Share link:"):
-                        share_url = line.split("Share link:", 1)[1].strip()
-                        break
-                    if line.startswith("Browser URL:"):
-                        share_url = line.split("Browser URL:", 1)[1].strip()
-                        break
-
-                if share_url:
-                    if project and config_id and share_url:
-                        if project not in links:
-                            links[project] = {}
-                        if config_id not in links[project]:
-                            links[project][config_id] = {}
-
-                        # Store with order_id key, or use "default" if still not found
-                        order_key = order_id if order_id else "default"
-                        # Store as dict with link and group
-                        links[project][config_id][order_key] = {
-                            'link': share_url,
-                            'group': group
-                        }
-                        print(f"Found link for {project} / {config_id} / {order_key} (group: {group}): {share_url}")
-            except Exception as e:
-                print(f"Error processing {log_file}: {e}")
-                continue
-        
-        os.makedirs(os.path.dirname(output[0]), exist_ok=True)
-        with open(output[0], 'w') as yf:
-            yaml.dump(links, yf, default_flow_style=False)
-        
-        print(f"Consolidated {len(links)} projects into {output[0]}")
-
 rule project_link:
     input:
         done = "output/{config_id}/{project}/.project_done"
     output:
-        log = "logs/project_link_{config_id}---{project}.log"
+        log = "logs/project_link_{config_id}---{project}.log",
+        yaml_file = "logs/project_links_{config_id}---{project}.yaml"
     benchmark:
         "benchmarks/project_link_{config_id}---{project}.bench"
     wildcard_constraints:
@@ -1441,8 +1408,11 @@ rule project_link:
         group = params.group
         fastq_dir = f"output/{config_id}/{project}"
         log_file = output.log
-        
+        yaml_file = output.yaml_file
+
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
+
+        yaml_data = {project: {config_id: {}}}
         
         # Helper: Extract Browser URL
         def extract_share_url(xml_text):
@@ -1603,6 +1573,9 @@ rule project_link:
                                 f.write(f"NC_INTERNAL_PATH: {share_internal_path}\n")
                         except Exception:
                             pass
+                        # Populate individual project yaml
+                        order_key = order_id if order_id else "default"
+                        yaml_data[project][config_id][order_key] = {"link": share_url, "group": group}
                     else:
                         f.write(f"Status: FAILED\n")
                         f.write(f"Reason: {last_error}\n")
@@ -1622,8 +1595,13 @@ rule project_link:
 
         except Exception as e:
             Path(log_file).write_text(f"Error: {str(e)}\n{traceback.format_exc()}")
-        
+
         Path(log_file).touch(exist_ok=True)
+
+        # Write individual project yaml (empty dict if sharing failed)
+        import yaml as _yaml
+        with open(yaml_file, 'w') as yf:
+            _yaml.dump(yaml_data, yf, default_flow_style=False)
 
 rule rescan_nextcloud:
     input:

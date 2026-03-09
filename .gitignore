@@ -21,3 +21,4 @@ rulegraph_images/
 *.svg
 *.txt
 *.bench
+Reports/*
