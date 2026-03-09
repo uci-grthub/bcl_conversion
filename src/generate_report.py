@@ -477,8 +477,12 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
             continue
 
         lane_val = parse_lane_from_config(config_id)
-        if lane_filter is not None and lane_val != lane_filter:
-            continue
+        if lane_filter is not None:
+            if isinstance(lane_filter, list):
+                if lane_val not in lane_filter:
+                    continue
+            elif lane_val != lane_filter:
+                continue
         
         # Validate that FASTQ files exist for this sample before processing
         # This filters out deprecated samples that only have fastp JSON but no actual FASTQ files
@@ -824,10 +828,16 @@ if __name__ == "__main__":
     if len(sys.argv) >= 8:
         arg7 = sys.argv[7]
         if arg7 != "None":
-            try:
-                lane_filter = int(arg7)
-            except Exception:
-                lane_filter = arg7
+            if ',' in arg7:
+                try:
+                    lane_filter = [int(x) for x in arg7.split(',')]
+                except Exception:
+                    lane_filter = arg7
+            else:
+                try:
+                    lane_filter = int(arg7)
+                except Exception:
+                    lane_filter = arg7
     
     if len(sys.argv) >= 9:
         links_yaml = sys.argv[8]

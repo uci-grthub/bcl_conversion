@@ -347,6 +347,10 @@ rule report_order_id:
             f"logs/project_links_{c}---{p}.yaml"
             for c, p in CONFIG_PROJECT_PAIRS
             if p in ORDER_ID_CONFIGS.get(wildcards.order_id, [])
+            and (
+                not ORDER_ID_TO_LANE.get(wildcards.order_id)
+                or (re.match(r'lane(\d+)', c) and int(re.match(r'lane(\d+)', c).group(1)) in ORDER_ID_TO_LANE.get(wildcards.order_id, []))
+            )
         ]
     output:
         html = "Reports/order_{order_id}/index.html",
@@ -376,7 +380,7 @@ rule report_order_id:
 
         # Determine lane filter: if this order_id maps to a single lane, filter by it
         _lanes_for_order = ORDER_ID_TO_LANE.get(order_id, [])
-        lane_arg = str(_lanes_for_order[0]) if len(_lanes_for_order) == 1 else "None"
+        lane_arg = ",".join(str(l) for l in _lanes_for_order) if _lanes_for_order else "None"
 
         os.makedirs(report_dir, exist_ok=True)
 
@@ -387,9 +391,12 @@ rule report_order_id:
                 with open(yaml_path) as _yf:
                     _data = _yaml.safe_load(_yf) or {}
                 for _proj, _proj_data in _data.items():
-                    if _proj not in merged_links:
-                        merged_links[_proj] = {}
                     for _cfg, _cfg_data in _proj_data.items():
+                        # Only include configs that have an entry for this order_id
+                        if isinstance(_cfg_data, dict) and order_id not in _cfg_data:
+                            continue
+                        if _proj not in merged_links:
+                            merged_links[_proj] = {}
                         merged_links[_proj][_cfg] = _cfg_data
         merged_yaml_path = os.path.join(report_dir, "_merged_links.yaml")
         with open(merged_yaml_path, 'w') as _yf:

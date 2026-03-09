@@ -22,3 +22,4 @@ rulegraph_images/
 *.txt
 *.bench
 Reports/*
+regenerate_and_email_0226I-12_17.sh
