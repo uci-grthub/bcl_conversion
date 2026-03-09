@@ -164,26 +164,14 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
                      except:
                          pass
             
-            if 'Lane' in df.columns and 'Masking' in df.columns:
-                # Collect unique (Lane, Masking) combinations
-                groups = df[['Lane', 'Masking']].drop_duplicates()
-                for index, row in groups.iterrows():
-                    try:
-                        lane = int(float(row['Lane']))
-                        masking = str(row['Masking']).strip()
-                        # Sanitize masking for filename
-                        # Example: "R1:151, I1:8, I2:8, R2:151" -> "R1-151_I1-8_I2-8_R2-151"
-                        # Sanitize masking for filename and strip appended project tokens
-                        masking_sanitized = sanitize_masking(masking)
-                        
-                        LANE_CONFIGS.append({
-                            'lane': lane,
-                            'masking': masking,
-                            'masking_sanitized': masking_sanitized,
-                            'id': f"lane{lane}_{masking_sanitized}"
-                        })
-                    except ValueError:
-                        continue
+            if 'Lane' in df.columns:
+                # Collect unique lanes (masking groups are merged into a single SampleSheet per lane)
+                unique_lanes = sorted(df['Lane'].dropna().apply(lambda x: int(float(x))).unique())
+                for lane in unique_lanes:
+                    LANE_CONFIGS.append({
+                        'lane': lane,
+                        'id': f"lane{lane}"
+                    })
     except Exception as e:
         print(f"Error reading metadata: {e}")
 
@@ -265,7 +253,7 @@ SAMPLE_SHEETS_DICT = generate_lane_samplesheets(METADATA_FILE, LANE_CONFIGS, PRO
 CONFIG_IDS = list(SAMPLE_SHEETS_DICT.keys()) if SAMPLE_SHEETS_DICT else []
 # Fallback if no metadata
 if not CONFIG_IDS and detected_lanes:
-    CONFIG_IDS = [f"lane{l}_default" for l in detected_lanes]
+    CONFIG_IDS = [f"lane{l}" for l in detected_lanes]
 
 FASTP_THREADS = config.get("fastp_threads", 4)
 
@@ -1226,6 +1214,9 @@ rule bcl_convert:
         --strict-mode false \
         --bcl-only-lane {params.lane} \
         --run-info {params.run_info_path} \
+        --bcl-num-parallel-tiles 2 \
+        --bcl-num-compression-threads 16 \
+        --bcl-num-decompression-threads 8 \
         $tiles_arg
 
         # Transfer from scratch to final output dir using rsync with checksum

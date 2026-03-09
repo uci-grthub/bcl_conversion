@@ -739,11 +739,9 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
 
     for config in lane_configs:
         lane = config['lane']
-        masking = config.get('masking', '')
-        # Ensure masking_sanitized is safe even if upstream metadata contained project suffixes
-        masking_sanitized = sanitize_masking(config.get('masking_sanitized', masking))
-        # Filter by Lane AND Masking
-        lane_df = df[(df['Lane'] == lane) & (df['Masking'] == masking)].copy()
+        config_id = config['id']
+        # Filter by Lane only — multiple masking groups are merged into one SampleSheet
+        lane_df = df[df['Lane'] == lane].copy()
         # Determine if this config comes from a BD_Rhapsody_ATACseq sheet (allow both space and underscore)
         bd_rhapsody_atac = False
         if not lane_df.empty and '__sheet_name__' in lane_df.columns:
@@ -773,7 +771,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         lane_df = lane_df.drop_duplicates(subset=['Lane', 'Project', 'index', 'index2'], keep='first')
         
         if lane_df.empty:
-            print(f"No samples found for lane {lane} with masking {masking}")
+            print(f"No samples found for lane {lane}")
             continue
         
         # VALIDATION: Check for duplicate barcode combinations (index + index2)
@@ -868,41 +866,24 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         ss_data['index'] = lane_df['index']
         ss_data['index2'] = lane_df['index2']
         
-        # Calculate OverrideCycles and Index flags
-        override_cycles = ""
-        has_index1 = False
-        has_index2 = False
-        # Allow per-config override: for single-cell ATAC projects there is no I2 index
-        masking_for_cycles = masking
-        try:
-            projects_upper = [str(p).upper() for p in lane_df['Project'].unique() if p and str(p).strip()]
-        except Exception:
-            projects_upper = []
+        # Calculate per-row OverrideCycles from each sample's Masking
+        def compute_override_cycles(masking_str, run_reads, strip_i2=False):
+            """Convert masking string to OverrideCycles format.
 
-        # Check if samples actually have index2 data
-        has_index2_data = False
-        try:
-            if 'index2' in lane_df.columns:
-                has_index2_data = lane_df['index2'].notna().any() and (lane_df['index2'].astype(str).str.strip() != '').any()
-        except Exception:
-            pass
-
-        # If this is BD_Rhapsody_ATACseq tab format OR ATAC project with NO index2 data,
-        # remove any I2 component from masking when computing OverrideCycles so DRAGEN does not expect index2.
-        if bd_rhapsody_atac or (any('ATAC' in p for p in projects_upper) and not has_index2_data):
+            masking_str: e.g. "R1:151, I1:8, I2:8, R2:151"
+            Returns: e.g. "Y151;I8;I8;Y151"
+            """
+            if not masking_str or str(masking_str).strip() == '' or str(masking_str).lower() == 'nan':
+                return ""
+            masking_for_cycles = masking_str
+            if strip_i2:
+                try:
+                    parts = [p.strip() for p in masking_str.split(',') if p and str(p).strip()]
+                    parts = [p for p in parts if not p.strip().upper().startswith('I2:')]
+                    masking_for_cycles = ', '.join(parts)
+                except Exception:
+                    masking_for_cycles = masking_str
             try:
-                parts = [p.strip() for p in masking.split(',') if p and str(p).strip()]
-                parts = [p for p in parts if not p.strip().upper().startswith('I2:')]
-                masking_for_cycles = ', '.join(parts)
-            except Exception:
-                masking_for_cycles = masking
-
-        if masking:
-            # Masking format from metadata: "R1:151, I1:8, I2:8, R2:151"
-            # Target format: Y151;I8;I8;Y151
-            
-            try:
-                # Use masking_for_cycles which may have I2 removed for ATAC projects
                 parts = [p.strip() for p in masking_for_cycles.split(',')]
                 cycles = []
                 for i, p in enumerate(parts):
@@ -911,28 +892,15 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                         type_ = type_.strip().upper()
                         len_ = len_.strip()
                         specified_len = int(len_)
-                        
-                        if type_ == 'I1' and specified_len > 0:
-                            has_index1 = True
-                        if type_ == 'I2' and specified_len > 0:
-                            has_index2 = True
-                        
+
                         cycle_str = ""
-                        
-                        # Get actual length from RunInfo if available
+
                         actual_len = 0
-                        is_indexed_read = False
                         if run_reads and i < len(run_reads):
                             actual_len = int(run_reads[i]['NumCycles'])
-                            is_indexed_read = run_reads[i].get('IsIndexedRead') == 'Y'
-                        
-                        # Handle Y2 case: treat as UMI (U) matching actual length
+
                         if type_ == 'Y2':
-                            if actual_len > 0:
-                                cycle_str = f"U{actual_len}"
-                            else:
-                                cycle_str = f"U{specified_len}"
-                        # Handle 0 length case: replace with N{actual_len} (skips the read)
+                            cycle_str = f"U{actual_len}" if actual_len > 0 else f"U{specified_len}"
                         elif specified_len == 0 and actual_len > 0:
                             cycle_str = f"N{actual_len}"
                         else:
@@ -942,20 +910,30 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                                 cycle_str = f"I{len_}"
                             elif type_.startswith('U'):
                                 cycle_str = f"U{len_}"
-                            
-                            # Pad with N if needed
+
                             if actual_len > 0 and specified_len > 0 and specified_len < actual_len:
                                 diff = actual_len - specified_len
                                 cycle_str += f"N{diff}"
-                        
-                        cycles.append(cycle_str)
-                
-                if cycles:
-                    override_cycles = ";".join(cycles)
-            except Exception as e:
-                print(f"Error parsing masking '{masking}' for lane {lane}: {e}")
 
-        ss_data['OverrideCycles'] = override_cycles
+                        cycles.append(cycle_str)
+
+                if cycles:
+                    return ";".join(cycles)
+            except Exception as e:
+                print(f"Error parsing masking '{masking_str}' for lane {lane}: {e}")
+            return ""
+
+        # Determine per-row whether to strip I2 (BD_Rhapsody_ATACseq or ATAC with no index2 data)
+        override_cycles_list = []
+        for _, row in lane_df.iterrows():
+            row_masking = str(row.get('Masking', '')).strip()
+            row_project = str(row.get('Project', '')).strip().upper()
+            row_index2 = str(row.get('index2', '')).strip()
+            row_has_index2 = row_index2 and row_index2.lower() != 'nan'
+            strip_i2 = bd_rhapsody_atac or ('ATAC' in row_project and not row_has_index2)
+            override_cycles_list.append(compute_override_cycles(row_masking, run_reads, strip_i2=strip_i2))
+
+        ss_data['OverrideCycles'] = override_cycles_list
 
         # Reorder columns
         cols = ['Lane', 'Sample_ID', 'Sample_Name', 'index', 'index2', 'Sample_Project', 'OverrideCycles']
@@ -966,7 +944,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 
         ss_data = ss_data[cols]
         
-        outfile = os.path.join(out_dir, f"SampleSheet_lane{lane}_{masking_sanitized}.csv")
+        outfile = os.path.join(out_dir, f"SampleSheet_{config_id}.csv")
         with open(outfile, 'w') as f:
             f.write("[Header]\n")
             f.write("FileFormatVersion,2\n")
@@ -974,9 +952,10 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             
             # Add Settings block
             f.write("[BCLConvert_Settings]\n")
-            
+
             # BD_Rhapsody_ATACseq special settings (now based on sheet/tab name)
-            # Override fallback logic for 10x/BD/Parse if BD_Rhapsody_ATACseq
+            # When merging multiple masking groups, use union/conservative approach:
+            # if ANY group needs CreateFastqForIndexReads=1, set it for all
             create_fastq_for_index = "0"
             if bd_rhapsody_atac:
                 f.write("CreateFastqForIndexReads,1\n")
@@ -990,17 +969,42 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 f.write(f"CreateFastqForIndexReads,{create_fastq_for_index}\n")
             f.write("MinimumTrimmedReadLength,8\n")
             f.write("MaskShortReads,8\n")
-            # if has_index1:
-            #     f.write("BarcodeMismatchesIndex1,1\n")
-            # if has_index2:
-            #     f.write("BarcodeMismatchesIndex2,1\n")
+            # When multiple masking groups with different index lengths are merged, DRAGEN
+            # N-pads shorter indexes during collision detection, causing false hamming distance
+            # errors. Set BarcodeMismatchesIndex1/2 to 0 only when:
+            #   (a) samples have mixed effective index lengths for that position, AND
+            #   (b) every sample uses that index (DRAGEN rejects a global setting when any sample lacks it)
+            import re as _re
+            def _effective_index_len(cycles_str, position):
+                """Return the active I-read length for index position (1=I1, 2=I2).
+                Returns 0 if that position is absent or is a pure N (skipped) read.
+                """
+                if not cycles_str:
+                    return 0
+                parts = cycles_str.split(';')
+                if position >= len(parts):
+                    return 0
+                m = _re.match(r'^I(\d+)', parts[position])
+                return int(m.group(1)) if m else 0
+
+            i1_lens = [_effective_index_len(c, 1) for c in override_cycles_list]
+            i2_lens = [_effective_index_len(c, 2) for c in override_cycles_list]
+
+            # Mixed I1 lengths → set BarcodeMismatchesIndex1,0
+            # (all samples always have I1 if they have any index, so no extra check needed)
+            if len(set(i1_lens)) > 1:
+                f.write("BarcodeMismatchesIndex1,0\n")
+
+            # Mixed I2 lengths AND every sample uses I2 → set BarcodeMismatchesIndex2,0
+            if len(set(i2_lens)) > 1 and all(l > 0 for l in i2_lens):
+                f.write("BarcodeMismatchesIndex2,0\n")
             f.write("FastqCompressionFormat,gzip\n")
             f.write("\n")
             
             f.write("[BCLConvert_Data]\n")
             ss_data.to_csv(f, index=False)
             
-        generated_files[config['id']] = outfile
+        generated_files[config_id] = outfile
         
         # Generate renaming map
         try:
@@ -1030,10 +1034,10 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 global_position_counter += 1
             map_df['Position'] = positions
             
-            map_file = os.path.join(out_dir, f"renaming_map_{config['id']}.csv")
+            map_file = os.path.join(out_dir, f"renaming_map_{config_id}.csv")
             write_renaming_map(map_df, map_file)
         except Exception as e:
-            print(f"Error generating renaming map for {config['id']}: {e}")
+            print(f"Error generating renaming map for {config_id}: {e}")
         
         # Check for Flexbar projects and generate barcode file
         flexbar_samples = []
@@ -1054,7 +1058,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                             flexbar_samples.append((s_name, s_index))
         
         if flexbar_samples:
-            barcode_file = os.path.join("metadata", f"flexbar_barcodes_{config['id']}.fasta")
+            barcode_file = os.path.join("metadata", f"flexbar_barcodes_{config_id}.fasta")
             os.makedirs("metadata", exist_ok=True)
             with open(barcode_file, 'w') as bf:
                 for name, idx in flexbar_samples:
@@ -1554,9 +1558,10 @@ def get_project_fastp_targets(wildcards):
 
 def get_fastp_plots_lane_inputs(wildcards):
     lane = wildcards.lane
-    prefix = f"lane{lane}_"
-    relevant_configs = [cid for cid in CONFIG_IDS if cid.startswith(prefix)]
-    return [f"results/fastp_plots_{cid}.done" for cid in relevant_configs]
+    config_id = f"lane{lane}"
+    if config_id in CONFIG_IDS:
+        return [f"results/fastp_plots_{config_id}.done"]
+    return []
 
 def get_bcl_convert_fastqs(wildcards):
     import pandas as pd
