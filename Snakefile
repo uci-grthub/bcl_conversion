@@ -1214,7 +1214,7 @@ rule bcl_convert:
             dragen_out="{output.output_dir}"
         fi
 
-        rm -rf "$dragen_out"
+        find "$dragen_out" -name "*.fastq.gz" -delete 2>/dev/null || true
         mkdir -p "$dragen_out"
 
         timeout 7200 dragen --bcl-conversion-only true \
