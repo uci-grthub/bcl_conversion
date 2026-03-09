@@ -1297,7 +1297,7 @@ rule calculate_md5sums:
         """
         (
         cd output/{wildcards.config_id}/{wildcards.project}
-        find . -name '*.fastq.gz' -type f -exec md5sum {{}} \\; | sort -k2 > md5sums.txt
+        find . -name '*.fastq.gz' -type f -print0 | xargs -0 -P 8 md5sum | sort -k2 > md5sums.txt
         echo "Generated md5sums.txt with $(wc -l < md5sums.txt) entries for {wildcards.project}"
         ) > {log} 2>&1
         """
