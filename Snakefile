@@ -439,6 +439,13 @@ rule report_order_id:
 
         # Generate report for each project in this order_id
         for project in projects:
+            # Resolve original (pre-rename) project name for fastp file lookups
+            orig_project = next(
+                (p for cid, p in _CONFIG_PROJECT_PAIRS_RAW
+                 if PROJECT_RENAME_MAP.get((cid, p), p) == project),
+                project
+            )
+
             # Get fastq links for this project in this order_id
             fastq_links = get_project_links_from_yaml(merged_yaml_path, project, lane=None, order_id=order_id)
 
@@ -456,7 +463,8 @@ rule report_order_id:
                 order_id,
                 LIBRARY,  # library_name
                 str(config.get('plots_total_width', 900)),
-                str(config.get('plots_quality', 35))
+                str(config.get('plots_quality', 35)),
+                orig_project,  # orig_project_name for fastp lookups
             ]
             
             result = subprocess.run(cmd, capture_output=True, text=True)
@@ -513,7 +521,9 @@ rule send_order_email:
 
 rule fastp_sample:
     input:
-        done = lambda wildcards: f"output/{wildcards.config_id}/{wildcards.sample_path.split('/')[0]}/.project_done"
+        done = lambda wildcards: (
+            lambda orig: f"output/{wildcards.config_id}/{PROJECT_RENAME_MAP.get((wildcards.config_id, orig), orig)}/.project_done"
+        )(wildcards.sample_path.split('/')[0])
     output:
         json = "results/fastp/{config_id}/{sample_path}.json",
         html = "results/fastp/{config_id}/{sample_path}.html"
@@ -1485,8 +1495,11 @@ rule project_link:
         project = ".+"
     params:
         work_dir = os.getcwd(),
-        order_id = lambda wildcards: PROJECT_ORDER_ID.get((wildcards.project, int(m.group(1))) if (m := re.match(r'lane(\d+)', wildcards.config_id)) else (wildcards.project, 0), ""),
-        group = lambda wildcards: get_project_group(wildcards.project, wildcards.config_id)
+        order_id = lambda wildcards: PROJECT_ORDER_ID.get(
+            (PROJECT_RENAME_MAP_INV.get((wildcards.config_id, wildcards.project), wildcards.project), int(m.group(1)))
+            if (m := re.match(r'lane(\d+)', wildcards.config_id))
+            else (PROJECT_RENAME_MAP_INV.get((wildcards.config_id, wildcards.project), wildcards.project), 0), ""),
+        group = lambda wildcards: get_project_group(PROJECT_RENAME_MAP_INV.get((wildcards.config_id, wildcards.project), wildcards.project), wildcards.config_id)
     run:
         import traceback
         import subprocess

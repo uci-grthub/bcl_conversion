@@ -1201,8 +1201,10 @@ def get_project_plot_targets(project, lane_filter=None, order_id=None):
             try:
                 df = pd.read_csv(map_path)
                 df['Sample_Project'] = df['Sample_Project'].astype(str)
-                project_samples = df[df['Sample_Project'] == project]
-                
+                # Resolve renamed project name -> original name for CSV lookup
+                orig_project = PROJECT_RENAME_MAP_INV.get((config_id, project), project)
+                project_samples = df[df['Sample_Project'] == orig_project]
+
                 for idx, row in project_samples.iterrows():
                     try:
                         lane_val = int(float(row.get('Lane', 0)))
@@ -1240,14 +1242,14 @@ def get_project_plot_targets(project, lane_filter=None, order_id=None):
                     barcode = f"{index1}-{index2}" if index2 else index1
                     position = str(row.get('Position', f"P{idx+1:03d}")).strip()
                     
-                    if is_parse_or_10x(project):
+                    if is_parse_or_10x(orig_project):
                         if not sample_name or sample_name.lower() == 'nan':
                             continue
-                        path = f"{project}/{sample_name}"
+                        path = f"{orig_project}/{sample_name}"
                     else:
                         stem = f"{run}-L{lane_val}-G{group}-{position}-{barcode}"
-                        path = f"{project}/{stem}"
-                    
+                        path = f"{orig_project}/{stem}"
+
                     targets.append(f"results/fastp_plots/{config_id}/{path}-mean_phred.png")
                     targets.append(f"results/fastp_plots/{config_id}/{path}-base_comp.png")
             except Exception as e:
