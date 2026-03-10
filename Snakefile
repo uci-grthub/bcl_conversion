@@ -624,7 +624,7 @@ rule summarize_project_reads:
 
 rule compile_read_counts:
     input:
-        fastp_done = expand("results/fastp_{config_id}.done", config_id=CONFIG_IDS),
+        demux_stats = expand("output/{config_id}/Reports/Demultiplex_Stats.csv", config_id=CONFIG_IDS),
         maps = expand("results/renaming_map_{config_id}.csv", config_id=CONFIG_IDS)
     output:
         csv = f"results/{LIBRARY}-count.csv"
@@ -648,6 +648,18 @@ rule compile_read_counts:
                 continue
 
             config_id = os.path.basename(map_path).replace("renaming_map_", "").replace(".csv", "")
+            
+            # Read Demultiplex_Stats.csv for this config_id
+            demux_stats_path = os.path.join("output", config_id, "Reports", "Demultiplex_Stats.csv")
+            if not os.path.exists(demux_stats_path):
+                print(f"Skipping missing Demultiplex_Stats.csv: {demux_stats_path}")
+                continue
+            
+            try:
+                demux_df = pd.read_csv(demux_stats_path)
+            except Exception as e:
+                print(f"Could not read {demux_stats_path}: {e}")
+                continue
 
             try:
                 df = pd.read_csv(map_path)
@@ -689,36 +701,26 @@ rule compile_read_counts:
                 barcode = f"{index1}-{index2}" if index2 else index1
 
                 position = str(row.get("Position", f"P{idx + 1:03d}")).strip()
-
-                # Build both possible fastp JSON paths:
-                # 1) Default renamed stem path
                 stem = f"{run_name}-L{lane}-G{group}-{position}-{barcode}"
-                sample_path_default = f"{project}/{stem}" if project and project.lower() != "nan" else stem
-                json_path_default = os.path.join("results/fastp", config_id, f"{sample_path_default}.json")
 
-                # 2) Illumina naming path for 10x/Parse/BD projects
-                sample_path_illumina = f"{project}/{sample_name}" if project and project.lower() != "nan" else sample_name
-                json_path_illumina = os.path.join("results/fastp", config_id, f"{sample_path_illumina}.json")
-
-                # Prefer default path if it exists; otherwise fall back to Illumina naming
-                if os.path.exists(json_path_default):
-                    json_path = json_path_default
-                elif os.path.exists(json_path_illumina):
-                    json_path = json_path_illumina
-                else:
-                    print(f"Missing fastp json for default '{sample_path_default}' and illumina '{sample_path_illumina}'")
-                    continue
-
-
+                # Look up read count in Demultiplex_Stats.csv
+                # Match by Lane, Sample_Project, and SampleID
+                read_pairs = 0
                 try:
-                    with open(json_path, "r") as jf:
-                        stats = json.load(jf)
-                    # fastp reports total_reads as the number of reads, not pairs
-                    # For paired-end data, number of pairs = total_reads // 2
-                    reads = int(stats.get("summary", {}).get("before_filtering", {}).get("total_reads", 0))
-                    read_pairs = reads // 2
+                    # Filter by lane and project
+                    matches = demux_df[
+                        (demux_df['Lane'] == lane) & 
+                        (demux_df['Sample_Project'] == project) &
+                        (demux_df['SampleID'] == sample_name)
+                    ]
+                    
+                    if len(matches) > 0:
+                        # BCL Convert reports '# Reads' as read pairs (clusters), not individual reads
+                        read_pairs = int(matches.iloc[0]['# Reads'])
+                    else:
+                        print(f"No match in Demultiplex_Stats.csv for L{lane} {project} {sample_name}")
                 except Exception as e:
-                    print(f"Error reading {json_path}: {e}")
+                    print(f"Error looking up read count for {sample_name} in {demux_stats_path}: {e}")
                     read_pairs = 0
 
                 lane_group_key = (lane, group)
@@ -1233,6 +1235,10 @@ rule bcl_convert:
         --strict-mode false \
         --bcl-only-lane {params.lane} \
         --run-info {params.run_info_path} \
+        --bcl-num-parallel-tiles 1 \
+        --bcl-num-conversion-threads 8 \
+        --bcl-num-compression-threads 8 \
+        --bcl-num-decompression-threads 8 \
         $tiles_arg
 
         # Transfer from scratch to final output dir using rsync with checksum
@@ -1242,7 +1248,7 @@ rule bcl_convert:
             mkdir -p "{output.output_dir}"
             sync_ok=false
             for attempt in 1 2 3; do
-                if rsync -a --checksum --delete "$dragen_out/" "{output.output_dir}/"; then
+                if rsync -W --delete "$dragen_out/" "{output.output_dir}/"; then
                     sync_ok=true
                     break
                 fi
