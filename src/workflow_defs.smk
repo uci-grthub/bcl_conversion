@@ -941,7 +941,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         for c in cols:
             if c not in ss_data.columns:
                 ss_data[c] = ""
-                
+
         ss_data = ss_data[cols]
         
         outfile = os.path.join(out_dir, f"SampleSheet_{config_id}.csv")
@@ -954,18 +954,22 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             f.write("[BCLConvert_Settings]\n")
 
             # BD_Rhapsody_ATACseq special settings (now based on sheet/tab name)
-            # When merging multiple masking groups, use union/conservative approach:
-            # if ANY group needs CreateFastqForIndexReads=1, set it for all
+            # If ANY project on the lane needs index read FASTQs, set globally for the run.
+            # (DRAGEN 4.x does not support CreateFastqForIndexReads as a per-sample column.)
+            _INDEX_READ_KEYWORDS = ["10x", "BD", "parse", "Parse", "SMK", "smk", "CITE", "cite", "Hashtag", "hashtag"]
             create_fastq_for_index = "0"
             if bd_rhapsody_atac:
                 f.write("CreateFastqForIndexReads,1\n")
                 f.write("TrimUMI,0\n")
             else:
+                # Check both Project Name and Sample Sheet tab columns for index-read keywords
+                names_to_check = set()
                 if 'Sample_Project' in ss_data.columns:
-                    for proj in ss_data['Sample_Project'].unique():
-                        proj_str = str(proj)
-                        if any(keyword in proj_str for keyword in ["10x", "BD", "parse", "Parse"]):
-                            create_fastq_for_index = "1"
+                    names_to_check.update(str(p) for p in ss_data['Sample_Project'].unique())
+                if '__sheet_name__' in lane_df.columns:
+                    names_to_check.update(str(s) for s in lane_df['__sheet_name__'].unique())
+                if any(kw in name for name in names_to_check for kw in _INDEX_READ_KEYWORDS):
+                    create_fastq_for_index = "1"
                 f.write(f"CreateFastqForIndexReads,{create_fastq_for_index}\n")
             f.write("MinimumTrimmedReadLength,8\n")
             f.write("MaskShortReads,8\n")
@@ -1407,7 +1411,8 @@ def get_fastp_sample_input(wildcards):
             if path == sample_path:
                 prefix = f"output/{config_id}"
                 if project and project.lower() != 'nan':
-                    prefix = f"{prefix}/{project}"
+                    output_project = PROJECT_RENAME_MAP.get((config_id, project), project)
+                    prefix = f"{prefix}/{output_project}"
                 
                 if is_parse_or_10x(project):
                     s_num = idx + 1

@@ -108,6 +108,7 @@ PROJECT_LINKS = {}
 PROJECT_LINKS_BY_LANE = {}
 ORDER_ID_LOOKUP = {}
 PROJECT_ORDER_ID = {}  # keyed by (project, lane) -> order_id
+PROJECT_LAB_ID = {}  # keyed by (project, lane) -> lab_id
 
 if METADATA_FILE and os.path.exists(METADATA_FILE):
     try:
@@ -161,6 +162,12 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
                                 ORDER_ID_LOOKUP[(l, g)] = order_id
                                 if p and p.lower() != 'nan':
                                     PROJECT_ORDER_ID[(p, l)] = order_id
+
+                         if 'Lab ID' in df.columns:
+                            lab_id_val = str(row['Lab ID']).strip()
+                            if lab_id_val and lab_id_val.lower() != 'nan':
+                                if p and p.lower() != 'nan':
+                                    PROJECT_LAB_ID[(p, l)] = lab_id_val
                      except:
                          pass
             
@@ -215,6 +222,19 @@ for (_lane, _group), _oid in ORDER_ID_LOOKUP.items():
 # print("PROJECT_LINKS_BY_LANE:", PROJECT_LINKS_BY_LANE)
 # print("ORDER_ID_LOOKUP:", ORDER_ID_LOOKUP)
 # print("PROJECT_ORDER_ID:", PROJECT_ORDER_ID)
+
+# Build project directory rename map: (config_id, old_project) -> new_folder_name
+# Format: {LabID}_{OrderID}_{library_name}_L{lane}_G{group}
+PROJECT_RENAME_MAP = {}      # (config_id, old_project) -> new_folder_name
+PROJECT_RENAME_MAP_INV = {}  # (config_id, new_folder_name) -> old_project
+for (lane, group), project in PROJECT_LOOKUP.items():
+    config_id = f"lane{lane}"
+    order_id = PROJECT_ORDER_ID.get((project, lane), "")
+    lab_id = PROJECT_LAB_ID.get((project, lane), "")
+    if lab_id and order_id:
+        new_name = f"{lab_id}_{order_id}_{LIBRARY}_L{lane}_G{group}"
+        PROJECT_RENAME_MAP[(config_id, project)] = new_name
+        PROJECT_RENAME_MAP_INV[(config_id, new_name)] = project
 
 # Helper definitions are sourced from src/workflow_defs.smk
 
@@ -287,7 +307,25 @@ for config in LANE_CONFIGS:
     if os.path.exists(barcode_path):
         FLEXBAR_CONFIGS.append(config['id'])
 
-CONFIG_PROJECT_PAIRS = get_config_project_pairs(SAMPLE_SHEETS_DICT)
+_CONFIG_PROJECT_PAIRS_RAW = get_config_project_pairs(SAMPLE_SHEETS_DICT)
+CONFIG_PROJECT_PAIRS = [
+    (cid, PROJECT_RENAME_MAP.get((cid, p), p))
+    for cid, p in _CONFIG_PROJECT_PAIRS_RAW
+]
+
+# Translate old Sample_Project names in ORDER_ID_CONFIGS to new renamed folder names.
+# get_order_id_configs() returns old names from renaming_map CSVs, but CONFIG_PROJECT_PAIRS
+# now uses renamed names, so the filter in report_order_id must use the same names.
+for _oid in list(ORDER_ID_CONFIGS.keys()):
+    _old_projects = set(ORDER_ID_CONFIGS[_oid])
+    _new_projects = set()
+    for _cid, _new_p in _CONFIG_PROJECT_PAIRS_RAW:
+        _old_p = PROJECT_RENAME_MAP_INV.get((_cid, PROJECT_RENAME_MAP.get((_cid, _new_p), _new_p)), _new_p)
+        if _old_p in _old_projects:
+            _new_projects.add(PROJECT_RENAME_MAP.get((_cid, _new_p), _new_p))
+    if _new_projects:
+        ORDER_ID_CONFIGS[_oid] = _new_projects
+    # else leave as-is (projects with no rename entry keep old names)
 PROJECT_LINK_LOGS = [f"logs/project_link_{config_id}---{project}.log" for config_id, project in CONFIG_PROJECT_PAIRS]
 
 # print("CONFIG_PROJECT_PAIRS:", CONFIG_PROJECT_PAIRS)
@@ -295,7 +333,7 @@ PROJECT_LINK_LOGS = [f"logs/project_link_{config_id}---{project}.log" for config
 rule all:
     input:
         expand("results/fastp_plots_{config_id}.done", config_id=CONFIG_IDS),
-        expand("output/{config_id}/.done", config_id=CONFIG_IDS),
+        expand(".output/{config_id}/.done", config_id=CONFIG_IDS),
         expand("output/{config_id}/{project}/md5sums.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         ORDER_ID_REPORTS,
         ORDER_ID_MD5S,
@@ -316,7 +354,7 @@ rule all:
 
 rule bcl_convert_only:
     input:
-        expand("output/{config_id}/.done", config_id=CONFIG_IDS)
+        expand(".output/{config_id}/.done", config_id=CONFIG_IDS)
     benchmark:
         "benchmarks/bcl_convert_only.bench"
 
@@ -487,9 +525,8 @@ rule fastp_sample:
         config_id = "[^/]+",
         sample_path = ".*"
     params:
-        threads = FASTP_THREADS,
         fastqs = get_fastp_sample_input,
-    threads: 4
+    threads: 2
     shell:
         """
         (
@@ -500,9 +537,9 @@ rule fastp_sample:
 
         if [ ${{#files[@]}} -gt 1 ]; then
             r2="${{files[1]}}"
-            fastp -i "$r1" -I "$r2" --json "{output.json}" --html "{output.html}" -w {threads}
+            fastp -i "$r1" -I "$r2" -A -Q -L --reads_to_process 2000000 --json "{output.json}" --html "{output.html}" -w {threads}
         else
-            fastp -i "$r1" --json "{output.json}" --html "{output.html}" -w {threads}
+            fastp -i "$r1" -A -Q -L --reads_to_process 2000000 --json "{output.json}" --html "{output.html}" -w {threads}
         fi
         ) > {log} 2>&1
         """
@@ -612,7 +649,7 @@ rule summarize_project_reads:
 
 rule compile_read_counts:
     input:
-        demux_stats = expand("output/{config_id}/Reports/Demultiplex_Stats.csv", config_id=CONFIG_IDS),
+        done = expand(".output/{config_id}/.done", config_id=CONFIG_IDS),
         maps = expand("results/renaming_map_{config_id}.csv", config_id=CONFIG_IDS)
     output:
         csv = f"results/{LIBRARY}-count.csv"
@@ -809,7 +846,7 @@ rule fastp_plots_lane:
 
 rule flexbar_per_config:
     input:
-        bcl_dir = "output/{config_id}",
+        bcl_dir = ".output/{config_id}",
         # Expecting a barcode file named specifically for this config
         barcodes = "metadata/flexbar_barcodes_{config_id}.fasta",
         adapter = "src/flexbar/adapter.3.fa"
@@ -1176,8 +1213,8 @@ rule bcl_convert:
         _sheet_done=lambda wildcards: f"logs/generate_samplesheets_{wildcards.config_id}.done",
         run_info = "src/RunInfo_nn.xml"
     output:
-        output_dir = directory("output/{config_id}"),
-        done_file = touch("output/{config_id}/.done")
+        output_dir = directory(".output/{config_id}"),
+        done_file = touch(".output/{config_id}/.done")
     log:
         "logs/bcl_convert_{config_id}.log"
     benchmark:
@@ -1273,14 +1310,70 @@ rule bcl_project_done:
     Uses ancient() on the lane .done so that re-running bcl_convert for one
     project does NOT re-trigger downstream rules for projects whose
     .project_done already exists.
+
+    If a rename map entry exists for this project, renames the bcl_convert
+    output directory from the old Sample_Project name to the new
+    {LabID}_{OrderID}_{library}_L{lane}_G{group} name, then creates a
+    symlink from old name -> new directory for downstream compatibility.
     """
     input:
-        done = ancient("output/{config_id}/.done")
+        done = ancient(".output/{config_id}/.done")
     output:
         sentinel = touch("output/{config_id}/{project}/.project_done")
     wildcard_constraints:
         config_id = "[^/]+",
         project = "[^/]+"
+    run:
+        import os, glob, shutil
+        config_id = wildcards.config_id
+        new_project = wildcards.project
+        old_project = PROJECT_RENAME_MAP_INV.get((config_id, new_project), new_project)
+        src_dir = os.path.abspath(f".output/{config_id}/{old_project}")
+        new_dir = os.path.abspath(f"output/{config_id}/{new_project}")
+
+        # Move project FASTQs from staging dir to final output dir.
+        if os.path.isdir(src_dir):
+            # Snakemake pre-creates the output dir; remove if empty so shutil.move works.
+            if os.path.isdir(new_dir) and not os.listdir(new_dir):
+                os.rmdir(new_dir)
+            if not os.path.exists(new_dir):
+                shutil.move(src_dir, new_dir)
+
+        os.makedirs(new_dir, exist_ok=True)
+
+        # Copy lane-level accessory files (Reports, Logs, dragen JSONs, etc.) to output.
+        # Skip old Sample_Project subdirectories — those are moved by their own bcl_project_done.
+        staging = f".output/{config_id}"
+        dest_base = f"output/{config_id}"
+        os.makedirs(dest_base, exist_ok=True)
+        old_project_dirs = {p for cid, p in _CONFIG_PROJECT_PAIRS_RAW if cid == config_id}
+        for item in os.listdir(staging):
+            if item.startswith('.'):
+                continue
+            src_item = os.path.join(staging, item)
+            dst_item = os.path.join(dest_base, item)
+            if os.path.isdir(src_item) and item in old_project_dirs:
+                continue  # handled by that project's bcl_project_done
+            if os.path.isdir(src_item):
+                if not os.path.exists(dst_item):
+                    shutil.copytree(src_item, dst_item)
+            elif not os.path.exists(dst_item):
+                shutil.copy2(src_item, dst_item)
+
+        # Remove extraneous I1/I2 FASTQs for projects that don't need index reads.
+        # CreateFastqForIndexReads is set globally per lane, so these files are produced
+        # for all projects whenever any project on the lane (e.g. SMK) requires them.
+        _INDEX_READ_KEYWORDS = ["10x", "BD", "parse", "Parse", "SMK", "smk", "CITE", "cite", "Hashtag", "hashtag"]
+        check_name = old_project if old_project else new_project
+        if not any(kw in check_name for kw in _INDEX_READ_KEYWORDS):
+            proj_dir = f"output/{config_id}/{new_project}"
+            removed = 0
+            for pattern in ["**/*_I1_001.fastq.gz", "**/*_I2_001.fastq.gz"]:
+                for f in glob.glob(os.path.join(proj_dir, pattern), recursive=True):
+                    os.remove(f)
+                    removed += 1
+            if removed:
+                print(f"Removed {removed} index FASTQ file(s) from {proj_dir}")
 
 rule calculate_md5sums:
     input:
@@ -1325,7 +1418,7 @@ rule generate_exclude_indexes:
 
 rule analyze_undetermined:
     input:
-        done = "output/{config_id}/.done"
+        done = ".output/{config_id}/.done"
     output:
         csv = "results/undetermined_indices/{config_id}.csv"
     log:
@@ -1333,7 +1426,7 @@ rule analyze_undetermined:
     benchmark:
         "benchmarks/analyze_undetermined_{config_id}.bench"
     params:
-        barcodes = lambda wildcards: f"output/{wildcards.config_id}/Reports/Top_Unknown_Barcodes.csv"
+        barcodes = lambda wildcards: f".output/{wildcards.config_id}/Reports/Top_Unknown_Barcodes.csv"
     run:
         import csv as csv_mod
         import os
@@ -1790,7 +1883,7 @@ rule debug_project_link_files:
             print(f"PAIR: config_id={config_id}, project={project}")
         print("\n=== DIAGNOSTIC: Expected .done files ===")
         for config_id, project in CONFIG_PROJECT_PAIRS:
-            done_path = f"output/{config_id}/.done"
+            done_path = f".output/{config_id}/.done"
             print(f"{done_path}: {'EXISTS' if os.path.exists(done_path) else 'MISSING'}")
         print("\n=== DIAGNOSTIC: Expected .log files ===")
         for config_id, project in CONFIG_PROJECT_PAIRS:
