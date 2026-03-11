@@ -510,8 +510,10 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
         # Validate that FASTQ files exist for this sample before processing
         # This filters out deprecated samples that only have fastp JSON but no actual FASTQ files
         project_dir = os.path.join(output_base_dir, config_id, project)
-        use_illumina_naming = is_parse_or_10x(project)
-        
+        # Use fastp_lookup_name (orig_project_name) for the naming-style check:
+        # after renaming the project name no longer contains "10x", "parse", etc.
+        use_illumina_naming = is_parse_or_10x(fastp_lookup_name)
+
         fastq_exists = False
         if use_illumina_naming:
             # For 10x/Parse/BD: check if any R1 file matching the stem pattern exists
@@ -546,7 +548,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
             # Extract Barcode from stem or sample_name
             # For 10x/Parse/BD: need to look up barcode from renaming map
             # For default: extract from stem format {run}-L{lane}-G{group}-{position}-{barcode}
-            use_illumina_naming = is_parse_or_10x(project)
+            use_illumina_naming = is_parse_or_10x(fastp_lookup_name)
             
             if use_illumina_naming:
                 # Look up barcode from renaming map

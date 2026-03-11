@@ -825,7 +825,8 @@ rule compile_read_counts:
 
 rule send_read_counts_email:
     input:
-        csv = f"results/{LIBRARY}-count.csv"
+        csv = f"results/{LIBRARY}-count.csv",
+        order_reports = ORDER_ID_REPORTS
     output:
         touch(f"Reports/{LIBRARY}_read_counts_email.done")
     log:
