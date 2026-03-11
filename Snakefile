@@ -1326,20 +1326,37 @@ rule bcl_project_done:
     output directory from the old Sample_Project name to the new
     {LabID}_{OrderID}_{library}_L{lane}_G{group} name, then creates a
     symlink from old name -> new directory for downstream compatibility.
+
+    If an orientation_decision file exists for this config_id (written by
+    pick_orientation after comparing first-pass vs RC-pass demux stats), reads
+    it to determine whether to source FASTQs from .output (original) or
+    .output_rc (reverse-complement) for this project.
     """
     input:
-        done = ancient(".output/{config_id}/.done")
+        done = ancient(".output/{config_id}/.done"),
+        decision = "logs/orientation_decision_{config_id}.json"
     output:
         sentinel = touch("output/{config_id}/{project}/.project_done")
     wildcard_constraints:
         config_id = "[^/]+",
         project = "[^/]+"
     run:
-        import os, glob, shutil
+        import os, glob, shutil, json as json_mod
         config_id = wildcards.config_id
         new_project = wildcards.project
         old_project = PROJECT_RENAME_MAP_INV.get((config_id, new_project), new_project)
-        src_dir = os.path.abspath(f".output/{config_id}/{old_project}")
+
+        # Determine which orientation won for this project
+        orientation = "original"
+        try:
+            with open(input.decision) as _df:
+                _dec = json_mod.load(_df)
+            orientation = _dec.get(old_project, _dec.get(new_project, "original"))
+        except Exception:
+            pass
+
+        src_base = ".output_rc" if orientation == "rc" else ".output"
+        src_dir = os.path.abspath(f"{src_base}/{config_id}/{old_project}")
         new_dir = os.path.abspath(f"output/{config_id}/{new_project}")
 
         # Move project FASTQs from staging dir to final output dir.
@@ -1462,6 +1479,209 @@ rule analyze_undetermined:
                     writer.writerow([count, itype, seq])
 
             logf.write(f"Converted {len(rows)} barcodes from {params.barcodes}\n")
+
+rule detect_rc_candidates:
+    """Detect projects with likely i7 reverse-complement orientation issues
+    for a single config_id by comparing undetermined barcodes to expected indexes.
+    Produces a JSON list of suspect project records (may be empty).
+    """
+    input:
+        undetermined = "results/undetermined_indices/{config_id}.csv",
+        samplesheet = "results/SampleSheet_{config_id}.csv"
+    output:
+        candidates = "logs/rc_candidates_{config_id}.json"
+    log:
+        "logs/detect_rc_candidates_{config_id}.log"
+    wildcard_constraints:
+        config_id = "[^/]+"
+    params:
+        rc_threshold = config.get("rc_rerun_threshold", 0.5),
+        min_total_count = config.get("rc_rerun_min_total_count", 1000),
+        min_rc_count = config.get("rc_rerun_min_rc_count", 1000),
+    run:
+        import json as json_mod
+        import subprocess
+        import sys as sys_mod
+        result = subprocess.run(
+            [
+                sys_mod.executable, "scripts/check_index_rc_swap.py",
+                "--samples", input.samplesheet,
+                "--undetermined", input.undetermined,
+                "--format", "json",
+                "--rc-threshold", str(params.rc_threshold),
+                "--min-total-count", str(params.min_total_count),
+                "--min-rc-count", str(params.min_rc_count),
+            ],
+            capture_output=True, text=True
+        )
+        with open(log[0], 'w') as lf:
+            lf.write(result.stderr)
+        if result.returncode != 0:
+            raise RuntimeError(f"check_index_rc_swap.py failed:\n{result.stderr}")
+        payload = json_mod.loads(result.stdout)
+        # config_id in the JSON comes from infer_config_id_from_samplesheet,
+        # which strips the SampleSheet_ prefix, so it matches wildcards.config_id.
+        suspects = [
+            r for r in payload.get('project_suspects', [])
+            if r.get('config_id') == wildcards.config_id
+        ]
+        with open(output.candidates, 'w') as f:
+            json_mod.dump(suspects, f, indent=2)
+        print(f"RC candidates for {wildcards.config_id}: {[r['project'] for r in suspects]}")
+
+rule generate_rc_samplesheet:
+    """Generate a SampleSheet with i7 reverse-complemented for RC suspect projects.
+    If no suspects, copies the original SampleSheet unchanged.
+    """
+    input:
+        samplesheet = "results/SampleSheet_{config_id}.csv",
+        candidates = "logs/rc_candidates_{config_id}.json"
+    output:
+        rc_samplesheet = "results/SampleSheet_{config_id}_rc.csv"
+    log:
+        "logs/generate_rc_samplesheet_{config_id}.log"
+    wildcard_constraints:
+        config_id = "[^/]+"
+    run:
+        import subprocess, sys as sys_mod
+        result = subprocess.run(
+            [
+                sys_mod.executable, "src/apply_rc_to_samplesheet.py",
+                "--samplesheet", input.samplesheet,
+                "--candidates", input.candidates,
+                "--output", output.rc_samplesheet,
+            ],
+            capture_output=True, text=True
+        )
+        with open(log[0], 'w') as lf:
+            lf.write(result.stdout)
+            lf.write(result.stderr)
+        if result.returncode != 0:
+            raise RuntimeError(f"apply_rc_to_samplesheet.py failed:\n{result.stderr}")
+
+rule bcl_convert_rc:
+    """Run BCL Convert with an i7-RC SampleSheet for config_ids where RC suspect
+    projects were detected. If no suspects exist, creates an empty marker
+    directory without running BCL Convert.
+    """
+    input:
+        rc_samplesheet = "results/SampleSheet_{config_id}_rc.csv",
+        candidates = "logs/rc_candidates_{config_id}.json",
+        data_dir = DATA_DIR,
+        run_info = "src/RunInfo_nn.xml",
+        orig_done = ".output/{config_id}/.done"
+    output:
+        output_dir = directory(".output_rc/{config_id}"),
+        done_file = touch(".output_rc/{config_id}/.done")
+    log:
+        "logs/bcl_convert_rc_{config_id}.log"
+    benchmark:
+        "benchmarks/bcl_convert_rc_{config_id}.bench"
+    wildcard_constraints:
+        config_id = "[^/]+"
+    priority: 90
+    resources:
+        serial_operation=1
+    threads: 1
+    params:
+        lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', ''),
+        run_info_path = "src/RunInfo_nn.xml",
+        tiles = TILES,
+    run:
+        import json as json_mod, subprocess, sys as sys_mod, os as os_mod
+        with open(input.candidates) as f:
+            suspects = json_mod.load(f)
+        os_mod.makedirs(output.output_dir, exist_ok=True)
+        with open(log[0], 'w') as lf:
+            if not suspects:
+                lf.write(f"No RC suspects for {wildcards.config_id}; skipping BCL Convert RC run.\n")
+                return
+            lf.write(f"RC suspects: {[r['project'] for r in suspects]}\n")
+            tiles_args = ["--tiles", str(params.tiles)] if params.tiles else []
+            cmd = [
+                "dragen", "--bcl-conversion-only", "true",
+                "--bcl-input-directory", str(input.data_dir),
+                "--output-directory", str(output.output_dir),
+                "--force",
+                "--bcl-sampleproject-subdirectories", "true",
+                "--sample-sheet", str(input.rc_samplesheet),
+                "--strict-mode", "false",
+                "--bcl-only-lane", str(params.lane),
+                "--run-info", str(params.run_info_path),
+                "--bcl-num-parallel-tiles", "1",
+                "--bcl-num-conversion-threads", "8",
+                "--bcl-num-compression-threads", "8",
+                "--bcl-num-decompression-threads", "8",
+            ] + tiles_args
+            lf.write(f"Running: {' '.join(cmd)}\n")
+            lf.flush()
+            result = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, timeout=7200)
+            if result.returncode != 0:
+                raise RuntimeError(f"DRAGEN RC run failed for {wildcards.config_id}")
+
+rule pick_orientation:
+    """Compare first-pass and RC-pass Demultiplex_Stats for each suspect project
+    and write a JSON decision file mapping old Sample_Project name -> 'original' or 'rc'.
+    Non-suspect projects are omitted (callers default to 'original').
+    """
+    input:
+        done_orig = ancient(".output/{config_id}/.done"),
+        done_rc = ".output_rc/{config_id}/.done",
+        candidates = "logs/rc_candidates_{config_id}.json"
+    output:
+        decision = "logs/orientation_decision_{config_id}.json"
+    log:
+        "logs/pick_orientation_{config_id}.log"
+    wildcard_constraints:
+        config_id = "[^/]+"
+    run:
+        import json as json_mod, csv as csv_mod, os as os_mod
+
+        def read_project_counts(stats_csv):
+            counts = {}
+            if not os_mod.path.exists(stats_csv):
+                return counts
+            try:
+                with open(stats_csv) as f:
+                    reader = csv_mod.DictReader(f)
+                    for r in reader:
+                        proj = (r.get('SampleProject') or r.get('Sample_Project') or '').strip()
+                        reads_raw = r.get('# Reads') or r.get('Reads') or '0'
+                        try:
+                            reads = int(reads_raw)
+                        except ValueError:
+                            reads = 0
+                        if proj:
+                            counts[proj] = counts.get(proj, 0) + reads
+            except Exception as e:
+                with open(log[0], 'a') as lf:
+                    lf.write(f"Warning: could not parse {stats_csv}: {e}\n")
+            return counts
+
+        with open(input.candidates) as f:
+            suspects = json_mod.load(f)
+
+        decision = {}
+        with open(log[0], 'w') as lf:
+            if not suspects:
+                lf.write(f"No RC suspects for {wildcards.config_id}; all projects use original.\n")
+            else:
+                orig_stats = f".output/{wildcards.config_id}/Reports/Demultiplex_Stats.csv"
+                rc_stats = f".output_rc/{wildcards.config_id}/Reports/Demultiplex_Stats.csv"
+                orig_counts = read_project_counts(orig_stats)
+                rc_counts = read_project_counts(rc_stats)
+                lf.write(f"Original counts: {orig_counts}\n")
+                lf.write(f"RC counts: {rc_counts}\n")
+                for rec in suspects:
+                    project = rec['project']
+                    orig = orig_counts.get(project, 0)
+                    rc_val = rc_counts.get(project, 0)
+                    winner = "rc" if rc_val > orig else "original"
+                    decision[project] = winner
+                    lf.write(f"{project}: original={orig}, rc={rc_val} -> {winner}\n")
+
+        with open(output.decision, 'w') as f:
+            json_mod.dump(decision, f, indent=2)
 
 rule check_index_rc_swap:
     """Run the index reverse-complement/swap analysis script across generated

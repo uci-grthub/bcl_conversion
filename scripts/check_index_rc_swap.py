@@ -211,11 +211,18 @@ def main(argv):
                                 'total_hits': 0,
                                 'rc_hits': 0,
                                 'observed_sequences': Counter(),
+                                'rc_flag_votes': Counter(),
                             }
                         score = config_project_scores[key]
                         score['total_hits'] += cnt
                         if 'rc' in mtype:
                             score['rc_hits'] += cnt
+                            # Parse rc_flags from mtype string like "rc_flags=[True, False]"
+                            import re as _re
+                            _m = _re.search(r'rc_flags=\[([^\]]+)\]', mtype)
+                            if _m:
+                                _flags = tuple(p.strip() == 'True' for p in _m.group(1).split(','))
+                                score['rc_flag_votes'][_flags] += cnt
                         score['observed_sequences'][seq] += cnt
             else:
                 # also check if obs equals rc of any single expected component
@@ -247,6 +254,12 @@ def main(argv):
         if total and rc_votes / total >= args.rc_threshold and total >= args.min_total_count and rc_votes >= args.min_rc_count:
             suspect.append((exp, total, rc_votes))
 
+    _FLAGS_TO_FIX = {
+        (True, False): 'i7_rc',
+        (False, True): 'i5_rc',
+        (True, True): 'both_rc',
+    }
+
     project_suspects = []
     project_scores = []
     for (config_id, project, exp_pair), score in sorted(config_project_scores.items()):
@@ -257,6 +270,12 @@ def main(argv):
             {'sequence': s, 'count': c}
             for s, c in score['observed_sequences'].most_common(10)
         ]
+        # Determine dominant fix_type from rc_flag_votes
+        dominant_flags = score['rc_flag_votes'].most_common(1)
+        if dominant_flags:
+            fix_type = _FLAGS_TO_FIX.get(dominant_flags[0][0], 'unknown')
+        else:
+            fix_type = 'none'
         record = {
             'config_id': config_id,
             'project': project,
@@ -264,6 +283,7 @@ def main(argv):
             'total_hits': total_hits,
             'rc_hits': rc_hits,
             'rc_fraction': rc_fraction,
+            'fix_type': fix_type,
             'top_observed_sequences': top_obs,
         }
         project_scores.append(record)
@@ -317,7 +337,7 @@ def main(argv):
             for rec in project_suspects[:50]:
                 print(
                     f"  {rec['config_id']}  {rec['project']}  {rec['expected_pair']}  "
-                    f"rc={rec['rc_hits']}/{rec['total_hits']} ({rec['rc_fraction']:.2%})"
+                    f"rc={rec['rc_hits']}/{rec['total_hits']} ({rec['rc_fraction']:.2%})  fix={rec['fix_type']}"
                 )
         else:
             print('\nNo project-level suspects found with current thresholds.')
