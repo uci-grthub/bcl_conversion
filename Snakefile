@@ -1438,6 +1438,16 @@ rule bcl_project_done:
                 os.rmdir(new_dir)
             if not os.path.exists(new_dir):
                 shutil.move(src_dir, new_dir)
+            else:
+                # new_dir already exists and is non-empty (e.g. stale placeholder stubs).
+                # Move individual files from src_dir into new_dir, overwriting placeholders.
+                for _fname in os.listdir(src_dir):
+                    _src_f = os.path.join(src_dir, _fname)
+                    _dst_f = os.path.join(new_dir, _fname)
+                    if os.path.isfile(_src_f):
+                        if os.path.exists(_dst_f):
+                            os.remove(_dst_f)
+                        shutil.move(_src_f, _dst_f)
 
         os.makedirs(new_dir, exist_ok=True)
 
@@ -1795,6 +1805,9 @@ rule pick_orientation:
         # since bcl_convert_rc always demuxes the whole lane as a byproduct.
         import shutil as _shutil_rc
         rc_projects = {p for p, v in decision.items() if v.startswith("rc")}
+        # DRAGEN-generated lane-level directories — keep these so bcl_project_done can copy
+        # RC-corrected Demultiplex_Stats.csv and other reports to output/{config_id}/Reports/.
+        _DRAGEN_LANE_DIRS = {'Reports', 'Logs', 'Thumbnail_Images', 'InterOp'}
         rc_lane_dir = f".output_rc/{wildcards.config_id}"
         if os_mod.path.isdir(rc_lane_dir):
             with open(log[0], 'a') as lf:
@@ -1802,7 +1815,7 @@ rule pick_orientation:
                     if item.startswith('.'):
                         continue  # keep .done and other hidden markers
                     item_path = os_mod.path.join(rc_lane_dir, item)
-                    if os_mod.path.isdir(item_path) and item not in rc_projects:
+                    if os_mod.path.isdir(item_path) and item not in rc_projects and item not in _DRAGEN_LANE_DIRS:
                         lf.write(f"Removing unused RC project dir: {item_path}\n")
                         _shutil_rc.rmtree(item_path)
                     elif os_mod.path.isfile(item_path) and item.startswith('Undetermined') and item.endswith('.fastq.gz'):
