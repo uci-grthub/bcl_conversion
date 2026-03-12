@@ -498,7 +498,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
     # Produce a metadata validation workbook (highlighted copy + RECOMMENDED_CHANGES tab)
     # Only regenerate if metadata is newer than the existing report
     try:
-        out_xlsx = os.path.join('logs', f"metadata_validation_{os.path.basename(metadata_file)}.xlsx")
+        out_xlsx = os.path.join('metadata', f"metadata_validation_{os.path.basename(metadata_file)}.xlsx")
         if not os.path.exists(out_xlsx) or os.path.getmtime(metadata_file) > os.path.getmtime(out_xlsx):
             validate_metadata_and_write_report(metadata_file, out_xlsx=out_xlsx)
     except Exception as e:

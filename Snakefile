@@ -101,6 +101,7 @@ if os.path.exists(basecalls_path):
 # Metadata path from merged config (project-specific if exists, otherwise base config)
 metadata = config.get("metadata", "metadata/SampleSheet.xlsx")
 METADATA_FILE = config.get("metadata")  # From merged config
+VALIDATION_XLSX = f"metadata/metadata_validation_{os.path.basename(metadata)}.xlsx" if metadata else None
 LANE_CONFIGS = []
 PROJECT_LOOKUP = {}
 MASKING_LOOKUP = {}
@@ -347,6 +348,7 @@ rule all:
         f"Reports/{LIBRARY}_read_counts_email.done",
         expand("Reports/order_{order_id}/email_sent.done", order_id=ORDER_ID_CONFIGS.keys()),
         expand("logs/verify_project_link_{config_id}---{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
+        ([VALIDATION_XLSX] if VALIDATION_XLSX else []),
         # "logs/rsync_to_external_drive.done",
         # "results/check_index_rc_swap.txt"
     benchmark:
@@ -522,7 +524,7 @@ rule send_order_email:
 rule fastp_sample:
     input:
         done = lambda wildcards: (
-            lambda orig: f"output/{wildcards.config_id}/{PROJECT_RENAME_MAP.get((wildcards.config_id, orig), orig)}/.project_done"
+            lambda orig: f"output/{wildcards.config_id}/{PROJECT_RENAME_MAP.get((wildcards.config_id, orig), orig)}/.fastq_names_done"
         )(wildcards.sample_path.split('/')[0])
     output:
         json = "results/fastp/{config_id}/{sample_path}.json",
@@ -553,6 +555,76 @@ rule fastp_sample:
         fi
         ) > {log} 2>&1
         """
+
+rule normalize_project_fastq_names:
+    input:
+        done = "output/{config_id}/{project}/.project_done",
+        renaming_map = "results/renaming_map_{config_id}.csv"
+    output:
+        sentinel = touch("output/{config_id}/{project}/.fastq_names_done")
+    wildcard_constraints:
+        config_id = "[^/]+",
+        project = ".+"
+    run:
+        import os
+
+        config_id = wildcards.config_id
+        new_project = wildcards.project
+        old_project = PROJECT_RENAME_MAP_INV.get((config_id, new_project), new_project)
+        project_dir = os.path.abspath(f"output/{config_id}/{new_project}")
+
+        if not os.path.isdir(project_dir):
+            os.makedirs(project_dir, exist_ok=True)
+            return
+
+        check_name = old_project or new_project
+        lowered = check_name.lower()
+        if any(token in lowered for token in ["10x", "parse", "bd"]):
+            return
+
+        df = pd.read_csv(input.renaming_map)
+        project_rows = df[df["Sample_Project"].astype(str).str.strip() == old_project]
+
+        for idx, row in project_rows.iterrows():
+            sample_name = str(row.get("Sample_Name", "")).strip()
+            if not sample_name or sample_name.lower() == "nan":
+                continue
+
+            try:
+                lane = int(float(row.get("Lane", 0)))
+            except Exception:
+                lane = 0
+
+            try:
+                group = str(int(float(row.get("Group", 0))))
+            except Exception:
+                group = str(row.get("Group", "")).strip()
+            if not group or group.lower() == "nan":
+                group = "Undetermined"
+
+            run_name = str(row.get("Run", "")).strip()
+            index1 = str(row.get("index", "")).strip()
+            if index1.lower() == "nan":
+                index1 = ""
+            index2 = str(row.get("index2", "")).strip()
+            if index2.lower() == "nan":
+                index2 = ""
+            barcode = f"{index1}-{index2}" if index2 else index1
+            position = str(row.get("Position", f"P{idx + 1:03d}")).strip()
+            s_num = idx + 1
+            stem = f"{run_name}-L{lane}-G{group}-{position}-{barcode}"
+
+            for read_type in ["R1", "R2", "I1", "I2"]:
+                legacy_name = f"{sample_name}_S{s_num}_L{lane:03d}_{read_type}_001.fastq.gz"
+                canonical_name = f"{stem}-{read_type}.fastq.gz"
+                legacy_path = os.path.join(project_dir, legacy_name)
+                canonical_path = os.path.join(project_dir, canonical_name)
+
+                if os.path.exists(canonical_path):
+                    continue
+                if not os.path.exists(legacy_path):
+                    continue
+                os.rename(legacy_path, canonical_path)
 
 rule fastp_per_config:
     input:
@@ -1355,7 +1427,7 @@ rule bcl_project_done:
         except Exception:
             pass
 
-        src_base = ".output_rc" if orientation == "rc" else ".output"
+        src_base = ".output_rc" if orientation.startswith("rc") else ".output"
         src_dir = os.path.abspath(f"{src_base}/{config_id}/{old_project}")
         new_dir = os.path.abspath(f"output/{config_id}/{new_project}")
 
@@ -1370,8 +1442,19 @@ rule bcl_project_done:
         os.makedirs(new_dir, exist_ok=True)
 
         # Copy lane-level accessory files (Reports, Logs, dragen JSONs, etc.) to output.
+        # If any project on this lane selected RC orientation, prefer the RC lane-level
+        # reports so Demultiplex_Stats and related summaries reflect corrected counts.
         # Skip old Sample_Project subdirectories — those are moved by their own bcl_project_done.
-        staging = f".output/{config_id}"
+        accessory_base = ".output"
+        try:
+            if any(v.startswith("rc") for v in _dec.values()):
+                accessory_base = ".output_rc"
+        except Exception:
+            pass
+
+        staging = f"{accessory_base}/{config_id}"
+        if not os.path.isdir(staging):
+            staging = f".output/{config_id}"
         dest_base = f"output/{config_id}"
         os.makedirs(dest_base, exist_ok=True)
         old_project_dirs = {p for cid, p in _CONFIG_PROJECT_PAIRS_RAW if cid == config_id}
@@ -1383,7 +1466,11 @@ rule bcl_project_done:
             if os.path.isdir(src_item) and item in old_project_dirs:
                 continue  # handled by that project's bcl_project_done
             if os.path.isdir(src_item):
-                if not os.path.exists(dst_item):
+                if accessory_base == ".output_rc":
+                    # Force-overwrite so RC-corrected Demultiplex_Stats and summaries
+                    # replace any stale copy previously written from .output.
+                    shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
+                elif not os.path.exists(dst_item):
                     shutil.copytree(src_item, dst_item)
             elif not os.path.exists(dst_item):
                 shutil.copy2(src_item, dst_item)
@@ -1405,7 +1492,7 @@ rule bcl_project_done:
 
 rule calculate_md5sums:
     input:
-        done = "output/{config_id}/{project}/.project_done"
+        done = "output/{config_id}/{project}/.fastq_names_done"
     output:
         md5 = "output/{config_id}/{project}/md5sums.txt"
     log:
@@ -1566,6 +1653,7 @@ rule bcl_convert_rc:
     """
     input:
         rc_samplesheet = "results/SampleSheet_{config_id}_rc.csv",
+        renaming_map = "results/renaming_map_{config_id}.csv",
         candidates = "logs/rc_candidates_{config_id}.json",
         data_dir = DATA_DIR,
         run_info = "src/RunInfo_nn.xml",
@@ -1619,6 +1707,19 @@ rule bcl_convert_rc:
             if result.returncode != 0:
                 raise RuntimeError(f"DRAGEN RC run failed for {wildcards.config_id}")
 
+            # Keep RC output naming consistent with the primary bcl_convert output.
+            rename_cmd = [
+                "bash", "src/run_rename.sh",
+                wildcards.config_id,
+                str(output.output_dir),
+                str(input.renaming_map),
+            ]
+            lf.write(f"Running: {' '.join(rename_cmd)}\n")
+            lf.flush()
+            rename_result = subprocess.run(rename_cmd, stdout=lf, stderr=subprocess.STDOUT)
+            if rename_result.returncode != 0:
+                raise RuntimeError(f"RC FASTQ rename failed for {wildcards.config_id}")
+
 rule pick_orientation:
     """Compare first-pass and RC-pass Demultiplex_Stats for each suspect project
     and write a JSON decision file mapping old Sample_Project name -> 'original' or 'rc'.
@@ -1661,6 +1762,13 @@ rule pick_orientation:
         with open(input.candidates) as f:
             suspects = json_mod.load(f)
 
+        # Build fix_type lookup: project -> label (rc_i7 / rc_i5 / rc_both)
+        fix_type_map = {}
+        for rec in suspects:
+            ft = rec.get('fix_type', 'i7_rc')
+            # i7_rc -> rc_i7, i5_rc -> rc_i5, both_rc -> rc_both
+            fix_type_map[rec['project']] = "rc_" + ft.replace('_rc', '')
+
         decision = {}
         with open(log[0], 'w') as lf:
             if not suspects:
@@ -1676,12 +1784,53 @@ rule pick_orientation:
                     project = rec['project']
                     orig = orig_counts.get(project, 0)
                     rc_val = rc_counts.get(project, 0)
-                    winner = "rc" if rc_val > orig else "original"
+                    winner = fix_type_map.get(project, "rc_i7") if rc_val > orig else "original"
                     decision[project] = winner
                     lf.write(f"{project}: original={orig}, rc={rc_val} -> {winner}\n")
 
         with open(output.decision, 'w') as f:
             json_mod.dump(decision, f, indent=2)
+
+        # Remove .output_rc project directories for projects that don't need RC,
+        # since bcl_convert_rc always demuxes the whole lane as a byproduct.
+        import shutil as _shutil_rc
+        rc_projects = {p for p, v in decision.items() if v.startswith("rc")}
+        rc_lane_dir = f".output_rc/{wildcards.config_id}"
+        if os_mod.path.isdir(rc_lane_dir):
+            with open(log[0], 'a') as lf:
+                for item in os_mod.listdir(rc_lane_dir):
+                    if item.startswith('.'):
+                        continue  # keep .done and other hidden markers
+                    item_path = os_mod.path.join(rc_lane_dir, item)
+                    if os_mod.path.isdir(item_path) and item not in rc_projects:
+                        lf.write(f"Removing unused RC project dir: {item_path}\n")
+                        _shutil_rc.rmtree(item_path)
+                    elif os_mod.path.isfile(item_path) and item.startswith('Undetermined') and item.endswith('.fastq.gz'):
+                        lf.write(f"Removing RC undetermined reads: {item_path}\n")
+                        os_mod.remove(item_path)
+
+        # Remove Undetermined*.fastq.gz from .output as well — never used downstream.
+        orig_lane_dir = f".output/{wildcards.config_id}"
+        if os_mod.path.isdir(orig_lane_dir):
+            with open(log[0], 'a') as lf:
+                for item in os_mod.listdir(orig_lane_dir):
+                    if item.startswith('Undetermined') and item.endswith('.fastq.gz'):
+                        item_path = os_mod.path.join(orig_lane_dir, item)
+                        if os_mod.path.isfile(item_path):
+                            lf.write(f"Removing original undetermined reads: {item_path}\n")
+                            os_mod.remove(item_path)
+
+rule update_validation_workbook:
+    """Regenerate the metadata validation workbook after all orientation decisions
+    are known, so the RC_ORIENTATION sheet reflects which projects ran through RC.
+    """
+    input:
+        decisions = expand("logs/orientation_decision_{config_id}.json", config_id=CONFIG_IDS),
+        metadata = ancient(metadata)
+    output:
+        xlsx = VALIDATION_XLSX
+    run:
+        validate_metadata_and_write_report(str(input.metadata), out_xlsx=output.xlsx)
 
 rule check_index_rc_swap:
     """Run the index reverse-complement/swap analysis script across generated

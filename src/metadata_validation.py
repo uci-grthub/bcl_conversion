@@ -42,8 +42,8 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
 
     if not metadata_file or not os.path.exists(metadata_file):
         issues.append({'sheet': '', 'row': '', 'col': '', 'message': f'Metadata file not found: {metadata_file}'})
-        os.makedirs('logs', exist_ok=True)
-        with open('logs/metadata_validation.txt', 'w') as tf:
+        os.makedirs('metadata', exist_ok=True)
+        with open('metadata/metadata_validation.txt', 'w') as tf:
             for it in issues:
                 tf.write(f"{it['sheet']}: {it['row']} {it['col']} - {it['message']}\n")
         return
@@ -52,8 +52,8 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
         xlf = pd.ExcelFile(metadata_file)
     except Exception as e:
         issues.append({'sheet': '', 'row': '', 'col': '', 'message': f'Could not open Excel: {e}'})
-        os.makedirs('logs', exist_ok=True)
-        with open('logs/metadata_validation.txt', 'w') as tf:
+        os.makedirs('metadata', exist_ok=True)
+        with open('metadata/metadata_validation.txt', 'w') as tf:
             for it in issues:
                 tf.write(f"{it['sheet']}: {it['row']} {it['col']} - {it['message']}\n")
         return
@@ -288,20 +288,30 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                 group_col = 'group'
 
             i7_col = None
-            if 'index' in df.columns:
-                i7_col = 'index'
-            elif 'i7 Barcode Sequence' in df.columns:
+            i7_authoritative = False
+            if 'i7 Barcode Sequence' in df.columns:
                 i7_col = 'i7 Barcode Sequence'
+                i7_authoritative = True
+            elif 'index' in df.columns:
+                i7_col = 'index'
             elif 'Index' in df.columns and _is_sequence_series(df['Index']):
                 i7_col = 'Index'
 
             i5_col = None
-            if 'index2' in df.columns:
-                i5_col = 'index2'
-            elif 'i5 Barcode Sequence' in df.columns:
+            i5_authoritative = False
+            if 'i5 Barcode Sequence' in df.columns:
                 i5_col = 'i5 Barcode Sequence'
+                i5_authoritative = True
+            elif 'index2' in df.columns:
+                i5_col = 'index2'
             elif 'Index2' in df.columns and _is_sequence_series(df['Index2']):
                 i5_col = 'Index2'
+
+            # A sheet is authoritative if it uses dedicated named barcode columns.
+            # Authoritative sheets always overwrite; non-authoritative sheets only
+            # fill in entries that haven't been set yet, preventing later generic
+            # sheets from clobbering lengths established by the Barcode List.
+            is_authoritative = i7_authoritative or i5_authoritative
 
             def _seq_len(series):
                 vals = [str(v).strip() for v in series if not pd.isna(v)]
@@ -317,6 +327,8 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                     group_key = _norm_key(group_val)
                     if lane_key is None or group_key is None:
                         continue
+                    if not is_authoritative and (lane_key, group_key) in barcode_len_by_lane_group:
+                        continue  # don't overwrite authoritative Barcode List data
                     i7_len = _seq_len(sub[i7_col]) if i7_col else 0
                     i5_len = _seq_len(sub[i5_col]) if i5_col else 0
                     barcode_len_by_lane_group[(lane_key, group_key)] = {
@@ -578,13 +590,13 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                     })
 
     # Write validation workbook if possible
-    os.makedirs('logs', exist_ok=True)
+    os.makedirs('metadata', exist_ok=True)
     if out_xlsx is None:
-        out_xlsx = os.path.join('logs', f"metadata_validation_{os.path.basename(metadata_file)}.xlsx")
+        out_xlsx = os.path.join('metadata', f"metadata_validation_{os.path.basename(metadata_file)}.xlsx")
 
     if openpyxl is None:
         # fallback: dump issues to text file
-        with open('logs/metadata_validation.txt', 'w') as tf:
+        with open('metadata/metadata_validation.txt', 'w') as tf:
             for it in issues:
                 tf.write(f"{it['sheet']}: row={it['row']} col={it['col']} - {it['message']}\n")
         return
@@ -639,10 +651,59 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                 issues_df = pd.DataFrame([{'sheet': 'OK', 'row': '', 'col': '', 'message': 'No issues detected'}])
             issues_df.to_excel(writer, sheet_name='RECOMMENDED_CHANGES', index=False)
 
+            # Write RC_ORIENTATION sheet from orientation_decision JSON files
+            import json as _json
+            import glob as _glob
+
+            # Build project -> group lookup from loaded metadata sheets
+            _proj_to_group = {}
+            for _sname, _sdf in sheet_dfs.items():
+                _proj_col = next((c for c in ('Sample_Project', 'Project', 'project') if c in _sdf.columns), None)
+                _grp_col = next((c for c in ('Group', 'Gr', 'group') if c in _sdf.columns), None)
+                if _proj_col and _grp_col:
+                    for _, _row in _sdf.iterrows():
+                        try:
+                            _p = str(_row[_proj_col]).strip()
+                            _g = str(_row[_grp_col]).strip()
+                            if _p and _p.lower() not in ('nan', 'none', ''):
+                                _proj_to_group[_p] = _g
+                        except Exception:
+                            pass
+
+            rc_rows = []
+            try:
+                for dec_file in sorted(_glob.glob('logs/orientation_decision_*.json')):
+                    config_id = os.path.basename(dec_file).replace('orientation_decision_', '').replace('.json', '')
+                    with open(dec_file) as _df:
+                        dec = _json.load(_df)
+                    for project, orientation in dec.items():
+                        group = _proj_to_group.get(project, '')
+                        rc_rows.append({'config_id': config_id, 'project': project, 'group': group, 'orientation': orientation})
+            except Exception:
+                pass
+            if rc_rows:
+                rc_df = pd.DataFrame(rc_rows, columns=['config_id', 'project', 'group', 'orientation'])
+            else:
+                rc_df = pd.DataFrame([{'config_id': '', 'project': '', 'group': '', 'orientation': 'No RC decisions found'}])
+            rc_df.to_excel(writer, sheet_name='RC_ORIENTATION', index=False)
+
         # Apply highlighting
         wb = openpyxl.load_workbook(out_xlsx)
         red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
+        orange_fill = PatternFill(start_color='FFD966', end_color='FFD966', fill_type='solid')
         bold = Font(bold=True)
+
+        # Highlight RC rows in RC_ORIENTATION sheet
+        if 'RC_ORIENTATION' in wb.sheetnames:
+            ws_rc = wb['RC_ORIENTATION']
+            for row in ws_rc.iter_rows(min_row=2):
+                orient_cell = next((c for c in row if ws_rc.cell(1, c.column).value == 'orientation'), None)
+                if orient_cell and orient_cell.value and orient_cell.value.startswith('rc'):
+                    for c in row:
+                        try:
+                            c.fill = orange_fill
+                        except Exception:
+                            pass
 
         # Group issues by sheet and highlight entire row where issue occurred
         for it in issues:
@@ -681,7 +742,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
         wb.save(out_xlsx)
     except Exception as e:
         # final fallback: write issues to text file
-        with open('logs/metadata_validation.txt', 'w') as tf:
+        with open('metadata/metadata_validation.txt', 'w') as tf:
             tf.write(f'Error writing validation workbook: {e}\n')
             for it in issues:
                 tf.write(f"{it['sheet']}: row={it['row']} col={it['col']} - {it['message']}\n")

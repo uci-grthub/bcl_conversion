@@ -112,47 +112,49 @@ def parse_undetermined(path):
 
 
 def classify_observed(obs_seq, expected_set):
-    """Return list of match types and matched expected pairs for obs_seq."""
+    """Return list of match types and matched expected pairs for obs_seq.
+
+    Observed barcodes may be longer than expected when OverrideCycles uses
+    an IxNy mask (e.g. I8N2 reads 10 bases but only 8 are the barcode).
+    Each observed part is truncated to the expected barcode length before
+    comparison so that the extra N-mask bases don't prevent detection.
+    """
     results = []
     # observed may be like AAA+BBB or single AAA
     parts = obs_seq.split('+')
     # compare against every expected pair
     for exp in expected_set:
         exp_parts = exp.split('+')
+        if len(parts) != len(exp_parts):
+            continue
+        # Trim observed parts to expected length (extra bases from N-mask extension)
+        trimmed = [p[:len(e)] for p, e in zip(parts, exp_parts)]
         # exact
-        if parts == exp_parts:
+        if trimmed == exp_parts:
             results.append(('exact', exp))
             continue
-        # rc on first
-        if len(parts) == len(exp_parts):
-            match = True
-            for i, p in enumerate(parts):
-                if p == exp_parts[i]:
-                    continue
-                # check rc
-                if p == rc(exp_parts[i]):
-                    match = True
-                else:
-                    match = False
-                    break
-            if match:
-                # Determine which positions are rc
-                rc_flags = [p != exp_parts[i] for i, p in enumerate(parts)]
-                results.append((f"rc_flags={rc_flags}", exp))
-                continue
+        # rc / mixed
+        match = True
+        for tp, ep in zip(trimmed, exp_parts):
+            if tp != ep and tp != rc(ep):
+                match = False
+                break
+        if match:
+            rc_flags = [tp != ep for tp, ep in zip(trimmed, exp_parts)]
+            results.append((f"rc_flags={rc_flags}", exp))
+            continue
         # swapped order
-        if len(parts) == 2 and len(exp_parts) == 2:
-            if parts == [exp_parts[1], exp_parts[0]]:
+        if len(trimmed) == 2:
+            if trimmed == [exp_parts[1], exp_parts[0]]:
                 results.append(('swapped', exp))
                 continue
-            # swapped with rc possibilities
-            if parts == [rc(exp_parts[1]), rc(exp_parts[0])]:
+            if trimmed == [rc(exp_parts[1]), rc(exp_parts[0])]:
                 results.append(('swapped_rc_both', exp))
                 continue
-            if parts == [rc(exp_parts[1]), exp_parts[0]]:
+            if trimmed == [rc(exp_parts[1]), exp_parts[0]]:
                 results.append(('swapped_rc_first', exp))
                 continue
-            if parts == [exp_parts[1], rc(exp_parts[0])]:
+            if trimmed == [exp_parts[1], rc(exp_parts[0])]:
                 results.append(('swapped_rc_second', exp))
                 continue
     return results
