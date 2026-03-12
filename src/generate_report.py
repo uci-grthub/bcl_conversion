@@ -489,7 +489,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                     with open(demux_csv, 'r') as _f:
                         for _row in _csv.DictReader(_f):
                             _proj = _row.get('Sample_Project', '').strip()
-                            _idx = _row.get('Index', '').strip()
+                            _idx = _row.get('Index', '').strip().rstrip('-')
                             _reads = _row.get('# Reads', '').strip()
                             if _proj and _idx and _reads:
                                 try:
@@ -589,9 +589,12 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                 else:
                     barcode = "Unknown"
 
-            # Override paired_reads with demux stats count if available (more accurate than fastp subsampled count)
+            # Override paired_reads with demux stats count if available and non-zero
+            # (more accurate than fastp subsampled count). Skip the override when demux
+            # stats show 0 — this can happen when the original-orientation demux CSV is
+            # present but the project used RC orientation, yielding 0 in the wrong-pass stats.
             demux_reads = demux_stats_cache.get(config_id, {}).get((fastp_lookup_name, barcode))
-            if demux_reads is not None:
+            if demux_reads is not None and demux_reads > 0:
                 paired_reads = demux_reads
 
             # File paths: check if 10x/Parse/BD project (uses Illumina naming) or default (uses stem naming)

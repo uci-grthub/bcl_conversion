@@ -496,10 +496,18 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
     run_name = library_name
 
     # Produce a metadata validation workbook (highlighted copy + RECOMMENDED_CHANGES tab)
-    # Only regenerate if metadata is newer than the existing report
+    # Regenerate if: xlsx missing, metadata newer, or any orientation_decision file is newer
+    # (the RC_ORIENTATION sheet needs decision files that may not exist on first pass).
     try:
-        out_xlsx = os.path.join('metadata', f"metadata_validation_{os.path.basename(metadata_file)}.xlsx")
-        if not os.path.exists(out_xlsx) or os.path.getmtime(metadata_file) > os.path.getmtime(out_xlsx):
+        _base = os.path.splitext(os.path.basename(metadata_file))[0]
+        out_xlsx = os.path.join('metadata', f"metadata_validation_{_base}.xlsx")
+        _dec_files = glob.glob('logs/orientation_decision_*.json')
+        _needs_regen = (
+            not os.path.exists(out_xlsx)
+            or os.path.getmtime(metadata_file) > os.path.getmtime(out_xlsx)
+            or any(os.path.getmtime(d) > os.path.getmtime(out_xlsx) for d in _dec_files)
+        )
+        if _needs_regen:
             validate_metadata_and_write_report(metadata_file, out_xlsx=out_xlsx)
     except Exception as e:
         print(f"Warning: metadata validation report generation failed: {e}")

@@ -670,6 +670,19 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                         except Exception:
                             pass
 
+            # Supplement lookup from renaming_map CSVs (have Sample_Project + Group columns)
+            import csv as _csv
+            for _rmap in sorted(_glob.glob('results/renaming_map_*.csv')):
+                try:
+                    with open(_rmap, newline='') as _f:
+                        for _row in _csv.DictReader(_f):
+                            _p = _row.get('Sample_Project', '').strip()
+                            _g = _row.get('Group', '').strip()
+                            if _p and _p.lower() not in ('nan', 'none', ''):
+                                _proj_to_group[_p] = _g
+                except Exception:
+                    pass
+
             rc_rows = []
             try:
                 for dec_file in sorted(_glob.glob('logs/orientation_decision_*.json')):
@@ -678,13 +691,13 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                         dec = _json.load(_df)
                     for project, orientation in dec.items():
                         group = _proj_to_group.get(project, '')
-                        rc_rows.append({'config_id': config_id, 'project': project, 'group': group, 'orientation': orientation})
+                        rc_rows.append({'config_id': config_id, 'group': group, 'project': project, 'orientation': orientation})
             except Exception:
                 pass
             if rc_rows:
-                rc_df = pd.DataFrame(rc_rows, columns=['config_id', 'project', 'group', 'orientation'])
+                rc_df = pd.DataFrame(rc_rows, columns=['config_id', 'group', 'project', 'orientation'])
             else:
-                rc_df = pd.DataFrame([{'config_id': '', 'project': '', 'group': '', 'orientation': 'No RC decisions found'}])
+                rc_df = pd.DataFrame([{'config_id': '', 'group': '', 'project': '', 'orientation': 'No RC decisions found'}])
             rc_df.to_excel(writer, sheet_name='RC_ORIENTATION', index=False)
 
         # Apply highlighting
