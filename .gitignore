@@ -25,3 +25,4 @@ Reports/*
 regenerate_and_email_0226I-12_17.sh
 .claude/worktrees
 .output/
+.output_rc/

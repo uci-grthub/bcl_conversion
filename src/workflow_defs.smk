@@ -498,7 +498,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
     # Produce a metadata validation workbook (highlighted copy + RECOMMENDED_CHANGES tab)
     # Only regenerate if metadata is newer than the existing report
     try:
-        out_xlsx = os.path.join('logs', f"metadata_validation_{os.path.basename(metadata_file)}.xlsx")
+        out_xlsx = os.path.join('metadata', f"metadata_validation_{os.path.basename(metadata_file)}.xlsx")
         if not os.path.exists(out_xlsx) or os.path.getmtime(metadata_file) > os.path.getmtime(out_xlsx):
             validate_metadata_and_write_report(metadata_file, out_xlsx=out_xlsx)
     except Exception as e:
@@ -1201,8 +1201,10 @@ def get_project_plot_targets(project, lane_filter=None, order_id=None):
             try:
                 df = pd.read_csv(map_path)
                 df['Sample_Project'] = df['Sample_Project'].astype(str)
-                project_samples = df[df['Sample_Project'] == project]
-                
+                # Resolve renamed project name -> original name for CSV lookup
+                orig_project = PROJECT_RENAME_MAP_INV.get((config_id, project), project)
+                project_samples = df[df['Sample_Project'] == orig_project]
+
                 for idx, row in project_samples.iterrows():
                     try:
                         lane_val = int(float(row.get('Lane', 0)))
@@ -1240,14 +1242,14 @@ def get_project_plot_targets(project, lane_filter=None, order_id=None):
                     barcode = f"{index1}-{index2}" if index2 else index1
                     position = str(row.get('Position', f"P{idx+1:03d}")).strip()
                     
-                    if is_parse_or_10x(project):
+                    if is_parse_or_10x(orig_project):
                         if not sample_name or sample_name.lower() == 'nan':
                             continue
-                        path = f"{project}/{sample_name}"
+                        path = f"{orig_project}/{sample_name}"
                     else:
                         stem = f"{run}-L{lane_val}-G{group}-{position}-{barcode}"
-                        path = f"{project}/{stem}"
-                    
+                        path = f"{orig_project}/{stem}"
+
                     targets.append(f"results/fastp_plots/{config_id}/{path}-mean_phred.png")
                     targets.append(f"results/fastp_plots/{config_id}/{path}-base_comp.png")
             except Exception as e:

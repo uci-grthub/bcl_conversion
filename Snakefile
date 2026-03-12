@@ -101,6 +101,7 @@ if os.path.exists(basecalls_path):
 # Metadata path from merged config (project-specific if exists, otherwise base config)
 metadata = config.get("metadata", "metadata/SampleSheet.xlsx")
 METADATA_FILE = config.get("metadata")  # From merged config
+VALIDATION_XLSX = f"metadata/metadata_validation_{os.path.basename(metadata)}.xlsx" if metadata else None
 LANE_CONFIGS = []
 PROJECT_LOOKUP = {}
 MASKING_LOOKUP = {}
@@ -347,6 +348,7 @@ rule all:
         f"Reports/{LIBRARY}_read_counts_email.done",
         expand("Reports/order_{order_id}/email_sent.done", order_id=ORDER_ID_CONFIGS.keys()),
         expand("logs/verify_project_link_{config_id}---{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
+        ([VALIDATION_XLSX] if VALIDATION_XLSX else []),
         # "logs/rsync_to_external_drive.done",
         # "results/check_index_rc_swap.txt"
     benchmark:
@@ -439,6 +441,13 @@ rule report_order_id:
 
         # Generate report for each project in this order_id
         for project in projects:
+            # Resolve original (pre-rename) project name for fastp file lookups
+            orig_project = next(
+                (p for cid, p in _CONFIG_PROJECT_PAIRS_RAW
+                 if PROJECT_RENAME_MAP.get((cid, p), p) == project),
+                project
+            )
+
             # Get fastq links for this project in this order_id
             fastq_links = get_project_links_from_yaml(merged_yaml_path, project, lane=None, order_id=order_id)
 
@@ -456,7 +465,8 @@ rule report_order_id:
                 order_id,
                 LIBRARY,  # library_name
                 str(config.get('plots_total_width', 900)),
-                str(config.get('plots_quality', 35))
+                str(config.get('plots_quality', 35)),
+                orig_project,  # orig_project_name for fastp lookups
             ]
             
             result = subprocess.run(cmd, capture_output=True, text=True)
@@ -513,7 +523,9 @@ rule send_order_email:
 
 rule fastp_sample:
     input:
-        done = lambda wildcards: f"output/{wildcards.config_id}/{wildcards.sample_path.split('/')[0]}/.project_done"
+        done = lambda wildcards: (
+            lambda orig: f"output/{wildcards.config_id}/{PROJECT_RENAME_MAP.get((wildcards.config_id, orig), orig)}/.fastq_names_done"
+        )(wildcards.sample_path.split('/')[0])
     output:
         json = "results/fastp/{config_id}/{sample_path}.json",
         html = "results/fastp/{config_id}/{sample_path}.html"
@@ -543,6 +555,76 @@ rule fastp_sample:
         fi
         ) > {log} 2>&1
         """
+
+rule normalize_project_fastq_names:
+    input:
+        done = "output/{config_id}/{project}/.project_done",
+        renaming_map = "results/renaming_map_{config_id}.csv"
+    output:
+        sentinel = touch("output/{config_id}/{project}/.fastq_names_done")
+    wildcard_constraints:
+        config_id = "[^/]+",
+        project = ".+"
+    run:
+        import os
+
+        config_id = wildcards.config_id
+        new_project = wildcards.project
+        old_project = PROJECT_RENAME_MAP_INV.get((config_id, new_project), new_project)
+        project_dir = os.path.abspath(f"output/{config_id}/{new_project}")
+
+        if not os.path.isdir(project_dir):
+            os.makedirs(project_dir, exist_ok=True)
+            return
+
+        check_name = old_project or new_project
+        lowered = check_name.lower()
+        if any(token in lowered for token in ["10x", "parse", "bd"]):
+            return
+
+        df = pd.read_csv(input.renaming_map)
+        project_rows = df[df["Sample_Project"].astype(str).str.strip() == old_project]
+
+        for idx, row in project_rows.iterrows():
+            sample_name = str(row.get("Sample_Name", "")).strip()
+            if not sample_name or sample_name.lower() == "nan":
+                continue
+
+            try:
+                lane = int(float(row.get("Lane", 0)))
+            except Exception:
+                lane = 0
+
+            try:
+                group = str(int(float(row.get("Group", 0))))
+            except Exception:
+                group = str(row.get("Group", "")).strip()
+            if not group or group.lower() == "nan":
+                group = "Undetermined"
+
+            run_name = str(row.get("Run", "")).strip()
+            index1 = str(row.get("index", "")).strip()
+            if index1.lower() == "nan":
+                index1 = ""
+            index2 = str(row.get("index2", "")).strip()
+            if index2.lower() == "nan":
+                index2 = ""
+            barcode = f"{index1}-{index2}" if index2 else index1
+            position = str(row.get("Position", f"P{idx + 1:03d}")).strip()
+            s_num = idx + 1
+            stem = f"{run_name}-L{lane}-G{group}-{position}-{barcode}"
+
+            for read_type in ["R1", "R2", "I1", "I2"]:
+                legacy_name = f"{sample_name}_S{s_num}_L{lane:03d}_{read_type}_001.fastq.gz"
+                canonical_name = f"{stem}-{read_type}.fastq.gz"
+                legacy_path = os.path.join(project_dir, legacy_name)
+                canonical_path = os.path.join(project_dir, canonical_name)
+
+                if os.path.exists(canonical_path):
+                    continue
+                if not os.path.exists(legacy_path):
+                    continue
+                os.rename(legacy_path, canonical_path)
 
 rule fastp_per_config:
     input:
@@ -815,7 +897,8 @@ rule compile_read_counts:
 
 rule send_read_counts_email:
     input:
-        csv = f"results/{LIBRARY}-count.csv"
+        csv = f"results/{LIBRARY}-count.csv",
+        order_reports = ORDER_ID_REPORTS
     output:
         touch(f"Reports/{LIBRARY}_read_counts_email.done")
     log:
@@ -1315,20 +1398,37 @@ rule bcl_project_done:
     output directory from the old Sample_Project name to the new
     {LabID}_{OrderID}_{library}_L{lane}_G{group} name, then creates a
     symlink from old name -> new directory for downstream compatibility.
+
+    If an orientation_decision file exists for this config_id (written by
+    pick_orientation after comparing first-pass vs RC-pass demux stats), reads
+    it to determine whether to source FASTQs from .output (original) or
+    .output_rc (reverse-complement) for this project.
     """
     input:
-        done = ancient(".output/{config_id}/.done")
+        done = ancient(".output/{config_id}/.done"),
+        decision = "logs/orientation_decision_{config_id}.json"
     output:
         sentinel = touch("output/{config_id}/{project}/.project_done")
     wildcard_constraints:
         config_id = "[^/]+",
         project = "[^/]+"
     run:
-        import os, glob, shutil
+        import os, glob, shutil, json as json_mod
         config_id = wildcards.config_id
         new_project = wildcards.project
         old_project = PROJECT_RENAME_MAP_INV.get((config_id, new_project), new_project)
-        src_dir = os.path.abspath(f".output/{config_id}/{old_project}")
+
+        # Determine which orientation won for this project
+        orientation = "original"
+        try:
+            with open(input.decision) as _df:
+                _dec = json_mod.load(_df)
+            orientation = _dec.get(old_project, _dec.get(new_project, "original"))
+        except Exception:
+            pass
+
+        src_base = ".output_rc" if orientation.startswith("rc") else ".output"
+        src_dir = os.path.abspath(f"{src_base}/{config_id}/{old_project}")
         new_dir = os.path.abspath(f"output/{config_id}/{new_project}")
 
         # Move project FASTQs from staging dir to final output dir.
@@ -1342,8 +1442,19 @@ rule bcl_project_done:
         os.makedirs(new_dir, exist_ok=True)
 
         # Copy lane-level accessory files (Reports, Logs, dragen JSONs, etc.) to output.
+        # If any project on this lane selected RC orientation, prefer the RC lane-level
+        # reports so Demultiplex_Stats and related summaries reflect corrected counts.
         # Skip old Sample_Project subdirectories — those are moved by their own bcl_project_done.
-        staging = f".output/{config_id}"
+        accessory_base = ".output"
+        try:
+            if any(v.startswith("rc") for v in _dec.values()):
+                accessory_base = ".output_rc"
+        except Exception:
+            pass
+
+        staging = f"{accessory_base}/{config_id}"
+        if not os.path.isdir(staging):
+            staging = f".output/{config_id}"
         dest_base = f"output/{config_id}"
         os.makedirs(dest_base, exist_ok=True)
         old_project_dirs = {p for cid, p in _CONFIG_PROJECT_PAIRS_RAW if cid == config_id}
@@ -1355,7 +1466,11 @@ rule bcl_project_done:
             if os.path.isdir(src_item) and item in old_project_dirs:
                 continue  # handled by that project's bcl_project_done
             if os.path.isdir(src_item):
-                if not os.path.exists(dst_item):
+                if accessory_base == ".output_rc":
+                    # Force-overwrite so RC-corrected Demultiplex_Stats and summaries
+                    # replace any stale copy previously written from .output.
+                    shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
+                elif not os.path.exists(dst_item):
                     shutil.copytree(src_item, dst_item)
             elif not os.path.exists(dst_item):
                 shutil.copy2(src_item, dst_item)
@@ -1377,7 +1492,7 @@ rule bcl_project_done:
 
 rule calculate_md5sums:
     input:
-        done = "output/{config_id}/{project}/.project_done"
+        done = "output/{config_id}/{project}/.fastq_names_done"
     output:
         md5 = "output/{config_id}/{project}/md5sums.txt"
     log:
@@ -1452,6 +1567,271 @@ rule analyze_undetermined:
 
             logf.write(f"Converted {len(rows)} barcodes from {params.barcodes}\n")
 
+rule detect_rc_candidates:
+    """Detect projects with likely i7 reverse-complement orientation issues
+    for a single config_id by comparing undetermined barcodes to expected indexes.
+    Produces a JSON list of suspect project records (may be empty).
+    """
+    input:
+        undetermined = "results/undetermined_indices/{config_id}.csv",
+        samplesheet = "results/SampleSheet_{config_id}.csv"
+    output:
+        candidates = "logs/rc_candidates_{config_id}.json"
+    log:
+        "logs/detect_rc_candidates_{config_id}.log"
+    wildcard_constraints:
+        config_id = "[^/]+"
+    params:
+        rc_threshold = config.get("rc_rerun_threshold", 0.5),
+        min_total_count = config.get("rc_rerun_min_total_count", 1000),
+        min_rc_count = config.get("rc_rerun_min_rc_count", 1000),
+    run:
+        import json as json_mod
+        import subprocess
+        import sys as sys_mod
+        result = subprocess.run(
+            [
+                sys_mod.executable, "scripts/check_index_rc_swap.py",
+                "--samples", input.samplesheet,
+                "--undetermined", input.undetermined,
+                "--format", "json",
+                "--rc-threshold", str(params.rc_threshold),
+                "--min-total-count", str(params.min_total_count),
+                "--min-rc-count", str(params.min_rc_count),
+            ],
+            capture_output=True, text=True
+        )
+        with open(log[0], 'w') as lf:
+            lf.write(result.stderr)
+        if result.returncode != 0:
+            raise RuntimeError(f"check_index_rc_swap.py failed:\n{result.stderr}")
+        payload = json_mod.loads(result.stdout)
+        # config_id in the JSON comes from infer_config_id_from_samplesheet,
+        # which strips the SampleSheet_ prefix, so it matches wildcards.config_id.
+        suspects = [
+            r for r in payload.get('project_suspects', [])
+            if r.get('config_id') == wildcards.config_id
+        ]
+        with open(output.candidates, 'w') as f:
+            json_mod.dump(suspects, f, indent=2)
+        print(f"RC candidates for {wildcards.config_id}: {[r['project'] for r in suspects]}")
+
+rule generate_rc_samplesheet:
+    """Generate a SampleSheet with i7 reverse-complemented for RC suspect projects.
+    If no suspects, copies the original SampleSheet unchanged.
+    """
+    input:
+        samplesheet = "results/SampleSheet_{config_id}.csv",
+        candidates = "logs/rc_candidates_{config_id}.json"
+    output:
+        rc_samplesheet = "results/SampleSheet_{config_id}_rc.csv"
+    log:
+        "logs/generate_rc_samplesheet_{config_id}.log"
+    wildcard_constraints:
+        config_id = "[^/]+"
+    run:
+        import subprocess, sys as sys_mod
+        result = subprocess.run(
+            [
+                sys_mod.executable, "src/apply_rc_to_samplesheet.py",
+                "--samplesheet", input.samplesheet,
+                "--candidates", input.candidates,
+                "--output", output.rc_samplesheet,
+            ],
+            capture_output=True, text=True
+        )
+        with open(log[0], 'w') as lf:
+            lf.write(result.stdout)
+            lf.write(result.stderr)
+        if result.returncode != 0:
+            raise RuntimeError(f"apply_rc_to_samplesheet.py failed:\n{result.stderr}")
+
+rule bcl_convert_rc:
+    """Run BCL Convert with an i7-RC SampleSheet for config_ids where RC suspect
+    projects were detected. If no suspects exist, creates an empty marker
+    directory without running BCL Convert.
+    """
+    input:
+        rc_samplesheet = "results/SampleSheet_{config_id}_rc.csv",
+        renaming_map = "results/renaming_map_{config_id}.csv",
+        candidates = "logs/rc_candidates_{config_id}.json",
+        data_dir = DATA_DIR,
+        run_info = "src/RunInfo_nn.xml",
+        orig_done = ".output/{config_id}/.done"
+    output:
+        output_dir = directory(".output_rc/{config_id}"),
+        done_file = touch(".output_rc/{config_id}/.done")
+    log:
+        "logs/bcl_convert_rc_{config_id}.log"
+    benchmark:
+        "benchmarks/bcl_convert_rc_{config_id}.bench"
+    wildcard_constraints:
+        config_id = "[^/]+"
+    priority: 90
+    resources:
+        serial_operation=1
+    threads: 1
+    params:
+        lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', ''),
+        run_info_path = "src/RunInfo_nn.xml",
+        tiles = TILES,
+    run:
+        import json as json_mod, subprocess, sys as sys_mod, os as os_mod
+        with open(input.candidates) as f:
+            suspects = json_mod.load(f)
+        os_mod.makedirs(output.output_dir, exist_ok=True)
+        with open(log[0], 'w') as lf:
+            if not suspects:
+                lf.write(f"No RC suspects for {wildcards.config_id}; skipping BCL Convert RC run.\n")
+                return
+            lf.write(f"RC suspects: {[r['project'] for r in suspects]}\n")
+            tiles_args = ["--tiles", str(params.tiles)] if params.tiles else []
+            cmd = [
+                "dragen", "--bcl-conversion-only", "true",
+                "--bcl-input-directory", str(input.data_dir),
+                "--output-directory", str(output.output_dir),
+                "--force",
+                "--bcl-sampleproject-subdirectories", "true",
+                "--sample-sheet", str(input.rc_samplesheet),
+                "--strict-mode", "false",
+                "--bcl-only-lane", str(params.lane),
+                "--run-info", str(params.run_info_path),
+                "--bcl-num-parallel-tiles", "1",
+                "--bcl-num-conversion-threads", "8",
+                "--bcl-num-compression-threads", "8",
+                "--bcl-num-decompression-threads", "8",
+            ] + tiles_args
+            lf.write(f"Running: {' '.join(cmd)}\n")
+            lf.flush()
+            result = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, timeout=7200)
+            if result.returncode != 0:
+                raise RuntimeError(f"DRAGEN RC run failed for {wildcards.config_id}")
+
+            # Keep RC output naming consistent with the primary bcl_convert output.
+            rename_cmd = [
+                "bash", "src/run_rename.sh",
+                wildcards.config_id,
+                str(output.output_dir),
+                str(input.renaming_map),
+            ]
+            lf.write(f"Running: {' '.join(rename_cmd)}\n")
+            lf.flush()
+            rename_result = subprocess.run(rename_cmd, stdout=lf, stderr=subprocess.STDOUT)
+            if rename_result.returncode != 0:
+                raise RuntimeError(f"RC FASTQ rename failed for {wildcards.config_id}")
+
+rule pick_orientation:
+    """Compare first-pass and RC-pass Demultiplex_Stats for each suspect project
+    and write a JSON decision file mapping old Sample_Project name -> 'original' or 'rc'.
+    Non-suspect projects are omitted (callers default to 'original').
+    """
+    input:
+        done_orig = ancient(".output/{config_id}/.done"),
+        done_rc = ".output_rc/{config_id}/.done",
+        candidates = "logs/rc_candidates_{config_id}.json"
+    output:
+        decision = "logs/orientation_decision_{config_id}.json"
+    log:
+        "logs/pick_orientation_{config_id}.log"
+    wildcard_constraints:
+        config_id = "[^/]+"
+    run:
+        import json as json_mod, csv as csv_mod, os as os_mod
+
+        def read_project_counts(stats_csv):
+            counts = {}
+            if not os_mod.path.exists(stats_csv):
+                return counts
+            try:
+                with open(stats_csv) as f:
+                    reader = csv_mod.DictReader(f)
+                    for r in reader:
+                        proj = (r.get('SampleProject') or r.get('Sample_Project') or '').strip()
+                        reads_raw = r.get('# Reads') or r.get('Reads') or '0'
+                        try:
+                            reads = int(reads_raw)
+                        except ValueError:
+                            reads = 0
+                        if proj:
+                            counts[proj] = counts.get(proj, 0) + reads
+            except Exception as e:
+                with open(log[0], 'a') as lf:
+                    lf.write(f"Warning: could not parse {stats_csv}: {e}\n")
+            return counts
+
+        with open(input.candidates) as f:
+            suspects = json_mod.load(f)
+
+        # Build fix_type lookup: project -> label (rc_i7 / rc_i5 / rc_both)
+        fix_type_map = {}
+        for rec in suspects:
+            ft = rec.get('fix_type', 'i7_rc')
+            # i7_rc -> rc_i7, i5_rc -> rc_i5, both_rc -> rc_both
+            fix_type_map[rec['project']] = "rc_" + ft.replace('_rc', '')
+
+        decision = {}
+        with open(log[0], 'w') as lf:
+            if not suspects:
+                lf.write(f"No RC suspects for {wildcards.config_id}; all projects use original.\n")
+            else:
+                orig_stats = f".output/{wildcards.config_id}/Reports/Demultiplex_Stats.csv"
+                rc_stats = f".output_rc/{wildcards.config_id}/Reports/Demultiplex_Stats.csv"
+                orig_counts = read_project_counts(orig_stats)
+                rc_counts = read_project_counts(rc_stats)
+                lf.write(f"Original counts: {orig_counts}\n")
+                lf.write(f"RC counts: {rc_counts}\n")
+                for rec in suspects:
+                    project = rec['project']
+                    orig = orig_counts.get(project, 0)
+                    rc_val = rc_counts.get(project, 0)
+                    winner = fix_type_map.get(project, "rc_i7") if rc_val > orig else "original"
+                    decision[project] = winner
+                    lf.write(f"{project}: original={orig}, rc={rc_val} -> {winner}\n")
+
+        with open(output.decision, 'w') as f:
+            json_mod.dump(decision, f, indent=2)
+
+        # Remove .output_rc project directories for projects that don't need RC,
+        # since bcl_convert_rc always demuxes the whole lane as a byproduct.
+        import shutil as _shutil_rc
+        rc_projects = {p for p, v in decision.items() if v.startswith("rc")}
+        rc_lane_dir = f".output_rc/{wildcards.config_id}"
+        if os_mod.path.isdir(rc_lane_dir):
+            with open(log[0], 'a') as lf:
+                for item in os_mod.listdir(rc_lane_dir):
+                    if item.startswith('.'):
+                        continue  # keep .done and other hidden markers
+                    item_path = os_mod.path.join(rc_lane_dir, item)
+                    if os_mod.path.isdir(item_path) and item not in rc_projects:
+                        lf.write(f"Removing unused RC project dir: {item_path}\n")
+                        _shutil_rc.rmtree(item_path)
+                    elif os_mod.path.isfile(item_path) and item.startswith('Undetermined') and item.endswith('.fastq.gz'):
+                        lf.write(f"Removing RC undetermined reads: {item_path}\n")
+                        os_mod.remove(item_path)
+
+        # Remove Undetermined*.fastq.gz from .output as well — never used downstream.
+        orig_lane_dir = f".output/{wildcards.config_id}"
+        if os_mod.path.isdir(orig_lane_dir):
+            with open(log[0], 'a') as lf:
+                for item in os_mod.listdir(orig_lane_dir):
+                    if item.startswith('Undetermined') and item.endswith('.fastq.gz'):
+                        item_path = os_mod.path.join(orig_lane_dir, item)
+                        if os_mod.path.isfile(item_path):
+                            lf.write(f"Removing original undetermined reads: {item_path}\n")
+                            os_mod.remove(item_path)
+
+rule update_validation_workbook:
+    """Regenerate the metadata validation workbook after all orientation decisions
+    are known, so the RC_ORIENTATION sheet reflects which projects ran through RC.
+    """
+    input:
+        decisions = expand("logs/orientation_decision_{config_id}.json", config_id=CONFIG_IDS),
+        metadata = ancient(metadata)
+    output:
+        xlsx = VALIDATION_XLSX
+    run:
+        validate_metadata_and_write_report(str(input.metadata), out_xlsx=output.xlsx)
+
 rule check_index_rc_swap:
     """Run the index reverse-complement/swap analysis script across generated
     SampleSheet CSVs and undetermined indices CSVs.
@@ -1485,8 +1865,11 @@ rule project_link:
         project = ".+"
     params:
         work_dir = os.getcwd(),
-        order_id = lambda wildcards: PROJECT_ORDER_ID.get((wildcards.project, int(m.group(1))) if (m := re.match(r'lane(\d+)', wildcards.config_id)) else (wildcards.project, 0), ""),
-        group = lambda wildcards: get_project_group(wildcards.project, wildcards.config_id)
+        order_id = lambda wildcards: PROJECT_ORDER_ID.get(
+            (PROJECT_RENAME_MAP_INV.get((wildcards.config_id, wildcards.project), wildcards.project), int(m.group(1)))
+            if (m := re.match(r'lane(\d+)', wildcards.config_id))
+            else (PROJECT_RENAME_MAP_INV.get((wildcards.config_id, wildcards.project), wildcards.project), 0), ""),
+        group = lambda wildcards: get_project_group(PROJECT_RENAME_MAP_INV.get((wildcards.config_id, wildcards.project), wildcards.project), wildcards.config_id)
     run:
         import traceback
         import subprocess

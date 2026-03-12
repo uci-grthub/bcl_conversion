@@ -88,7 +88,7 @@ def get_file_size(path):
 
 
 def parse_lane_from_config(config_id):
-    match = re.match(r'lane(\d+)_', config_id)
+    match = re.match(r'lane(\d+)', config_id)
     if match:
         return int(match.group(1))
     return None
@@ -162,7 +162,7 @@ def compose_plots_base64(image_paths, total_width=900, quality=35, background_co
         print(f"Error composing plots {image_paths}: {e}")
         return None
 
-def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_dir, report_dir, fastq_links_str, lane_filter=None, append_mode=False, links_yaml=None, order_id=None, library_name=None, plots_total_width=900, plots_quality=35):
+def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_dir, report_dir, fastq_links_str, lane_filter=None, append_mode=False, links_yaml=None, order_id=None, library_name=None, plots_total_width=900, plots_quality=35, orig_project_name=None):
     os.makedirs(report_dir, exist_ok=True)
     lane_label = f" (Lane {lane_filter})" if lane_filter is not None else ""
     
@@ -434,7 +434,9 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
     # We need to iterate over config_ids (lanes)
     
     # We can glob: results/fastp/*/{project}/*.json
-    json_pattern = os.path.join(fastp_base_dir, "*", project, "*.json")
+    # Use orig_project_name for file lookups if provided (fastp runs before rename)
+    fastp_lookup_name = orig_project_name or project
+    json_pattern = os.path.join(fastp_base_dir, "*", fastp_lookup_name, "*.json")
     print(f"Searching for JSONs with pattern: {json_pattern}")
     json_files = glob.glob(json_pattern)
     print(f"Found {len(json_files)} JSON files.")
@@ -459,7 +461,8 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
             pass
     
     samples = {} # stem -> { config_id: { info... } }
-    
+    demux_stats_cache = {}  # config_id -> {(orig_project, index): num_reads}
+
     for json_file in json_files:
         # Extract config_id (lane)
         # path: .../results/fastp/{config_id}/{project}/{stem}.json
@@ -476,6 +479,26 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
             print(f"Could not parse path: {json_file}")
             continue
 
+        # Lazily load Demultiplex_Stats.csv for this config_id
+        if config_id not in demux_stats_cache:
+            demux_csv = os.path.join(output_base_dir, config_id, "Reports", "Demultiplex_Stats.csv")
+            demux_stats_cache[config_id] = {}
+            if os.path.exists(demux_csv):
+                try:
+                    import csv as _csv
+                    with open(demux_csv, 'r') as _f:
+                        for _row in _csv.DictReader(_f):
+                            _proj = _row.get('Sample_Project', '').strip()
+                            _idx = _row.get('Index', '').strip()
+                            _reads = _row.get('# Reads', '').strip()
+                            if _proj and _idx and _reads:
+                                try:
+                                    demux_stats_cache[config_id][(_proj, _idx)] = int(_reads)
+                                except ValueError:
+                                    pass
+                except Exception as _e:
+                    print(f"Warning: Could not load demux stats from {demux_csv}: {_e}")
+
         lane_val = parse_lane_from_config(config_id)
         if lane_filter is not None:
             if isinstance(lane_filter, list):
@@ -487,8 +510,10 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
         # Validate that FASTQ files exist for this sample before processing
         # This filters out deprecated samples that only have fastp JSON but no actual FASTQ files
         project_dir = os.path.join(output_base_dir, config_id, project)
-        use_illumina_naming = is_parse_or_10x(project)
-        
+        # Use fastp_lookup_name (orig_project_name) for the naming-style check:
+        # after renaming the project name no longer contains "10x", "parse", etc.
+        use_illumina_naming = is_parse_or_10x(fastp_lookup_name)
+
         fastq_exists = False
         if use_illumina_naming:
             # For 10x/Parse/BD: check if any R1 file matching the stem pattern exists
@@ -523,7 +548,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
             # Extract Barcode from stem or sample_name
             # For 10x/Parse/BD: need to look up barcode from renaming map
             # For default: extract from stem format {run}-L{lane}-G{group}-{position}-{barcode}
-            use_illumina_naming = is_parse_or_10x(project)
+            use_illumina_naming = is_parse_or_10x(fastp_lookup_name)
             
             if use_illumina_naming:
                 # Look up barcode from renaming map
@@ -563,7 +588,12 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                     barcode = match.group(2)
                 else:
                     barcode = "Unknown"
-                
+
+            # Override paired_reads with demux stats count if available (more accurate than fastp subsampled count)
+            demux_reads = demux_stats_cache.get(config_id, {}).get((fastp_lookup_name, barcode))
+            if demux_reads is not None:
+                paired_reads = demux_reads
+
             # File paths: check if 10x/Parse/BD project (uses Illumina naming) or default (uses stem naming)
             
             if use_illumina_naming:
@@ -708,7 +738,8 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 
         for config_id in lane_configs:
             # Look for plots in fastp_plots_base_dir/{config_id}/{project}/{stem}-*.png
-            plot_dir = os.path.join(fastp_plots_base_dir, config_id, project)
+            # Use orig_project_name for file lookups if provided (fastp runs before rename)
+            plot_dir = os.path.join(fastp_plots_base_dir, config_id, fastp_lookup_name)
             expected = [
                 os.path.join(plot_dir, f"{stem}-mean_phred.png"),
                 os.path.join(plot_dir, f"{stem}-base_comp.png"),
@@ -861,8 +892,14 @@ if __name__ == "__main__":
             plots_quality = int(sys.argv[12])
         except ValueError:
             plots_quality = 35
-    
+
+    orig_project_name = None
+    if len(sys.argv) >= 14:
+        val = sys.argv[13]
+        if val and val != "None":
+            orig_project_name = val
+
     # If report_dir already exists with an index.html, this is a continuation (multiple projects for same order_id)
     append_mode = os.path.exists(os.path.join(report_dir, "index.html"))
-    
-    generate_report(project, output_base, fastp_plots_base, fastp_base, report_dir, fastq_links, lane_filter, append_mode=append_mode, links_yaml=links_yaml, order_id=order_id, library_name=library_name, plots_total_width=plots_total_width, plots_quality=plots_quality)
+
+    generate_report(project, output_base, fastp_plots_base, fastp_base, report_dir, fastq_links, lane_filter, append_mode=append_mode, links_yaml=links_yaml, order_id=order_id, library_name=library_name, plots_total_width=plots_total_width, plots_quality=plots_quality, orig_project_name=orig_project_name)

@@ -42,7 +42,7 @@ if __name__ == "__main__":
     if not metadata_file:
         parser.error('metadata_file is required (provide as argument or set in config file)')
     
-    output_xlsx = os.path.join('logs', f"metadata_validation_{os.path.basename(metadata_file)}.xlsx")
+    output_xlsx = os.path.join('metadata', f"metadata_validation_{os.path.basename(metadata_file)}.xlsx")
     
     print(f"Starting metadata validation...")
     print(f"Input:  {metadata_file}")
