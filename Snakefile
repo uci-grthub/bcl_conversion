@@ -1316,6 +1316,11 @@ rule bcl_convert:
     shell:
         """
         (
+        cleanup() {{
+            pkill -P $$ 2>/dev/null || true
+        }}
+        trap cleanup INT TERM EXIT
+
         # Masking is now handled by OverrideCycles in the sample sheet
 
         tiles_arg=""
@@ -1383,6 +1388,7 @@ rule bcl_convert:
             bash src/rename_bd_rhapsody_atac.sh "{output.output_dir}"
         fi
 
+        trap - INT TERM EXIT
         touch {output.done_file}
         ) > {log} 2>&1
         """
