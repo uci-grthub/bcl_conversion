@@ -904,8 +904,10 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                         cycle_str = ""
 
                         actual_len = 0
+                        actual_is_index = False
                         if run_reads and i < len(run_reads):
                             actual_len = int(run_reads[i]['NumCycles'])
+                            actual_is_index = run_reads[i].get('IsIndexedRead') == 'Y'
 
                         if type_ == 'Y2':
                             cycle_str = f"U{actual_len}" if actual_len > 0 else f"U{specified_len}"
@@ -913,7 +915,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                             cycle_str = f"N{actual_len}"
                         else:
                             if type_.startswith('R'):
-                                cycle_str = f"Y{len_}"
+                                cycle_str = f"U{len_}" if actual_is_index else f"Y{len_}"
                             elif type_.startswith('I'):
                                 cycle_str = f"I{len_}"
                             elif type_.startswith('U'):
