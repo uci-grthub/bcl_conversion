@@ -1328,13 +1328,14 @@ rule bcl_convert:
             tiles_arg="--tiles {params.tiles}"
         fi
 
-        # Use fast local scratch for DRAGEN output if configured, to avoid
-        # watchdog timeouts caused by slow writes to JBOD storage.
+        # Use a run-specific staging directory so retries do not race with
+        # stale NFS handles or orphaned DRAGEN processes from earlier runs.
         if [ ! -z "{params.scratch_dir}" ]; then
-            dragen_out="{params.scratch_dir}/{wildcards.config_id}"
+            dragen_out="{params.scratch_dir}/{wildcards.config_id}.$$"
         else
-            dragen_out="{output.output_dir}"
+            dragen_out="{output.output_dir}.work.$$"
         fi
+        final_out="{output.output_dir}"
 
         find "$dragen_out" -name "*.fastq.gz" -delete 2>/dev/null || true
         mkdir -p "$dragen_out"
@@ -1354,38 +1355,36 @@ rule bcl_convert:
         --bcl-num-decompression-threads 8 \
         $tiles_arg
 
-        # Transfer from scratch to final output dir using rsync with checksum
-        # verification to catch any corruption, with up to 3 retries.
-        if [ ! -z "{params.scratch_dir}" ]; then
-            echo "Syncing from scratch to output with checksum verification..."
-            mkdir -p "{output.output_dir}"
-            sync_ok=false
-            for attempt in 1 2 3; do
-                if rsync -W --delete "$dragen_out/" "{output.output_dir}/"; then
-                    sync_ok=true
-                    break
-                fi
-                echo "rsync attempt $attempt failed, retrying..."
-            done
-            if [ "$sync_ok" != "true" ]; then
-                echo "ERROR: rsync failed after 3 attempts. Scratch data preserved at $dragen_out"
-                exit 1
+        # Transfer from staging to final output dir using rsync with checksum
+        # verification to catch corruption, with up to 3 retries.
+        echo "Syncing staged DRAGEN output to final output with checksum verification..."
+        mkdir -p "$final_out"
+        sync_ok=false
+        for attempt in 1 2 3; do
+            if rsync -W --delete "$dragen_out/" "$final_out/"; then
+                sync_ok=true
+                break
             fi
-            rm -rf "$dragen_out"
-            echo "Scratch data removed after successful sync."
+            echo "rsync attempt $attempt failed, retrying..."
+        done
+        if [ "$sync_ok" != "true" ]; then
+            echo "ERROR: rsync failed after 3 attempts. Staged data preserved at $dragen_out"
+            exit 1
         fi
+        rm -rf "$dragen_out"
+        echo "Staged data removed after successful sync."
 
         # Delete Undetermined reads
-        find "{output.output_dir}" -name "Undetermined*" -delete
+        find "$final_out" -name "Undetermined*" -delete
         echo "Undetermined reads deleted"
 
         # Rename FASTQ files
-        src/run_rename.sh {wildcards.config_id} "{output.output_dir}" {input.renaming_map}
+        src/run_rename.sh {wildcards.config_id} "$final_out" {input.renaming_map}
 
         # If BD Rhapsody ATACseq, run additional renaming for R1/R2/R3
         if grep -q "BD Rhapsody_ATACseq\\|BD_Rhapsody_ATACseq\\|BD_ATAC" {input.sample_sheet}; then
             echo "Running BD Rhapsody ATACseq renaming for {wildcards.config_id}..."
-            bash src/rename_bd_rhapsody_atac.sh "{output.output_dir}"
+            bash src/rename_bd_rhapsody_atac.sh "$final_out"
         fi
 
         trap - INT TERM EXIT
