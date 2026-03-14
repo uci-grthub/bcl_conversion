@@ -732,6 +732,12 @@ rule summarize_project_reads:
 rule compile_read_counts:
     input:
         done = expand(".output/{config_id}/.done", config_id=CONFIG_IDS),
+        projects_done = expand(
+            "output/{config_id}/{project}/.project_done",
+            zip,
+            config_id=[c for c, p in CONFIG_PROJECT_PAIRS],
+            project=[p for c, p in CONFIG_PROJECT_PAIRS],
+        ),
         maps = expand("results/renaming_map_{config_id}.csv", config_id=CONFIG_IDS)
     output:
         csv = f"results/{LIBRARY}-count.csv"
@@ -860,9 +866,9 @@ rule compile_read_counts:
         lane_group_pairs_sorted = sorted(lane_group_counts.keys())
 
         if not lane_group_pairs_sorted:
-            os.makedirs(os.path.dirname(output.csv), exist_ok=True)
-            open(output.csv, "w").close()
-            return
+            raise ValueError(
+                "No read counts were compiled. Final Demultiplex_Stats.csv files were missing or contained no matching rows."
+            )
 
         per_lane_group = {}
         for (lane, group), samples in lane_group_counts.items():
@@ -1296,7 +1302,6 @@ rule bcl_convert:
         _sheet_done=lambda wildcards: f"logs/generate_samplesheets_{wildcards.config_id}.done",
         run_info = "src/RunInfo_nn.xml"
     output:
-        output_dir = directory(".output/{config_id}"),
         done_file = touch(".output/{config_id}/.done")
     log:
         "logs/bcl_convert_{config_id}.log"
@@ -1319,7 +1324,7 @@ rule bcl_convert:
         cleanup() {{
             pkill -P $$ 2>/dev/null || true
         }}
-        trap cleanup INT TERM EXIT
+        trap cleanup INT TERM
 
         # Masking is now handled by OverrideCycles in the sample sheet
 
@@ -1328,14 +1333,12 @@ rule bcl_convert:
             tiles_arg="--tiles {params.tiles}"
         fi
 
-        # Use a run-specific staging directory so retries do not race with
-        # stale NFS handles or orphaned DRAGEN processes from earlier runs.
+        final_out=".output/{wildcards.config_id}"
         if [ ! -z "{params.scratch_dir}" ]; then
-            dragen_out="{params.scratch_dir}/{wildcards.config_id}.$$"
+            dragen_out="{params.scratch_dir}/{wildcards.config_id}"
         else
-            dragen_out="{output.output_dir}.work.$$"
+            dragen_out="$final_out"
         fi
-        final_out="{output.output_dir}"
 
         find "$dragen_out" -name "*.fastq.gz" -delete 2>/dev/null || true
         mkdir -p "$dragen_out"
@@ -1355,24 +1358,30 @@ rule bcl_convert:
         --bcl-num-decompression-threads 8 \
         $tiles_arg
 
-        # Transfer from staging to final output dir using rsync with checksum
-        # verification to catch corruption, with up to 3 retries.
-        echo "Syncing staged DRAGEN output to final output with checksum verification..."
-        mkdir -p "$final_out"
-        sync_ok=false
-        for attempt in 1 2 3; do
-            if rsync -W --delete "$dragen_out/" "$final_out/"; then
-                sync_ok=true
-                break
-            fi
-            echo "rsync attempt $attempt failed, retrying..."
-        done
-        if [ "$sync_ok" != "true" ]; then
-            echo "ERROR: rsync failed after 3 attempts. Staged data preserved at $dragen_out"
-            exit 1
+        dragen_status=$?
+        if [ $dragen_status -ne 0 ]; then
+            cleanup
+            exit $dragen_status
         fi
-        rm -rf "$dragen_out"
-        echo "Staged data removed after successful sync."
+
+        if [ ! -z "{params.scratch_dir}" ]; then
+            echo "Syncing from scratch to output with checksum verification..."
+            mkdir -p "$final_out"
+            sync_ok=false
+            for attempt in 1 2 3; do
+                if rsync -aW --delete "$dragen_out/" "$final_out/"; then
+                    sync_ok=true
+                    break
+                fi
+                echo "rsync attempt $attempt failed, retrying..."
+            done
+            if [ "$sync_ok" != "true" ]; then
+                echo "ERROR: rsync failed after 3 attempts. Scratch data preserved at $dragen_out"
+                exit 1
+            fi
+            rm -rf "$dragen_out"
+            echo "Scratch data removed after successful sync."
+        fi
 
         # Delete Undetermined reads
         find "$final_out" -name "Undetermined*" -delete
@@ -1387,7 +1396,7 @@ rule bcl_convert:
             bash src/rename_bd_rhapsody_atac.sh "$final_out"
         fi
 
-        trap - INT TERM EXIT
+        trap - INT TERM
         touch {output.done_file}
         ) > {log} 2>&1
         """
