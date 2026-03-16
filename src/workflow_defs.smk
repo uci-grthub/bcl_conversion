@@ -260,24 +260,31 @@ def filldown_and_make_unique_sample_names(df):
                             df.loc[idx, 'Sample_Name'] = prev_val
                             break
     
-    # Make Sample_Name unique within each project by appending suffixes
+    # Make Sample_Name unique within each project by appending suffixes.
+    # Skip 10x/BD/Parse projects: CellRanger/BD tools rely on the Illumina lane
+    # number embedded in the FASTQ filename (L001, L002, …) to distinguish
+    # multi-lane replicates, so adding _1/_2 suffixes here would break that
+    # auto-merging convention and confuse clients.
     for project in df['Project'].unique():
         if pd.isna(project) or str(project).strip() == '' or str(project).lower() == 'nan':
             continue
-        
+
+        if is_parse_or_10x(project):
+            continue
+
         project_mask = df['Project'] == project
         project_indices = df[project_mask].index
-        
+
         # Count occurrences of each Sample_Name within this project
         sample_name_counts = df.loc[project_indices, 'Sample_Name'].value_counts()
-        
+
         # For Sample_Names that appear more than once, add suffixes
         for sample_name, count in sample_name_counts.items():
             if count > 1:
                 # Find all occurrences of this Sample_Name in this project
                 dup_mask = (df['Project'] == project) & (df['Sample_Name'] == sample_name)
                 dup_indices = df[dup_mask].index
-                
+
                 # Append suffix to each duplicate (_1, _2, etc.)
                 for i, idx in enumerate(dup_indices, start=1):
                     df.loc[idx, 'Sample_Name'] = f"{sample_name}_{i}"
@@ -431,7 +438,6 @@ def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name)
                     break
         if bd_rhapsody_atac:
             f.write("CreateFastqForIndexReads,1\n")
-            f.write("TrimUMI,0\n")
         else:
             f.write("CreateFastqForIndexReads,0\n")
         f.write("MinimumTrimmedReadLength,8\n")
@@ -940,7 +946,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             row_project = str(row.get('Project', '')).strip().upper()
             row_index2 = str(row.get('index2', '')).strip()
             row_has_index2 = row_index2 and row_index2.lower() != 'nan'
-            strip_i2 = bd_rhapsody_atac or ('ATAC' in row_project and not row_has_index2)
+            strip_i2 = not bd_rhapsody_atac and ('ATAC' in row_project and not row_has_index2)
             override_cycles_list.append(compute_override_cycles(row_masking, run_reads, strip_i2=strip_i2))
 
         ss_data['OverrideCycles'] = override_cycles_list
@@ -970,7 +976,6 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             create_fastq_for_index = "0"
             if bd_rhapsody_atac:
                 f.write("CreateFastqForIndexReads,1\n")
-                f.write("TrimUMI,0\n")
             else:
                 # Check both Project Name and Sample Sheet tab columns for index-read keywords
                 names_to_check = set()

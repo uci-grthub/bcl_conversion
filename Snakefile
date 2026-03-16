@@ -1390,12 +1390,6 @@ rule bcl_convert:
         # Rename FASTQ files
         src/run_rename.sh {wildcards.config_id} "$final_out" {input.renaming_map}
 
-        # If BD Rhapsody ATACseq, run additional renaming for R1/R2/R3
-        if grep -q "BD Rhapsody_ATACseq\\|BD_Rhapsody_ATACseq\\|BD_ATAC" {input.sample_sheet}; then
-            echo "Running BD Rhapsody ATACseq renaming for {wildcards.config_id}..."
-            bash src/rename_bd_rhapsody_atac.sh "$final_out"
-        fi
-
         trap - INT TERM
         touch {output.done_file}
         ) > {log} 2>&1
