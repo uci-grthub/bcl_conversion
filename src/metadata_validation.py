@@ -130,6 +130,16 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
             seq_candidate_cols = ['index', 'i7 Barcode Sequence', 'Index']
             seq_cols = [c for c in seq_candidate_cols if c in df.columns and _is_sequence_series(df[c])]
 
+            # Barcode List often leaves Parse/10x groups blank on purpose; do not
+            # forward-fill sequence columns there across groups.
+            is_barcode_list_sheet = False
+            try:
+                is_barcode_list_sheet = isinstance(sheet, str) and sheet.strip().lower().startswith('barcode')
+            except Exception:
+                is_barcode_list_sheet = False
+            if is_barcode_list_sheet:
+                seq_cols = []
+
             # Determine if this sheet is a Summary-like sheet; summary sheets should not
             # have Order ID forward-filled — instead, prefer per-row Lab ID values.
             is_summary_sheet = False
@@ -327,14 +337,34 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                     group_key = _norm_key(group_val)
                     if lane_key is None or group_key is None:
                         continue
-                    if not is_authoritative and (lane_key, group_key) in barcode_len_by_lane_group:
-                        continue  # don't overwrite authoritative Barcode List data
                     i7_len = _seq_len(sub[i7_col]) if i7_col else 0
                     i5_len = _seq_len(sub[i5_col]) if i5_col else 0
-                    barcode_len_by_lane_group[(lane_key, group_key)] = {
-                        'i7_len': i7_len,
-                        'i5_len': i5_len
-                    }
+                    key = (lane_key, group_key)
+                    existing = barcode_len_by_lane_group.get(key)
+
+                    # Keep dedicated barcode sheets as highest priority, but let
+                    # other tabs fill missing lengths (common for parse projects).
+                    if existing is None:
+                        barcode_len_by_lane_group[key] = {
+                            'i7_len': i7_len,
+                            'i5_len': i5_len
+                        }
+                    elif is_authoritative:
+                        barcode_len_by_lane_group[key] = {
+                            'i7_len': i7_len,
+                            'i5_len': i5_len
+                        }
+                    else:
+                        merged_i7 = existing.get('i7_len', 0)
+                        merged_i5 = existing.get('i5_len', 0)
+                        if merged_i7 == 0 and i7_len > 0:
+                            merged_i7 = i7_len
+                        if merged_i5 == 0 and i5_len > 0:
+                            merged_i5 = i5_len
+                        barcode_len_by_lane_group[key] = {
+                            'i7_len': merged_i7,
+                            'i5_len': merged_i5
+                        }
         except Exception:
             pass
 
