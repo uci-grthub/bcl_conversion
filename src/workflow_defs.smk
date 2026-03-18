@@ -803,35 +803,48 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             ].copy()
             
             if not valid_barcodes.empty:
-                # Check for duplicate combined barcodes
+                # Check for duplicate combined barcodes ONLY within the same OverrideCycles/Masking group
+                # Samples with different Masking settings (e.g., standard i7 vs inline U5I6Y*) read 
+                # barcodes from different physical positions and can have overlapping barcode sequences.
                 duplicate_mask = valid_barcodes['combined_barcode'].duplicated(keep=False)
                 duplicate_barcodes = valid_barcodes[duplicate_mask]['combined_barcode'].unique()
                 
                 if len(duplicate_barcodes) > 0:
-                    # Get detailed information about duplicates
-                    dup_rows = valid_barcodes[valid_barcodes['combined_barcode'].isin(duplicate_barcodes)]
-                    error_msg = f"\n{'='*80}\n"
-                    error_msg += f"ERROR: Duplicate dual-index barcode combinations detected in Lane {lane}!\n"
-                    error_msg += f"{'='*80}\n\n"
-                    error_msg += "The same combination of i7 and i5 barcodes cannot be used for multiple samples.\n"
-                    error_msg += "BCL Convert will not be able to distinguish which reads belong to which sample.\n\n"
-                    error_msg += "Duplicate entries:\n"
-                    error_msg += "-" * 80 + "\n"
+                    # Filter duplicates: only report if they share the same Masking/OverrideCycles
+                    real_conflicts = []
+                    for combo in duplicate_barcodes:
+                        dup_samples = valid_barcodes[valid_barcodes['combined_barcode'] == combo]
+                        # Group by Masking to see if all duplicates use the same OverrideCycles
+                        masking_groups = dup_samples['Masking'].unique()
+                        # If all duplicates have the SAME Masking, it's a real conflict
+                        if len(masking_groups) == 1 and len(dup_samples) > 1:
+                            real_conflicts.append(combo)
                     
-                    for combo in sorted(duplicate_barcodes):
-                        dup_samples = dup_rows[dup_rows['combined_barcode'] == combo]
-                        i7, i5 = combo.split(':')
-                        error_msg += f"\ni7={i7}, i5={i5}:\n"
-                        for _, row in dup_samples.iterrows():
-                            sample = row.get('Sample_Name', 'N/A')
-                            project = row.get('Project', 'N/A')
-                            error_msg += f"  - Sample: {sample}, Project: {project}\n"
-                    
-                    error_msg += "\n" + "=" * 80 + "\n"
-                    error_msg += "Please fix the metadata file to use unique barcode combinations for each sample.\n"
-                    error_msg += "=" * 80 + "\n"
-                    
-                    raise ValueError(error_msg)
+                    if real_conflicts:
+                        # Get detailed information about real conflicts
+                        dup_rows = valid_barcodes[valid_barcodes['combined_barcode'].isin(real_conflicts)]
+                        error_msg = f"\n{'='*80}\n"
+                        error_msg += f"ERROR: Duplicate dual-index barcode combinations detected in Lane {lane}!\n"
+                        error_msg += f"{'='*80}\n\n"
+                        error_msg += "The same combination of i7 and i5 barcodes cannot be used for multiple samples.\n"
+                        error_msg += "BCL Convert will not be able to distinguish which reads belong to which sample.\n\n"
+                        error_msg += "Duplicate entries:\n"
+                        error_msg += "-" * 80 + "\n"
+                        
+                        for combo in sorted(real_conflicts):
+                            dup_samples = dup_rows[dup_rows['combined_barcode'] == combo]
+                            i7, i5 = combo.split(':')
+                            error_msg += f"\ni7={i7}, i5={i5}:\n"
+                            for _, row in dup_samples.iterrows():
+                                sample = row.get('Sample_Name', 'N/A')
+                                project = row.get('Project', 'N/A')
+                                error_msg += f"  - Sample: {sample}, Project: {project}\n"
+                        
+                        error_msg += "\n" + "=" * 80 + "\n"
+                        error_msg += "Please fix the metadata file to use unique barcode combinations for each sample.\n"
+                        error_msg += "=" * 80 + "\n"
+                        
+                        raise ValueError(error_msg)
             
         # Map columns
         # Target: Project,Lane,Sample_ID,Sample_Name,index,index2,Sample_Project
