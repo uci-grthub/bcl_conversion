@@ -1294,12 +1294,53 @@ rule generate_renaming_map:
         # Fallback: derive from SampleSheet data section
         build_map_from_samplesheet(input.sample_sheet, output.map, params.library)
 
+rule validate_barcode_hamming_distances:
+    """Pre-flight validation: check that all barcodes maintain minimum Hamming
+    distance for 1-mismatch tolerance. Fails fast with clear error messages.
+    
+    This rule runs before any bcl_convert jobs to catch barcode conflicts early.
+    """
+    input:
+        samplesheets = expand("results/SampleSheet_{config_id}.csv", config_id=CONFIG_IDS)
+    output:
+        report = "logs/barcode_hamming_validation.txt",
+        marker = touch("logs/barcode_hamming_validation.done")
+    log:
+        "logs/barcode_hamming_validation.log"
+    benchmark:
+        "benchmarks/barcode_hamming_validation.bench"
+    params:
+        script = "scripts/validate_barcode_hamming_distance.py",
+        tolerance = 1
+    shell:
+        """
+        (
+        echo "Validating barcode Hamming distances across all sample sheets..."
+        python3 {params.script} \
+            --samplesheets {input.samplesheets} \
+            --mismatch-tolerance {params.tolerance} \
+            --output {output.report}
+        
+        exit_code=$?
+        if [ $exit_code -ne 0 ]; then
+            echo ""
+            echo "=========================================================="
+            echo "ERROR: Barcode Hamming distance validation FAILED"
+            echo "=========================================================="
+            echo ""
+            cat {output.report}
+            exit 1
+        fi
+        ) > {log} 2>&1
+        """
+
 rule bcl_convert:
     input:
         sample_sheet=lambda wildcards: f"results/SampleSheet_{wildcards.config_id}.csv",
         renaming_map = "results/renaming_map_{config_id}.csv",
         data_dir=DATA_DIR,
         _sheet_done=lambda wildcards: f"logs/generate_samplesheets_{wildcards.config_id}.done",
+        _validation_done="logs/barcode_hamming_validation.done",
         run_info = "src/RunInfo_nn.xml"
     output:
         done_file = touch(".output/{config_id}/.done")
