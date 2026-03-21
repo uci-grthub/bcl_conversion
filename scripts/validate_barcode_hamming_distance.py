@@ -5,11 +5,15 @@ Validate barcode Hamming distances in sample sheets.
 Checks that all barcode combinations maintain minimum Hamming distance
 required for 1-mismatch tolerance. Fails fast with clear error reporting.
 
+With --fix: when conflicts are found, sets BarcodeMismatchesIndex1/2 to 0
+for the conflicting samples in-place and retries validation.
+
 Usage:
     python3 validate_barcode_hamming_distance.py \
         --samplesheets SampleSheet_lane1.csv SampleSheet_lane2.csv \
         --mismatch-tolerance 1 \
-        --output validation_report.txt
+        --output validation_report.txt \
+        [--fix]
 """
 
 import argparse
@@ -28,27 +32,28 @@ def hamming_distance(s1, s2):
     return sum(c1 != c2 for c1, c2 in zip(s1, s2))
 
 
+def _find_data_section(lines):
+    """Return (preamble, data_lines) split at the line after [BCLConvert_Data]/[Data]."""
+    for i, line in enumerate(lines):
+        if line.strip().startswith("[BCLConvert_Data]") or line.strip().startswith("[Data]"):
+            return lines[:i + 1], lines[i + 1:]
+    return None, None
+
+
 def parse_samplesheet_data(sheet_path):
-    """Extract barcode data from sample sheet."""
+    """Extract barcode data rows from sample sheet."""
     try:
         with open(sheet_path, 'r') as f:
             lines = f.readlines()
     except Exception as e:
         raise RuntimeError(f"Could not read {sheet_path}: {e}")
 
-    # Find [BCLConvert_Data] or [Data] section
-    header_row = -1
-    for i, line in enumerate(lines):
-        if line.strip().startswith("[BCLConvert_Data]") or line.strip().startswith("[Data]"):
-            header_row = i + 1
-            break
-
-    if header_row == -1 or header_row >= len(lines):
+    _, data_lines = _find_data_section(lines)
+    if data_lines is None or not data_lines:
         raise RuntimeError(f"Could not find data section in {sheet_path}")
 
-    data_str = "".join(lines[header_row:])
     try:
-        reader = csv.DictReader(StringIO(data_str))
+        reader = csv.DictReader(StringIO("".join(data_lines)))
         rows = list(reader)
     except Exception as e:
         raise RuntimeError(f"Error parsing data section in {sheet_path}: {e}")
@@ -59,39 +64,39 @@ def parse_samplesheet_data(sheet_path):
 def validate_sheet_barcodes(sheet_path, tolerance=1):
     """
     Validate barcode Hamming distances in a single sample sheet.
-    
-    Returns: (is_valid, errors, config_id)
+
+    Returns: (is_valid, errors, config_id, conflict_rows)
+      conflict_rows: dict mapping row_idx -> set of {'i7', 'i5'} indicating
+                     which index columns need BMI set to 0 to resolve the conflict.
     """
     rows = parse_samplesheet_data(sheet_path)
-    
-    # Extract config_id from filename (e.g., SampleSheet_lane5.csv -> lane5)
     config_id = Path(sheet_path).stem.replace("SampleSheet_", "")
-    
+
     errors = []
-    
-    # Group by lane (lane-specific validation required by DRAGEN)
+    conflict_rows = defaultdict(set)  # row_idx -> {'i7', 'i5'}
+
+    # Group by lane
     lanes = defaultdict(list)
     for i, row in enumerate(rows):
         lane = row.get("Lane", "").strip()
         if not lane:
             continue
         lanes[lane].append((i, row))
-    
-    # Validate each lane's barcodes
+
     for lane, lane_rows in lanes.items():
-        # Extract all index pairs for this lane
         index_pairs = []
         for row_idx, row in lane_rows:
             idx1 = row.get("index", "").strip()
             idx2 = row.get("index2", "").strip()
             project = row.get("Sample_Project", "").strip()
             sample = row.get("Sample_Name", row.get("Sample_ID", "")).strip()
-            
+
             if not idx1:
                 continue
-            
-            bmi1 = int(row.get("BarcodeMismatchesIndex1", 0) or 0)
-            bmi2 = int(row.get("BarcodeMismatchesIndex2", 0) or 0) if idx2 else None
+
+            # Use per-sample BarcodeMismatchesIndex columns; fall back to tolerance
+            bmi1 = int(row.get("BarcodeMismatchesIndex1") or tolerance)
+            bmi2 = int(row.get("BarcodeMismatchesIndex2") or tolerance) if idx2 else None
             index_pairs.append({
                 "row": row_idx,
                 "project": project,
@@ -102,13 +107,15 @@ def validate_sheet_barcodes(sheet_path, tolerance=1):
                 "bmi2": bmi2,
                 "barcode_str": f"{idx1}-{idx2}" if idx2 else idx1,
             })
-        
+
         if len(index_pairs) < 2:
             continue
-        
-        # Check pairwise Hamming distances (combined i7+i5)
-        # Two samples are distinguishable if EITHER i7 OR i5 has sufficient distance.
-        # Only flag an error when BOTH indices are too close (samples can't be told apart).
+
+        # Check pairwise Hamming distances.
+        # For 1-mismatch tolerance k, DRAGEN requires distance > 2k between any pair that
+        # shares an index channel. Two samples are distinguishable if EITHER i7 OR i5 has
+        # sufficient distance; only flag when BOTH are too close (dual-indexed), or when
+        # one sample lacks i5 entirely (i7-only comparison).
         for i in range(len(index_pairs)):
             for j in range(i + 1, len(index_pairs)):
                 pair1 = index_pairs[i]
@@ -119,14 +126,13 @@ def validate_sheet_barcodes(sheet_path, tolerance=1):
                 if pair1["i5"] and pair2["i5"]:
                     i5_dist = hamming_distance(pair1["i5"], pair2["i5"])
 
-                # Per-sample mismatch tolerances (from BarcodeMismatchesIndex1/2 columns, default 0)
                 eff_i7_tol = max(pair1["bmi1"], pair2["bmi1"])
                 # only_i7: at least one sample lacks i5 (bmi2 is None for single-indexed)
                 only_i7 = pair1["bmi2"] is None or pair2["bmi2"] is None
 
                 if only_i7:
-                    # i7-only comparisons: DRAGEN requires distance > 2*tol to avoid a
-                    # "midpoint" read matching both samples within tolerance simultaneously.
+                    # DRAGEN requires distance > 2*tol to avoid a midpoint read
+                    # matching both samples within tolerance simultaneously.
                     if i7_dist is not None and i7_dist <= 2 * eff_i7_tol:
                         msg = (
                             f"Lane {lane}: Insufficient i7 Hamming distance ({i7_dist}) "
@@ -134,8 +140,10 @@ def validate_sheet_barcodes(sheet_path, tolerance=1):
                             f"and {pair2['barcode_str']} ({pair2['project']}/{pair2['sample']})"
                         )
                         errors.append(msg)
+                        conflict_rows[pair1["row"]].add("i7")
+                        conflict_rows[pair2["row"]].add("i7")
                 else:
-                    # Dual-indexed: samples are indistinguishable only if BOTH i7 and i5 are too close
+                    # Dual-indexed: indistinguishable only if BOTH i7 and i5 are too close
                     eff_i5_tol = max(pair1["bmi2"], pair2["bmi2"])
                     i7_too_close = i7_dist is not None and i7_dist <= 2 * eff_i7_tol
                     i5_too_close = i5_dist is not None and i5_dist <= 2 * eff_i5_tol
@@ -147,8 +155,54 @@ def validate_sheet_barcodes(sheet_path, tolerance=1):
                             f"and {pair2['barcode_str']} ({pair2['project']}/{pair2['sample']})"
                         )
                         errors.append(msg)
-    
-    return len(errors) == 0, errors, config_id
+                        conflict_rows[pair1["row"]].add("i7")
+                        conflict_rows[pair1["row"]].add("i5")
+                        conflict_rows[pair2["row"]].add("i7")
+                        conflict_rows[pair2["row"]].add("i5")
+
+    return len(errors) == 0, errors, config_id, conflict_rows
+
+
+def fix_sheet_conflicts(sheet_path, conflict_rows):
+    """
+    Set BarcodeMismatchesIndex1/2 to 0 for rows involved in barcode conflicts.
+    Modifies the sheet in-place. Returns list of sample identifiers that were fixed.
+    """
+    with open(sheet_path) as f:
+        lines = f.readlines()
+
+    preamble, data_lines = _find_data_section(lines)
+    if preamble is None or not data_lines:
+        print(f"WARNING: Cannot fix {sheet_path}: data section not found", file=sys.stderr)
+        return []
+
+    reader = csv.DictReader(StringIO("".join(data_lines)))
+    fieldnames = list(reader.fieldnames)
+    rows = list(reader)
+
+    if "BarcodeMismatchesIndex1" not in fieldnames:
+        fieldnames.append("BarcodeMismatchesIndex1")
+    if "BarcodeMismatchesIndex2" not in fieldnames:
+        fieldnames.append("BarcodeMismatchesIndex2")
+
+    fixed_samples = []
+    for row_idx, row in enumerate(rows):
+        indices_to_fix = conflict_rows.get(row_idx, set())
+        if "i7" in indices_to_fix:
+            row["BarcodeMismatchesIndex1"] = "0"
+        if "i5" in indices_to_fix:
+            row["BarcodeMismatchesIndex2"] = "0"
+        if indices_to_fix:
+            sample_id = row.get("Sample_ID") or row.get("Sample_Name") or f"row{row_idx}"
+            fixed_samples.append(sample_id)
+
+    with open(sheet_path, "w", newline="") as f:
+        f.writelines(preamble)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, lineterminator="\n", extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return fixed_samples
 
 
 def main():
@@ -161,7 +215,7 @@ def main():
     )
     parser.add_argument(
         "--mismatch-tolerance", type=int, default=1,
-        help="Mismatch tolerance for barcode distance check (default: 1)"
+        help="Fallback mismatch tolerance when BarcodeMismatchesIndex1/2 columns are absent (default: 1)"
     )
     parser.add_argument(
         "--output", type=str, default=None,
@@ -171,45 +225,70 @@ def main():
         "--json", action="store_true",
         help="Output results in JSON format"
     )
-    
+    parser.add_argument(
+        "--fix", action="store_true",
+        help="On conflict, set BarcodeMismatchesIndex1/2 to 0 for conflicting samples "
+             "in-place and retry validation"
+    )
+
     args = parser.parse_args()
-    
-    results = {
-        "valid": True,
-        "sheets": {},
-        "all_errors": [],
-    }
-    
-    # Validate each sample sheet
-    for sheet_path in args.samplesheets:
-        try:
-            is_valid, errors, config_id = validate_sheet_barcodes(
-                sheet_path, args.mismatch_tolerance
-            )
-            
-            results["sheets"][sheet_path] = {
-                "config_id": config_id,
-                "valid": is_valid,
-                "errors": errors,
-            }
-            
-            if not is_valid:
+
+    def _run_validation():
+        results = {"valid": True, "sheets": {}, "all_errors": []}
+        for sheet_path in args.samplesheets:
+            try:
+                is_valid, errors, config_id, conflict_rows = validate_sheet_barcodes(
+                    sheet_path, args.mismatch_tolerance
+                )
+                results["sheets"][sheet_path] = {
+                    "config_id": config_id,
+                    "valid": is_valid,
+                    "errors": errors,
+                    "conflict_rows": conflict_rows,
+                }
+                if not is_valid:
+                    results["valid"] = False
+                    results["all_errors"].extend(errors)
+            except Exception as e:
                 results["valid"] = False
-                results["all_errors"].extend(errors)
-        
-        except Exception as e:
-            results["valid"] = False
-            error_msg = f"Error validating {sheet_path}: {e}"
-            results["sheets"][sheet_path] = {
-                "valid": False,
-                "errors": [error_msg],
-            }
-            results["all_errors"].append(error_msg)
-    
+                error_msg = f"Error validating {sheet_path}: {e}"
+                results["sheets"][sheet_path] = {
+                    "valid": False,
+                    "errors": [error_msg],
+                    "conflict_rows": {},
+                }
+                results["all_errors"].append(error_msg)
+        return results
+
+    results = _run_validation()
+
+    if not results["valid"] and args.fix:
+        any_fixed = False
+        for sheet_path, sheet_result in results["sheets"].items():
+            if not sheet_result["valid"] and sheet_result.get("conflict_rows"):
+                fixed = fix_sheet_conflicts(sheet_path, sheet_result["conflict_rows"])
+                if fixed:
+                    print(
+                        f"Set BarcodeMismatchesIndex to 0 for {len(fixed)} sample(s) in "
+                        f"{sheet_path}: {fixed}",
+                        file=sys.stderr,
+                    )
+                    any_fixed = True
+        if any_fixed:
+            print("Retrying validation after auto-fix...", file=sys.stderr)
+            results = _run_validation()
+
     # Output results
-    output_text = ""
     if args.json:
-        output_text = json.dumps(results, indent=2)
+        serializable = {
+            "valid": results["valid"],
+            "all_errors": results["all_errors"],
+            "sheets": {
+                k: {"config_id": v.get("config_id"), "valid": v["valid"], "errors": v["errors"]}
+                for k, v in results["sheets"].items()
+            },
+        }
+        output_text = json.dumps(serializable, indent=2)
     else:
         if results["valid"]:
             output_text = "✓ All sample sheets passed barcode Hamming distance validation\n"
@@ -218,14 +297,13 @@ def main():
             for error in results["all_errors"]:
                 output_text += f"  {error}\n"
             output_text += "\nSuggested fix: Apply reverse-complement to i7 or i5 indices for conflicting projects\n"
-    
+
     if args.output:
         with open(args.output, 'w') as f:
             f.write(output_text)
     else:
         print(output_text, end="")
-    
-    # Exit with error code if validation failed
+
     sys.exit(0 if results["valid"] else 1)
 
 

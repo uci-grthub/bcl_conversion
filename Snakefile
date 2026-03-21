@@ -1329,13 +1329,14 @@ rule validate_barcode_hamming_distances:
         python3 {params.script} \
             --samplesheets {input.samplesheets} \
             --mismatch-tolerance {params.tolerance} \
-            --output {output.report}
-        
+            --output {output.report} \
+            --fix
+
         exit_code=$?
         if [ $exit_code -ne 0 ]; then
             echo ""
             echo "=========================================================="
-            echo "ERROR: Barcode Hamming distance validation FAILED"
+            echo "ERROR: Barcode Hamming distance validation FAILED (after auto-fix attempt)"
             echo "=========================================================="
             echo ""
             cat {output.report}
@@ -1744,13 +1745,14 @@ rule validate_barcode_hamming_distances_rc:
         python3 {params.script} \
             --samplesheets {input.samplesheet} \
             --mismatch-tolerance {params.tolerance} \
-            --output {output.report}
+            --output {output.report} \
+            --fix
 
         exit_code=$?
         if [ $exit_code -ne 0 ]; then
             echo ""
             echo "=========================================================="
-            echo "ERROR: RC barcode Hamming distance validation FAILED for {wildcards.config_id}"
+            echo "ERROR: RC barcode Hamming distance validation FAILED for {wildcards.config_id} (after auto-fix attempt)"
             echo "=========================================================="
             echo ""
             cat {output.report}
