@@ -1,7 +1,7 @@
 # Snakemake configuration for postprocess workflow
 sample_sheet: "src/SampleSheet_default.csv"
 num_reads: 2
-library_name: "default"
+library_name: ""
 start_s: 1
 lanes: [1,2,3,4,5,6,7,8]
 fastp_threads: 4
