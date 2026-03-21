@@ -1705,6 +1705,50 @@ rule generate_rc_samplesheet:
         if result.returncode != 0:
             raise RuntimeError(f"apply_rc_to_samplesheet.py failed:\n{result.stderr}")
 
+rule validate_barcode_hamming_distances_rc:
+    """Validate RC sample sheet barcode Hamming distances before bcl_convert_rc.
+
+    Runs the same Hamming distance check as validate_barcode_hamming_distances but
+    on the RC-corrected sample sheet.  Respects dual vs single index: the validation
+    script only flags an error when BOTH i7 and i5 distances are insufficient for
+    dual-indexed samples, and checks i7 alone for single-indexed samples.
+    """
+    input:
+        samplesheet = "results/SampleSheet_{config_id}_rc.csv"
+    output:
+        report = "logs/barcode_hamming_validation_rc_{config_id}.txt",
+        marker = touch("logs/barcode_hamming_validation_rc_{config_id}.done")
+    log:
+        "logs/barcode_hamming_validation_rc_{config_id}.log"
+    benchmark:
+        "benchmarks/barcode_hamming_validation_rc_{config_id}.bench"
+    wildcard_constraints:
+        config_id = "[^/]+"
+    params:
+        script = "scripts/validate_barcode_hamming_distance.py",
+        tolerance = 1
+    shell:
+        """
+        (
+        echo "Validating RC sample sheet barcode Hamming distances for {wildcards.config_id}..."
+        python3 {params.script} \
+            --samplesheets {input.samplesheet} \
+            --mismatch-tolerance {params.tolerance} \
+            --output {output.report}
+
+        exit_code=$?
+        if [ $exit_code -ne 0 ]; then
+            echo ""
+            echo "=========================================================="
+            echo "ERROR: RC barcode Hamming distance validation FAILED for {wildcards.config_id}"
+            echo "=========================================================="
+            echo ""
+            cat {output.report}
+            exit 1
+        fi
+        ) > {log} 2>&1
+        """
+
 rule bcl_convert_rc:
     """Run BCL Convert with an i7-RC SampleSheet for config_ids where RC suspect
     projects were detected. If no suspects exist, creates an empty marker
@@ -1716,7 +1760,8 @@ rule bcl_convert_rc:
         candidates = "logs/rc_candidates_{config_id}.json",
         data_dir = DATA_DIR,
         run_info = "src/RunInfo_nn.xml",
-        orig_done = ".output/{config_id}/.done"
+        orig_done = ".output/{config_id}/.done",
+        _rc_validation_done = "logs/barcode_hamming_validation_rc_{config_id}.done"
     output:
         output_dir = directory(".output_rc/{config_id}"),
         done_file = touch(".output_rc/{config_id}/.done")

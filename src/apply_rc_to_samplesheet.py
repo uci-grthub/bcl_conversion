@@ -24,6 +24,25 @@ def rc(seq):
     return ''.join(comp.get(b.upper(), 'N') for b in reversed(seq))
 
 
+def _add_per_sample_barcode_mismatches(fieldnames, rows):
+    """Add BarcodeMismatchesIndex1/2 columns based on dual vs single index per sample.
+
+    Dual-indexed samples (non-empty index2) get both Index1=1 and Index2=1.
+    Single-indexed samples get Index1=1 and Index2 left blank so DRAGEN
+    does not try to apply an i5 mismatch setting for samples without i5.
+    """
+    fn = list(fieldnames)
+    if 'BarcodeMismatchesIndex1' not in fn:
+        fn.append('BarcodeMismatchesIndex1')
+    if 'BarcodeMismatchesIndex2' not in fn:
+        fn.append('BarcodeMismatchesIndex2')
+    for r in rows:
+        r.setdefault('BarcodeMismatchesIndex1', '1')
+        has_i5 = bool(r.get('index2', '').strip())
+        r.setdefault('BarcodeMismatchesIndex2', '1' if has_i5 else '')
+    return fn
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--samplesheet', required=True)
@@ -59,11 +78,11 @@ def main():
 
     os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
 
-    if header_idx is None or not suspect_fix:
-        # No suspects or no data section: copy as-is
+    if header_idx is None:
+        # No data section found: copy as-is
         with open(args.output, 'w') as f:
             f.writelines(lines)
-        print(f"No RC changes applied (suspects={sorted(suspect_fix)})", file=sys.stderr)
+        print("No data section found; copied as-is", file=sys.stderr)
         return 0
 
     preamble = lines[:header_idx]
@@ -83,14 +102,19 @@ def main():
                 r['index2'] = rc(r['index2'].strip())
         rows.append(r)
 
+    fieldnames = _add_per_sample_barcode_mismatches(fieldnames, rows)
+
     with open(args.output, 'w', newline='') as f:
         f.writelines(preamble)
         writer = csv.DictWriter(f, fieldnames=fieldnames, lineterminator='\n')
         writer.writeheader()
         writer.writerows(rows)
 
-    applied = {proj: ft for proj, ft in suspect_fix.items()}
-    print(f"Applied RC fixes to {rc_count} samples: {applied}", file=sys.stderr)
+    if suspect_fix:
+        applied = {proj: ft for proj, ft in suspect_fix.items()}
+        print(f"Applied RC fixes to {rc_count} samples: {applied}", file=sys.stderr)
+    else:
+        print("No RC changes applied; added per-sample BarcodeMismatches columns", file=sys.stderr)
     return 0
 
 
