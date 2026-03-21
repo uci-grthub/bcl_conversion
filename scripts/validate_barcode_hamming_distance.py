@@ -90,12 +90,16 @@ def validate_sheet_barcodes(sheet_path, tolerance=1):
             if not idx1:
                 continue
             
+            bmi1 = int(row.get("BarcodeMismatchesIndex1", 0) or 0)
+            bmi2 = int(row.get("BarcodeMismatchesIndex2", 0) or 0) if idx2 else None
             index_pairs.append({
                 "row": row_idx,
                 "project": project,
                 "sample": sample,
                 "i7": idx1,
                 "i5": idx2 or "",
+                "bmi1": bmi1,
+                "bmi2": bmi2,
                 "barcode_str": f"{idx1}-{idx2}" if idx2 else idx1,
             })
         
@@ -115,15 +119,15 @@ def validate_sheet_barcodes(sheet_path, tolerance=1):
                 if pair1["i5"] and pair2["i5"]:
                     i5_dist = hamming_distance(pair1["i5"], pair2["i5"])
 
-                i7_too_close = i7_dist is not None and i7_dist <= tolerance
-                i5_too_close = i5_dist is not None and i5_dist <= tolerance
-
-                # If one sample has i5 and the other doesn't, treat as i7-only comparison
-                only_i7 = not (pair1["i5"] and pair2["i5"])
+                # Per-sample mismatch tolerances (from BarcodeMismatchesIndex1/2 columns, default 0)
+                eff_i7_tol = max(pair1["bmi1"], pair2["bmi1"])
+                # only_i7: at least one sample lacks i5 (bmi2 is None for single-indexed)
+                only_i7 = pair1["bmi2"] is None or pair2["bmi2"] is None
 
                 if only_i7:
-                    # i7-only samples: just check i7 distance
-                    if i7_too_close:
+                    # i7-only comparisons: DRAGEN requires distance > 2*tol to avoid a
+                    # "midpoint" read matching both samples within tolerance simultaneously.
+                    if i7_dist is not None and i7_dist <= 2 * eff_i7_tol:
                         msg = (
                             f"Lane {lane}: Insufficient i7 Hamming distance ({i7_dist}) "
                             f"between {pair1['barcode_str']} ({pair1['project']}/{pair1['sample']}) "
@@ -132,6 +136,9 @@ def validate_sheet_barcodes(sheet_path, tolerance=1):
                         errors.append(msg)
                 else:
                     # Dual-indexed: samples are indistinguishable only if BOTH i7 and i5 are too close
+                    eff_i5_tol = max(pair1["bmi2"], pair2["bmi2"])
+                    i7_too_close = i7_dist is not None and i7_dist <= 2 * eff_i7_tol
+                    i5_too_close = i5_dist is not None and i5_dist <= 2 * eff_i5_tol
                     if i7_too_close and i5_too_close:
                         msg = (
                             f"Lane {lane}: Insufficient combined Hamming distance "
