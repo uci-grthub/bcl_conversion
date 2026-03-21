@@ -434,19 +434,28 @@ rule report_order_id:
         # of ORDER_ID_CONFIGS without the original --configfile)
         projects = sorted(merged_links.keys())
 
+        # Build renamed→original project name mapping for all projects in this order_id.
+        # generate_report.py uses this to display original metadata names in the HTML.
+        import json as _json
+        project_name_map = {}
+        for _proj in projects:
+            _orig = next(
+                (p for cid, p in _CONFIG_PROJECT_PAIRS_RAW
+                 if PROJECT_RENAME_MAP.get((cid, p), p) == _proj),
+                _proj
+            )
+            project_name_map[_proj] = _orig
+        project_name_map_json = _json.dumps(project_name_map)
+
         # Open log file
         with open(log_file, 'w') as lf:
             lf.write(f"Generating report for order_id: {order_id}\n")
-            lf.write(f"Projects: {projects}\n\n")
+            lf.write(f"Projects: {projects}\n")
+            lf.write(f"Project name map: {project_name_map}\n\n")
 
         # Generate report for each project in this order_id
         for project in projects:
-            # Resolve original (pre-rename) project name for fastp file lookups
-            orig_project = next(
-                (p for cid, p in _CONFIG_PROJECT_PAIRS_RAW
-                 if PROJECT_RENAME_MAP.get((cid, p), p) == project),
-                project
-            )
+            orig_project = project_name_map.get(project, project)
 
             # Get fastq links for this project in this order_id
             fastq_links = get_project_links_from_yaml(merged_yaml_path, project, lane=None, order_id=order_id)
@@ -466,7 +475,8 @@ rule report_order_id:
                 LIBRARY,  # library_name
                 str(config.get('plots_total_width', 900)),
                 str(config.get('plots_quality', 35)),
-                orig_project,  # orig_project_name for fastp lookups
+                orig_project,          # orig_project_name for fastp lookups
+                project_name_map_json, # full renamed→original map for report display
             ]
             
             result = subprocess.run(cmd, capture_output=True, text=True)
