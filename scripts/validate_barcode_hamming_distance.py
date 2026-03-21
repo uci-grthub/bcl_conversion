@@ -102,28 +102,40 @@ def validate_sheet_barcodes(sheet_path, tolerance=1):
         if len(index_pairs) < 2:
             continue
         
-        # Check pairwise Hamming distances (i7, i5 separately)
+        # Check pairwise Hamming distances (combined i7+i5)
+        # Two samples are distinguishable if EITHER i7 OR i5 has sufficient distance.
+        # Only flag an error when BOTH indices are too close (samples can't be told apart).
         for i in range(len(index_pairs)):
             for j in range(i + 1, len(index_pairs)):
                 pair1 = index_pairs[i]
                 pair2 = index_pairs[j]
-                
-                # Check i7 distance
+
                 i7_dist = hamming_distance(pair1["i7"], pair2["i7"])
-                if i7_dist is not None and i7_dist <= tolerance:
-                    msg = (
-                        f"Lane {lane}: Insufficient i7 Hamming distance ({i7_dist}) "
-                        f"between {pair1['barcode_str']} ({pair1['project']}/{pair1['sample']}) "
-                        f"and {pair2['barcode_str']} ({pair2['project']}/{pair2['sample']})"
-                    )
-                    errors.append(msg)
-                
-                # Check i5 distance (if both have i5)
+                i5_dist = None
                 if pair1["i5"] and pair2["i5"]:
                     i5_dist = hamming_distance(pair1["i5"], pair2["i5"])
-                    if i5_dist is not None and i5_dist <= tolerance:
+
+                i7_too_close = i7_dist is not None and i7_dist <= tolerance
+                i5_too_close = i5_dist is not None and i5_dist <= tolerance
+
+                # If one sample has i5 and the other doesn't, treat as i7-only comparison
+                only_i7 = not (pair1["i5"] and pair2["i5"])
+
+                if only_i7:
+                    # i7-only samples: just check i7 distance
+                    if i7_too_close:
                         msg = (
-                            f"Lane {lane}: Insufficient i5 Hamming distance ({i5_dist}) "
+                            f"Lane {lane}: Insufficient i7 Hamming distance ({i7_dist}) "
+                            f"between {pair1['barcode_str']} ({pair1['project']}/{pair1['sample']}) "
+                            f"and {pair2['barcode_str']} ({pair2['project']}/{pair2['sample']})"
+                        )
+                        errors.append(msg)
+                else:
+                    # Dual-indexed: samples are indistinguishable only if BOTH i7 and i5 are too close
+                    if i7_too_close and i5_too_close:
+                        msg = (
+                            f"Lane {lane}: Insufficient combined Hamming distance "
+                            f"(i7={i7_dist}, i5={i5_dist}) "
                             f"between {pair1['barcode_str']} ({pair1['project']}/{pair1['sample']}) "
                             f"and {pair2['barcode_str']} ({pair2['project']}/{pair2['sample']})"
                         )
