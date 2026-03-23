@@ -20,6 +20,11 @@ external_drive_path: "/mnt/jbod_raid/nextshare/bcl_convert/NovaSeqX"
 # Set to "" or omit to write directly to output/ (slower if on network/JBOD storage).
 scratch_dir: ""
 
+# Order IDs whose projects should be excluded from rule all (e.g. skip processing for a specific order).
+# Also excludes the order-level reports and emails for those order IDs.
+# Example: exclude_order_ids: ["0326I-13", "0326I-14"]
+exclude_order_ids: []
+
 # Report plot composition settings
 plots_total_width: 900  # Total width in pixels for composed plots (default: 900)
 plots_quality: 35       # JPEG quality for composed plots, 1-95 (default: 35, lower = smaller file)

@@ -334,6 +334,18 @@ for _oid in list(ORDER_ID_CONFIGS.keys()):
     if _new_projects:
         ORDER_ID_CONFIGS[_oid] = _new_projects
     # else leave as-is (projects with no rename entry keep old names)
+
+# Exclude order IDs (and their projects) from all targets in rule all.
+EXCLUDE_ORDER_IDS = set(config.get("exclude_order_ids", []))
+if EXCLUDE_ORDER_IDS:
+    _exclude_projects = set()
+    for _oid in EXCLUDE_ORDER_IDS:
+        _exclude_projects.update(ORDER_ID_CONFIGS.pop(_oid, []))
+    ORDER_ID_REPORTS = [f"Reports/order_{oid}/index.html" for oid in ORDER_ID_CONFIGS.keys()]
+    ORDER_ID_MD5S = [f"Reports/order_{oid}/md5sums.txt" for oid in ORDER_ID_CONFIGS.keys()]
+    CONFIG_PROJECT_PAIRS = [(c, p) for c, p in CONFIG_PROJECT_PAIRS if p not in _exclude_projects]
+    PROJECTS = [p for p in PROJECTS if p not in _exclude_projects]
+
 PROJECT_LINK_LOGS = [f"logs/project_link_{config_id}---{project}.log" for config_id, project in CONFIG_PROJECT_PAIRS]
 
 # print("CONFIG_PROJECT_PAIRS:", CONFIG_PROJECT_PAIRS)
