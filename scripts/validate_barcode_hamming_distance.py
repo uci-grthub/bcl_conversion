@@ -163,10 +163,11 @@ def validate_sheet_barcodes(sheet_path, tolerance=1):
     return len(errors) == 0, errors, config_id, conflict_rows
 
 
-def fix_sheet_conflicts(sheet_path, conflict_rows):
+def fix_sheet_conflicts(sheet_path, conflict_rows, output_path=None):
     """
     Set BarcodeMismatchesIndex1/2 to 0 for rows involved in barcode conflicts.
-    Modifies the sheet in-place. Returns list of sample identifiers that were fixed.
+    Writes the result to output_path (or sheet_path if output_path is None).
+    Returns list of sample identifiers that were fixed.
     """
     with open(sheet_path) as f:
         lines = f.readlines()
@@ -185,6 +186,18 @@ def fix_sheet_conflicts(sheet_path, conflict_rows):
     if "BarcodeMismatchesIndex2" not in fieldnames:
         fieldnames.append("BarcodeMismatchesIndex2")
 
+    # DRAGEN requires every row to have a value for BMI columns when the column exists.
+    # Fill defaults first (1 for all rows with that index), then override conflicts with 0.
+    for row in rows:
+        has_i5 = bool(row.get("index2", "").strip())
+        if not row.get("BarcodeMismatchesIndex1", "").strip():
+            row["BarcodeMismatchesIndex1"] = "1"
+        if has_i5:
+            if not row.get("BarcodeMismatchesIndex2", "").strip():
+                row["BarcodeMismatchesIndex2"] = "1"
+        else:
+            row["BarcodeMismatchesIndex2"] = ""
+
     fixed_samples = []
     for row_idx, row in enumerate(rows):
         indices_to_fix = conflict_rows.get(row_idx, set())
@@ -196,7 +209,8 @@ def fix_sheet_conflicts(sheet_path, conflict_rows):
             sample_id = row.get("Sample_ID") or row.get("Sample_Name") or f"row{row_idx}"
             fixed_samples.append(sample_id)
 
-    with open(sheet_path, "w", newline="") as f:
+    dest = output_path if output_path is not None else sheet_path
+    with open(dest, "w", newline="") as f:
         f.writelines(preamble)
         writer = csv.DictWriter(f, fieldnames=fieldnames, lineterminator="\n", extrasaction="ignore")
         writer.writeheader()
@@ -228,7 +242,12 @@ def main():
     parser.add_argument(
         "--fix", action="store_true",
         help="On conflict, set BarcodeMismatchesIndex1/2 to 0 for conflicting samples "
-             "in-place and retry validation"
+             "and retry validation"
+    )
+    parser.add_argument(
+        "--output-sheet", type=str, default=None,
+        help="Write the (possibly fixed) samplesheet to this path instead of modifying in-place. "
+             "If no fix is needed, the original is copied here unchanged."
     )
 
     args = parser.parse_args()
@@ -260,13 +279,16 @@ def main():
                 results["all_errors"].append(error_msg)
         return results
 
+    import shutil as _shutil
+
     results = _run_validation()
 
+    any_fixed = False
     if not results["valid"] and args.fix:
-        any_fixed = False
         for sheet_path, sheet_result in results["sheets"].items():
             if not sheet_result["valid"] and sheet_result.get("conflict_rows"):
-                fixed = fix_sheet_conflicts(sheet_path, sheet_result["conflict_rows"])
+                output_path = args.output_sheet if args.output_sheet else None
+                fixed = fix_sheet_conflicts(sheet_path, sheet_result["conflict_rows"], output_path)
                 if fixed:
                     print(
                         f"Set BarcodeMismatchesIndex to 0 for {len(fixed)} sample(s) in "
@@ -276,7 +298,18 @@ def main():
                     any_fixed = True
         if any_fixed:
             print("Retrying validation after auto-fix...", file=sys.stderr)
+            # Re-validate the fixed sheet at output_sheet (or original if no output_sheet)
+            validate_path = args.output_sheet if args.output_sheet else args.samplesheets[0]
+            original_samplesheets = args.samplesheets
+            args.samplesheets = [validate_path]
             results = _run_validation()
+            args.samplesheets = original_samplesheets
+
+    # If no fix was applied, copy the original to output_sheet so the output always exists
+    if args.output_sheet and not any_fixed:
+        for sheet_path in args.samplesheets:
+            if sheet_path != args.output_sheet:
+                _shutil.copy2(sheet_path, args.output_sheet)
 
     # Output results
     if args.json:

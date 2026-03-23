@@ -1305,38 +1305,41 @@ rule generate_renaming_map:
         build_map_from_samplesheet(input.sample_sheet, output.map, params.library)
 
 rule validate_barcode_hamming_distances:
-    """Pre-flight validation: check that all barcodes maintain minimum Hamming
-    distance for 1-mismatch tolerance. Fails fast with clear error messages.
-    
-    This rule runs before any bcl_convert jobs to catch barcode conflicts early.
+    """Pre-flight validation: check barcode Hamming distances for a single config_id.
+    Runs per-lane so re-running one lane's validation does not invalidate others.
+    With --fix: sets BarcodeMismatchesIndex1/2 to 0 for conflicting samples and retries.
     """
     input:
-        samplesheets = expand("results/SampleSheet_{config_id}.csv", config_id=CONFIG_IDS)
+        samplesheet = "results/SampleSheet_{config_id}.csv"
     output:
-        report = "logs/barcode_hamming_validation.txt",
-        marker = touch("logs/barcode_hamming_validation.done")
+        report = "logs/barcode_hamming_validation_{config_id}.txt",
+        marker = touch("logs/barcode_hamming_validation_{config_id}.done"),
+        fixed_sheet = "results/SampleSheet_{config_id}_validated.csv"
     log:
-        "logs/barcode_hamming_validation.log"
+        "logs/barcode_hamming_validation_{config_id}.log"
     benchmark:
-        "benchmarks/barcode_hamming_validation.bench"
+        "benchmarks/barcode_hamming_validation_{config_id}.bench"
+    wildcard_constraints:
+        config_id = r"lane\d+"
     params:
         script = "scripts/validate_barcode_hamming_distance.py",
         tolerance = 1
     shell:
         """
         (
-        echo "Validating barcode Hamming distances across all sample sheets..."
+        echo "Validating barcode Hamming distances for {wildcards.config_id}..."
         python3 {params.script} \
-            --samplesheets {input.samplesheets} \
+            --samplesheets {input.samplesheet} \
             --mismatch-tolerance {params.tolerance} \
             --output {output.report} \
+            --output-sheet {output.fixed_sheet} \
             --fix
 
         exit_code=$?
         if [ $exit_code -ne 0 ]; then
             echo ""
             echo "=========================================================="
-            echo "ERROR: Barcode Hamming distance validation FAILED (after auto-fix attempt)"
+            echo "ERROR: Barcode Hamming distance validation FAILED for {wildcards.config_id} (after auto-fix attempt)"
             echo "=========================================================="
             echo ""
             cat {output.report}
@@ -1347,11 +1350,10 @@ rule validate_barcode_hamming_distances:
 
 rule bcl_convert:
     input:
-        sample_sheet=lambda wildcards: f"results/SampleSheet_{wildcards.config_id}.csv",
+        sample_sheet=lambda wildcards: f"results/SampleSheet_{wildcards.config_id}_validated.csv",
         renaming_map = "results/renaming_map_{config_id}.csv",
         data_dir=DATA_DIR,
         _sheet_done=lambda wildcards: f"logs/generate_samplesheets_{wildcards.config_id}.done",
-        _validation_done="logs/barcode_hamming_validation.done",
         run_info = "src/RunInfo_nn.xml"
     output:
         done_file = touch(".output/{config_id}/.done")
@@ -1540,8 +1542,10 @@ rule bcl_project_done:
                     # Force-overwrite so RC-corrected Demultiplex_Stats and summaries
                     # replace any stale copy previously written from .output.
                     shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
-                elif not os.path.exists(dst_item):
-                    shutil.copytree(src_item, dst_item)
+                else:
+                    # dirs_exist_ok=True prevents TOCTOU race when multiple
+                    # bcl_project_done jobs run concurrently on the same lane.
+                    shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
             elif not os.path.exists(dst_item):
                 shutil.copy2(src_item, dst_item)
 
@@ -1728,7 +1732,8 @@ rule validate_barcode_hamming_distances_rc:
         samplesheet = "results/SampleSheet_{config_id}_rc.csv"
     output:
         report = "logs/barcode_hamming_validation_rc_{config_id}.txt",
-        marker = touch("logs/barcode_hamming_validation_rc_{config_id}.done")
+        marker = touch("logs/barcode_hamming_validation_rc_{config_id}.done"),
+        fixed_sheet = "results/SampleSheet_{config_id}_rc_validated.csv"
     log:
         "logs/barcode_hamming_validation_rc_{config_id}.log"
     benchmark:
@@ -1746,6 +1751,7 @@ rule validate_barcode_hamming_distances_rc:
             --samplesheets {input.samplesheet} \
             --mismatch-tolerance {params.tolerance} \
             --output {output.report} \
+            --output-sheet {output.fixed_sheet} \
             --fix
 
         exit_code=$?
@@ -1767,13 +1773,12 @@ rule bcl_convert_rc:
     directory without running BCL Convert.
     """
     input:
-        rc_samplesheet = "results/SampleSheet_{config_id}_rc.csv",
+        rc_samplesheet = "results/SampleSheet_{config_id}_rc_validated.csv",
         renaming_map = "results/renaming_map_{config_id}.csv",
         candidates = "logs/rc_candidates_{config_id}.json",
         data_dir = DATA_DIR,
         run_info = "src/RunInfo_nn.xml",
-        orig_done = ".output/{config_id}/.done",
-        _rc_validation_done = "logs/barcode_hamming_validation_rc_{config_id}.done"
+        orig_done = ".output/{config_id}/.done"
     output:
         output_dir = directory(".output_rc/{config_id}"),
         done_file = touch(".output_rc/{config_id}/.done")
