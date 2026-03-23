@@ -41,6 +41,13 @@ if os.path.exists(_PROJECT_CONFIG):
     config.update(_project_config)
 
 # All config values read AFTER merge - project-specific config takes priority
+
+# Fail fast if required config values are missing or empty
+_required = {"library_name", "metadata", "data_dir"}
+_missing = [k for k in _required if not config.get(k, "")]
+if _missing:
+    raise SystemExit(f"Error: required config value(s) are empty or missing: {', '.join(sorted(_missing))}")
+
 SAMPLE_SHEET = config.get("sample_sheet", "src/SampleSheet_default.csv")
 NUM_READS = config.get("num_reads", 2)
 LIBRARY = config.get("library_name", "xR079")  # From merged config (project-specific if exists)
