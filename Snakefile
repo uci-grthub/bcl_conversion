@@ -117,12 +117,14 @@ PROJECT_LINKS_BY_LANE = {}
 ORDER_ID_LOOKUP = {}
 PROJECT_ORDER_ID = {}  # keyed by (project, lane) -> order_id
 PROJECT_LAB_ID = {}  # keyed by (project, lane) -> lab_id
+IS_MISEQ_FORMAT = False
 
 if METADATA_FILE and os.path.exists(METADATA_FILE):
     try:
         # Check if this is MiSeq format (simple) or NovaSeqX format (complex with Summary sheet)
         xl = pd.ExcelFile(METADATA_FILE)
         is_miseq_format = 'Barcode Entries' in xl.sheet_names and 'Summary' not in xl.sheet_names
+        IS_MISEQ_FORMAT = is_miseq_format
         
         if is_miseq_format:
             # MiSeq: simple format, assume single lane
@@ -230,6 +232,10 @@ for (_lane, _group), _oid in ORDER_ID_LOOKUP.items():
 # print("PROJECT_LINKS_BY_LANE:", PROJECT_LINKS_BY_LANE)
 # print("ORDER_ID_LOOKUP:", ORDER_ID_LOOKUP)
 # print("PROJECT_ORDER_ID:", PROJECT_ORDER_ID)
+
+VALIDATE_CONFIG_ID_PATTERN = "[^/]+" if IS_MISEQ_FORMAT else r"lane\d+"
+
+ruleorder: validate_barcode_hamming_distances_rc > validate_barcode_hamming_distances
 
 # Build project directory rename map: (config_id, old_project) -> new_folder_name
 # Format: {LabID}_{OrderID}_{library_name}_L{lane}_G{group}
@@ -723,9 +729,16 @@ rule fastp_plots_per_config:
     wildcard_constraints:
         config_id = "lane.*"
 
+def get_project_done_sentinels(wildcards):
+    return [
+        f"output/{config_id}/{project}/.project_done"
+        for config_id, project in CONFIG_PROJECT_PAIRS
+        if project == wildcards.project
+    ]
+
 rule summarize_project_reads:
     input:
-        get_project_demux_stats
+        get_project_done_sentinels
     output:
         "results/read_counts_{project}.csv"
     log:
@@ -968,8 +981,6 @@ rule fastp_plots_lane:
         touch("results/fastp_plots_summary_lane{lane}.done")
     log:
         "logs/fastp_plots_lane{lane}.log"
-    benchmark:
-        "benchmarks/fastp_plots_lane_{lane}.bench"
     wildcard_constraints:
         lane = r"\d+"
 
@@ -1350,7 +1361,7 @@ rule validate_barcode_hamming_distances:
     benchmark:
         "benchmarks/barcode_hamming_validation_{config_id}.bench"
     wildcard_constraints:
-        config_id = r"lane\d+"
+        config_id = VALIDATE_CONFIG_ID_PATTERN
     params:
         script = "scripts/validate_barcode_hamming_distance.py",
         tolerance = 1
