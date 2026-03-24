@@ -334,6 +334,18 @@ for _oid in list(ORDER_ID_CONFIGS.keys()):
     if _new_projects:
         ORDER_ID_CONFIGS[_oid] = _new_projects
     # else leave as-is (projects with no rename entry keep old names)
+
+# Exclude order IDs (and their projects) from all targets in rule all.
+EXCLUDE_ORDER_IDS = set(config.get("exclude_order_ids", []))
+if EXCLUDE_ORDER_IDS:
+    _exclude_projects = set()
+    for _oid in EXCLUDE_ORDER_IDS:
+        _exclude_projects.update(ORDER_ID_CONFIGS.pop(_oid, []))
+    ORDER_ID_REPORTS = [f"Reports/order_{oid}/index.html" for oid in ORDER_ID_CONFIGS.keys()]
+    ORDER_ID_MD5S = [f"Reports/order_{oid}/md5sums.txt" for oid in ORDER_ID_CONFIGS.keys()]
+    CONFIG_PROJECT_PAIRS = [(c, p) for c, p in CONFIG_PROJECT_PAIRS if p not in _exclude_projects]
+    PROJECTS = [p for p in PROJECTS if p not in _exclude_projects]
+
 PROJECT_LINK_LOGS = [f"logs/project_link_{config_id}---{project}.log" for config_id, project in CONFIG_PROJECT_PAIRS]
 
 # print("CONFIG_PROJECT_PAIRS:", CONFIG_PROJECT_PAIRS)
@@ -409,6 +421,20 @@ rule report_order_id:
         
         import yaml as _yaml
 
+        def _as_file_list(value):
+            """Normalize Snakemake named inputs to a list of file paths.
+
+            With a single upstream file, named inputs can be exposed as a scalar path.
+            """
+            if value is None:
+                return []
+            if isinstance(value, (str, os.PathLike)):
+                return [str(value)]
+            try:
+                return [str(v) for v in value]
+            except TypeError:
+                return [str(value)]
+
         order_id = params.order_id
         report_dir = params.report_dir
         log_file = log[0]
@@ -421,7 +447,8 @@ rule report_order_id:
 
         # Merge individual per-project yaml files into a single dict
         merged_links = {}
-        for yaml_path in input.links_yamls:
+        links_yaml_files = _as_file_list(input.links_yamls)
+        for yaml_path in links_yaml_files:
             if os.path.exists(yaml_path):
                 with open(yaml_path) as _yf:
                     _data = _yaml.safe_load(_yf) or {}
@@ -457,6 +484,7 @@ rule report_order_id:
         # Open log file
         with open(log_file, 'w') as lf:
             lf.write(f"Generating report for order_id: {order_id}\n")
+            lf.write(f"Link YAML inputs: {links_yaml_files}\n")
             lf.write(f"Projects: {projects}\n")
             lf.write(f"Project name map: {project_name_map}\n\n")
 
@@ -495,7 +523,8 @@ rule report_order_id:
         
         # Consolidate md5 sums from all projects in this order_id
         all_md5s = []
-        for md5_file in input.md5_files:
+        md5_input_files = _as_file_list(input.md5_files)
+        for md5_file in md5_input_files:
             try:
                 with open(md5_file, 'r') as f:
                     for line in f:
@@ -1994,6 +2023,8 @@ rule project_link:
         # Relaxed to accept any lane-prefixed config with additional underscore-separated tokens
         config_id = "[^/]+",
         project = ".+"
+    resources:
+        serial_operation=1
     params:
         work_dir = os.getcwd(),
         order_id = lambda wildcards: PROJECT_ORDER_ID.get(
@@ -2239,7 +2270,11 @@ rule rescan_nextcloud:
         if [ -n "$nc_owner" ] && [ -n "$nc_internal" ]; then
             # strip leading slashes from internal
             internal=$(echo "$nc_internal" | sed 's@^/*@@')
-            occ_path="users/$nc_owner/files/$internal"
+            # OCC expects "<user>/files/<path>", not "users/<user>/files/<path>".
+            # Normalize if internal path already includes a user/files prefix.
+            internal=$(echo "$internal" | sed "s@^users/${{nc_owner}}/files/@@")
+            internal=$(echo "$internal" | sed 's@^files/@@')
+            occ_path="$nc_owner/files/$internal"
         elif [ -n "$nc_path" ]; then
             occ_path="$nc_path"
         else
@@ -2248,6 +2283,12 @@ rule rescan_nextcloud:
         fi
 
         ssh kstachel@precision.biochem.uci.edu "docker exec --user www-data nextcloud-aio-nextcloud php occ files:scan --path='$occ_path'" > {log} 2>&1
+
+        # OCC can report malformed --path usage while still returning quickly.
+        if grep -q "Unknown user" {log}; then
+            echo "ERROR: files:scan used an invalid user path: $occ_path" >> {log}
+            exit 1
+        fi
         """
 
 
