@@ -725,7 +725,7 @@ rule fastp_plots_per_config:
 
 rule summarize_project_reads:
     input:
-        get_project_fastp_targets
+        get_project_demux_stats
     output:
         "results/read_counts_{project}.csv"
     log:
@@ -735,41 +735,35 @@ rule summarize_project_reads:
     run:
         import sys
         sys.stderr = sys.stdout = open(log[0], 'w')
-        import json
         import pandas as pd
         import os
-        
+
         data = []
-        for json_file in input:
+        for demux_path in input:
+            if not os.path.exists(demux_path):
+                print(f"Skipping missing {demux_path}")
+                continue
+            # Path: output/{config_id}/Reports/Demultiplex_Stats.csv
+            parts = demux_path.split('/')
+            config_id = parts[1]
             try:
-                with open(json_file, 'r') as f:
-                    j = json.load(f)
-                
-                # Extract info from path or json
-                # Path: results/fastp/{config_id}/{project}/{stem}.json
-                parts = json_file.split('/')
-                # parts[-1] is filename (stem.json)
-                # parts[-2] is project
-                # parts[-3] is config_id
-                
-                config_id = parts[-3]
-                filename = parts[-1]
-                sample_name = os.path.splitext(filename)[0]
-                
-                # Get read counts
-                total_reads = j.get('summary', {}).get('before_filtering', {}).get('total_reads', 0)
-                passed_reads = j.get('summary', {}).get('after_filtering', {}).get('total_reads', 0)
-                
+                demux_df = pd.read_csv(demux_path)
+            except Exception as e:
+                print(f"Error reading {demux_path}: {e}")
+                continue
+
+            matches = demux_df[demux_df['Sample_Project'] == wildcards.project]
+            for _, row in matches.iterrows():
+                sample_name = str(row.get('SampleID', row.get('Sample_ID', ''))).strip()
+                read_pairs = int(row.get('# Reads', 0))
                 data.append({
                     'Config': config_id,
                     'Project': wildcards.project,
                     'Sample': sample_name,
-                    'Total_Reads': total_reads,
-                    'Passed_Reads': passed_reads
+                    'Total_Reads': read_pairs,
+                    'Passed_Reads': read_pairs,
                 })
-            except Exception as e:
-                print(f"Error processing {json_file}: {e}")
-        
+
         df = pd.DataFrame(data)
         if not df.empty:
             df = df.sort_values(['Config', 'Sample'])
