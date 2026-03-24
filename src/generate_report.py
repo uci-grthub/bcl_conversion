@@ -542,11 +542,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
             read2_len = summary.get('read2_mean_length', 0)
             
             is_paired = read2_len > 0
-            
-            if is_paired:
-                paired_reads = total_reads // 2
-            else:
-                paired_reads = total_reads
+            paired_reads = None
             
             # Extract Barcode from stem or sample_name
             # For 10x/Parse/BD: need to look up barcode from renaming map
@@ -592,13 +588,9 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                 else:
                     barcode = "Unknown"
 
-            # Override paired_reads with demux stats count if available and non-zero
-            # (more accurate than fastp subsampled count). Skip the override when demux
-            # stats show 0 — this can happen when the original-orientation demux CSV is
-            # present but the project used RC orientation, yielding 0 in the wrong-pass stats.
-            demux_reads = demux_stats_cache.get(config_id, {}).get((fastp_lookup_name, barcode))
-            if demux_reads is not None and demux_reads > 0:
-                paired_reads = demux_reads
+            _cache = demux_stats_cache.get(config_id, {})
+            demux_reads = _cache.get((fastp_lookup_name, barcode)) or _cache.get((fastp_lookup_name, rc_index2(barcode)))
+            paired_reads = demux_reads if (demux_reads is not None and demux_reads > 0) else "N/A"
 
             # File paths: check if 10x/Parse/BD project (uses Illumina naming) or default (uses stem naming)
             
@@ -726,10 +718,12 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
         for config_id in lane_configs:
             info = samples[stem][config_id]
             type_str = "Paired" if info['is_paired'] else "Single"
+            pr = info['paired_reads']
+            pr_str = f"{pr:,}" if isinstance(pr, int) else pr
             html_content += f"""
 <tr>
 <td style="border: 1px solid #dddddd; padding: 8px;">{info['barcode']}</td>
-<td style="border: 1px solid #dddddd; padding: 8px;">{info['paired_reads']:,}</td>
+<td style="border: 1px solid #dddddd; padding: 8px;">{pr_str}</td>
 <td style="border: 1px solid #dddddd; padding: 8px;">{type_str}</td>
 <td style="border: 1px solid #dddddd; padding: 8px;">{info['r1_size']}</td>
 <td style="border: 1px solid #dddddd; padding: 8px; font-family: monospace; font-size: 11px;">{info['r1_md5']}</td>
