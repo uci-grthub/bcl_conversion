@@ -156,7 +156,6 @@ dependencies:
   - pcre2=10.47=haa7fec5_0
   - pephubclient=0.4.4=pyhd8ed1ab_1
   - peppy=0.40.8=pyhd8ed1ab_0
-  - perl=5.32.1=7_hd590300_perl5
   - pexpect=4.9.0=pyhd8ed1ab_1
   - pillow=12.0.0=py312h50c33e8_2
   - pip=25.3=pyh8b19718_0
@@ -259,4 +258,4 @@ dependencies:
   - zlib-ng=2.3.2=h54a6638_0
   - zstd=1.5.7=hb78ec9c_6
 
-prefix: "/home/kstachel/miniforge3/envs/perl_env"
+prefix: "/home/kstachel/miniforge3/envs/bcl_convert"

@@ -764,6 +764,24 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 if s_norm == 'bd rhapsody atacseq':
                     bd_rhapsody_atac = True
                     break
+
+        def parse_i1_i2_lengths(masking):
+            i1_len = None
+            i2_len = None
+            try:
+                for p in [x.strip() for x in str(masking).split(',') if x and str(x).strip()]:
+                    if ':' not in p:
+                        continue
+                    t, l = p.split(':', 1)
+                    t = t.strip().upper()
+                    l = int(str(l).strip())
+                    if t == 'I1':
+                        i1_len = l
+                    elif t == 'I2':
+                        i2_len = l
+            except Exception:
+                pass
+            return i1_len, i2_len
         
         # Remove rows with empty index if there are other rows with index
         def is_valid_index(val):
@@ -776,7 +794,23 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 return False
             return True
 
-        valid_indices = lane_df['index'].apply(is_valid_index)
+        # Normalize I2-only rows: if masking says I1:0 and I2>0, but barcode is stored in `index`,
+        # move it to `index2` so generated SampleSheets match DRAGEN expectations.
+        if 'Masking' in lane_df.columns and 'index' in lane_df.columns and 'index2' in lane_df.columns:
+            for ridx, row in lane_df.iterrows():
+                i1_len, i2_len = parse_i1_i2_lengths(row.get('Masking', ''))
+                if i1_len == 0 and (i2_len or 0) > 0:
+                    idx1 = row.get('index', '')
+                    idx2 = row.get('index2', '')
+                    if is_valid_index(idx1) and not is_valid_index(idx2):
+                        lane_df.at[ridx, 'index2'] = str(idx1).strip()
+                        lane_df.at[ridx, 'index'] = ""
+
+        # Keep rows that have an index in either column (supports I2-only projects).
+        valid_indices = lane_df.apply(
+            lambda r: is_valid_index(r.get('index', '')) or is_valid_index(r.get('index2', '')),
+            axis=1
+        )
         if valid_indices.any():
             lane_df = lane_df[valid_indices]
 
@@ -793,13 +827,26 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         # Note: Single i7 barcodes can be reused with different i5 barcodes (dual indexing is valid)
         if 'index' in lane_df.columns and 'index2' in lane_df.columns:
             # Create a combined barcode string (index + index2) for validation
-            lane_df['combined_barcode'] = lane_df['index'].astype(str) + ':' + lane_df['index2'].astype(str)
+            lane_df['combined_barcode'] = lane_df.apply(
+                lambda r: (
+                    f"{'' if pd.isna(r['index']) or str(r['index']).strip().lower() == 'nan' else str(r['index']).strip()}"
+                    f":{'' if pd.isna(r['index2']) or str(r['index2']).strip().lower() == 'nan' else str(r['index2']).strip()}"
+                ),
+                axis=1
+            )
             
-            # Filter out rows with empty/NaN barcodes
+            # Filter out rows where both index fields are empty/NaN
             valid_barcodes = lane_df[
-                (lane_df['index'].notna()) & 
-                (lane_df['index'].astype(str).str.strip() != '') & 
-                (lane_df['index'].astype(str).str.lower() != 'nan')
+                (
+                    (lane_df['index'].notna()) &
+                    (lane_df['index'].astype(str).str.strip() != '') &
+                    (lane_df['index'].astype(str).str.lower() != 'nan')
+                ) |
+                (
+                    (lane_df['index2'].notna()) &
+                    (lane_df['index2'].astype(str).str.strip() != '') &
+                    (lane_df['index2'].astype(str).str.lower() != 'nan')
+                )
             ].copy()
             
             if not valid_barcodes.empty:
@@ -902,6 +949,43 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             """
             if not masking_str or str(masking_str).strip() == '' or str(masking_str).lower() == 'nan':
                 return ""
+
+            masking_clean = str(masking_str).strip()
+
+            # Support compact inline format used for inline barcodes, e.g. U5I6Y*
+            # Expand to full per-read OverrideCycles expected by DRAGEN/BCL Convert.
+            compact_match = re.fullmatch(r'[UIYN0-9\*]+', masking_clean.upper())
+            if compact_match and ':' not in masking_clean and ',' not in masking_clean and ';' not in masking_clean:
+                try:
+                    read1_len = 0
+                    if run_reads and len(run_reads) > 0:
+                        read1_len = int(run_reads[0].get('NumCycles', 0))
+
+                    tokens = re.findall(r'(?:[UIYN]\d+|Y\*)', masking_clean.upper())
+                    if tokens:
+                        consumed = 0
+                        read1_parts = []
+                        for tok in tokens:
+                            if tok == 'Y*':
+                                remaining = max(read1_len - consumed, 0)
+                                read1_parts.append(f"Y{remaining}")
+                                consumed += remaining
+                            else:
+                                t = tok[0]
+                                n = int(tok[1:])
+                                read1_parts.append(f"{t}{n}")
+                                consumed += n
+
+                        cycles = [''.join(read1_parts)]
+                        for rr in (run_reads[1:] if run_reads else []):
+                            rr_len = int(rr.get('NumCycles', 0))
+                            rr_is_index = rr.get('IsIndexedRead') == 'Y'
+                            cycles.append(f"N{rr_len}" if rr_is_index else f"Y{rr_len}")
+
+                        return ';'.join(cycles)
+                except Exception as e:
+                    print(f"Error parsing compact masking '{masking_str}' for lane {lane}: {e}")
+
             masking_for_cycles = masking_str
             if strip_i2:
                 try:
@@ -964,6 +1048,33 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
 
         ss_data['OverrideCycles'] = override_cycles_list
 
+        # Flexbar inline-barcode samples have barcodes embedded in R1 (positions 5–10),
+        # not in physical index reads. DRAGEN cannot use I in non-index reads, so these
+        # samples cannot be demultiplexed by DRAGEN. Generate barcode FASTA then exclude
+        # them from the DRAGEN sheet; src/inline_demux.py processes Undetermined reads post-hoc.
+        def _revcomp(seq):
+            comp = str.maketrans('ATGCNatgcn', 'TACGNtacgn')
+            return str(seq).translate(comp)[::-1]
+
+        if 'Sample_Project' in ss_data.columns:
+            flexbar_mask = ss_data['Sample_Project'].str.contains('flexbar', case=False, na=False)
+            if flexbar_mask.any():
+                # Write barcode FASTA (R1-direction) before removing flexbar rows from ss_data.
+                # FLEXBAR_CONFIGS in Snakefile detects this file to trigger inline_demux rules.
+                inline_fasta_path = os.path.join("metadata", f"flexbar_barcodes_{config_id}.fasta")
+                os.makedirs("metadata", exist_ok=True)
+                with open(inline_fasta_path, 'w') as bf:
+                    for _, row in ss_data[flexbar_mask].iterrows():
+                        name = str(row.get('Sample_Name', '')).strip()
+                        i2 = str(row.get('index2', '') or '').strip()
+                        i2 = '' if i2.lower() in ('nan', '') else i2
+                        if name and i2:
+                            bf.write(f">{name}\n{_revcomp(i2)}\n")
+                print(f"Generated {inline_fasta_path}")
+                ss_data = ss_data[~flexbar_mask].reset_index(drop=True)
+                lane_df = lane_df[~flexbar_mask].reset_index(drop=True)
+                override_cycles_list = [oc for oc, fb in zip(override_cycles_list, flexbar_mask.values) if not fb]
+
         # Reorder columns
         cols = ['Lane', 'Sample_ID', 'Sample_Name', 'index', 'index2', 'Sample_Project', 'OverrideCycles']
         # Add missing cols if any
@@ -1022,14 +1133,24 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             i1_lens = [_effective_index_len(c, 1) for c in override_cycles_list]
             i2_lens = [_effective_index_len(c, 2) for c in override_cycles_list]
 
-            # Mixed I1 lengths → set BarcodeMismatchesIndex1,0
-            # (all samples always have I1 if they have any index, so no extra check needed)
-            if len(set(i1_lens)) > 1:
-                f.write("BarcodeMismatchesIndex1,0\n")
+            # Use per-sample BarcodeMismatchesIndex1/2 columns instead of global settings.
+            # DRAGEN rejects global settings when any sample lacks that index entirely (len=0).
+            # Per-sample: 0 when active-index lengths are mixed (avoids N-pad collision errors),
+            # 1 when all active-index samples share the same length. Samples with no active
+            # index for that position get a blank cell (DRAGEN ignores blank per-sample values).
+            active_i1 = [l for l in i1_lens if l > 0]
+            active_i2 = [l for l in i2_lens if l > 0]
+            mixed_i1 = len(set(active_i1)) > 1 if active_i1 else False
+            mixed_i2 = len(set(active_i2)) > 1 if active_i2 else False
 
-            # Mixed I2 lengths AND every sample uses I2 → set BarcodeMismatchesIndex2,0
-            if len(set(i2_lens)) > 1 and all(l > 0 for l in i2_lens):
-                f.write("BarcodeMismatchesIndex2,0\n")
+            if active_i1:
+                ss_data['BarcodeMismatchesIndex1'] = [
+                    (0 if mixed_i1 else 1) if l > 0 else '' for l in i1_lens
+                ]
+            if active_i2:
+                ss_data['BarcodeMismatchesIndex2'] = [
+                    (0 if mixed_i2 else 1) if l > 0 else '' for l in i2_lens
+                ]
             f.write("FastqCompressionFormat,gzip\n")
             f.write("\n")
             

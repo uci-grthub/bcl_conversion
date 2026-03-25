@@ -48,6 +48,7 @@ START_S = config.get("start_s", 1)
 DRYRUN = config.get("dryrun", False)
 DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20260115_LH00626_0088_A233NM2LT4")  # From merged config
 TILES = config.get("tiles", "1_1101")
+FLEXBAR_BIN = config.get("flexbar_bin", "")
 
 SCRATCH_DIR = config.get("scratch_dir", "")
 
@@ -338,7 +339,6 @@ rule all:
         expand("output/{config_id}/{project}/md5sums.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         ORDER_ID_REPORTS,
         ORDER_ID_MD5S,
-        # expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
         expand("results/fastp_plots_summary_lane{lane}.done", lane=detected_lanes),
         expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
         expand("results/read_counts_{project}.csv", project=PROJECTS),
@@ -939,7 +939,6 @@ rule flexbar_per_config:
         # Expecting a barcode file named specifically for this config
         barcodes = "metadata/flexbar_barcodes_{config_id}.fasta",
         adapter = "src/flexbar/adapter.3.fa"
-    conda: "perl_env"
     threads: 32
     output:
         touch("results/flexbar_{config_id}.done")
@@ -954,7 +953,8 @@ rule flexbar_per_config:
         r2 = lambda wildcards: f"output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R2_001.fastq.gz",
         barcodes_abs = lambda wildcards, input: os.path.abspath(input.barcodes),
         adapter_abs = lambda wildcards, input: os.path.abspath(input.adapter),
-        r1_abs = lambda wildcards, input: os.path.abspath(f"output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R1_001.fastq.gz")
+        r1_abs = lambda wildcards, input: os.path.abspath(f"output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R1_001.fastq.gz"),
+        flexbar_bin = FLEXBAR_BIN
     shell:
         """
         (
@@ -966,7 +966,21 @@ rule flexbar_per_config:
         # Note: Assuming flexbar is installed and available in path
         # Using generic flexbar command structure based on description
         
-        flexbar -r {params.r1_abs} -b {params.barcodes_abs} -a {params.adapter_abs} \
+        flexbar_cmd="{params.flexbar_bin}"
+        if [ -z "$flexbar_cmd" ]; then
+            flexbar_cmd="flexbar"
+            if ! command -v "$flexbar_cmd" >/dev/null 2>&1; then
+                echo "ERROR: flexbar not found in PATH and config.flexbar_bin is empty"
+                exit 1
+            fi
+        else
+            if [ ! -x "$flexbar_cmd" ]; then
+                echo "ERROR: configured flexbar_bin is not executable: $flexbar_cmd"
+                exit 1
+            fi
+        fi
+
+        "$flexbar_cmd" -r {params.r1_abs} -b {params.barcodes_abs} -a {params.adapter_abs} \
             --target {params.outdir}/flexbarOut -n {threads} --zip-output GZ
             
         # 2. Process R2 based on R1 results using seqtk
@@ -1326,6 +1340,24 @@ rule bcl_convert:
         }}
         trap cleanup INT TERM
 
+        run_dragen() {{
+            local sample_sheet_path="$1"
+            timeout 7200 dragen --bcl-conversion-only true \
+            --bcl-input-directory {input.data_dir} \
+            --output-directory "$dragen_out" \
+            --force \
+            --bcl-sampleproject-subdirectories true \
+            --sample-sheet "$sample_sheet_path" \
+            --strict-mode false \
+            --bcl-only-lane {params.lane} \
+            --run-info {params.run_info_path} \
+            --bcl-num-parallel-tiles 1 \
+            --bcl-num-conversion-threads 8 \
+            --bcl-num-compression-threads 8 \
+            --bcl-num-decompression-threads 8 \
+            $tiles_arg
+        }}
+
         # Masking is now handled by OverrideCycles in the sample sheet
 
         tiles_arg=""
@@ -1343,20 +1375,7 @@ rule bcl_convert:
         find "$dragen_out" -name "*.fastq.gz" -delete 2>/dev/null || true
         mkdir -p "$dragen_out"
 
-        timeout 7200 dragen --bcl-conversion-only true \
-        --bcl-input-directory {input.data_dir} \
-        --output-directory "$dragen_out" \
-        --force \
-        --bcl-sampleproject-subdirectories true \
-        --sample-sheet {input.sample_sheet} \
-        --strict-mode false \
-        --bcl-only-lane {params.lane} \
-        --run-info {params.run_info_path} \
-        --bcl-num-parallel-tiles 1 \
-        --bcl-num-conversion-threads 8 \
-        --bcl-num-compression-threads 8 \
-        --bcl-num-decompression-threads 8 \
-        $tiles_arg
+        run_dragen {input.sample_sheet}
 
         dragen_status=$?
         if [ $dragen_status -ne 0 ]; then
@@ -1383,9 +1402,15 @@ rule bcl_convert:
             echo "Scratch data removed after successful sync."
         fi
 
-        # Delete Undetermined reads
-        find "$final_out" -name "Undetermined*" -delete
-        echo "Undetermined reads deleted"
+        # Keep Undetermined reads when inline_demux will process this lane.
+        # MurnJ-style samples are excluded from the DRAGEN sheet (no physical index),
+        # so "flexbar" no longer appears in the sheet — check the barcode FASTA instead.
+        if [ -f "metadata/flexbar_barcodes_{wildcards.config_id}.fasta" ]; then
+            echo "Inline demux lane detected (metadata/flexbar_barcodes_{wildcards.config_id}.fasta exists); preserving Undetermined reads."
+        else
+            find "$final_out" -name "Undetermined*" -delete
+            echo "Undetermined reads deleted"
+        fi
 
         # Rename FASTQ files
         src/run_rename.sh {wildcards.config_id} "$final_out" {input.renaming_map}
@@ -1780,6 +1805,16 @@ rule pick_orientation:
         with open(input.candidates) as f:
             suspects = json_mod.load(f)
 
+        # Keep Undetermined FASTQs for lanes that include flexbar projects.
+        samplesheet_path = f"results/SampleSheet_{wildcards.config_id}.csv"
+        preserve_undetermined = False
+        if os_mod.path.exists(samplesheet_path):
+            try:
+                with open(samplesheet_path, 'r', encoding='utf-8', errors='ignore') as _ssf:
+                    preserve_undetermined = "flexbar" in _ssf.read().lower()
+            except Exception:
+                preserve_undetermined = False
+
         # Build fix_type lookup: project -> label (rc_i7 / rc_i5 / rc_both)
         fix_type_map = {}
         for rec in suspects:
@@ -1827,10 +1862,13 @@ rule pick_orientation:
                         lf.write(f"Removing unused RC project dir: {item_path}\n")
                         _shutil_rc.rmtree(item_path)
                     elif os_mod.path.isfile(item_path) and item.startswith('Undetermined') and item.endswith('.fastq.gz'):
-                        lf.write(f"Removing RC undetermined reads: {item_path}\n")
-                        os_mod.remove(item_path)
+                        if preserve_undetermined:
+                            lf.write(f"Preserving RC undetermined reads for flexbar lane: {item_path}\n")
+                        else:
+                            lf.write(f"Removing RC undetermined reads: {item_path}\n")
+                            os_mod.remove(item_path)
 
-        # Remove Undetermined*.fastq.gz from .output as well — never used downstream.
+        # Remove Undetermined*.fastq.gz from .output unless needed for flexbar.
         orig_lane_dir = f".output/{wildcards.config_id}"
         if os_mod.path.isdir(orig_lane_dir):
             with open(log[0], 'a') as lf:
@@ -1838,8 +1876,11 @@ rule pick_orientation:
                     if item.startswith('Undetermined') and item.endswith('.fastq.gz'):
                         item_path = os_mod.path.join(orig_lane_dir, item)
                         if os_mod.path.isfile(item_path):
-                            lf.write(f"Removing original undetermined reads: {item_path}\n")
-                            os_mod.remove(item_path)
+                            if preserve_undetermined:
+                                lf.write(f"Preserving original undetermined reads for flexbar lane: {item_path}\n")
+                            else:
+                                lf.write(f"Removing original undetermined reads: {item_path}\n")
+                                os_mod.remove(item_path)
 
 rule update_validation_workbook:
     """Regenerate the metadata validation workbook after all orientation decisions

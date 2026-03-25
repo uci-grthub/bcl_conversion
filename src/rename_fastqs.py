@@ -3,6 +3,18 @@ import sys
 import pandas as pd
 import glob
 
+
+def _find_illumina_fastq(project_dir: str, sample_name: str, lane: int, read_type: str):
+    """Find Illumina-style FASTQ allowing any S-number.
+
+    This is needed when a lane is split into multiple DRAGEN runs, because each
+    run re-numbers samples independently (S1..Sn).
+    """
+    escaped = glob.escape(sample_name)
+    pattern = os.path.join(project_dir, f"{escaped}_S*_L{lane:03d}_{read_type}_001.fastq.gz")
+    matches = sorted(glob.glob(pattern))
+    return matches[0] if matches else None
+
 def is_parse_or_10x(project_name: str) -> bool:
     """Check if project uses Illumina default naming.
     
@@ -52,10 +64,14 @@ def rename_fastqs(config_id, output_dir, map_file):
         index2 = str(row['index2']).strip()
         if index2.lower() == 'nan': index2 = ""
         
-        if index2:
+        if index1 and index2:
             barcode = f"{index1}-{index2}"
-        else:
+        elif index1:
             barcode = index1
+        elif index2:
+            barcode = index2
+        else:
+            barcode = ""
             
         position = str(row.get('Position', f"P{i+1:03d}")).strip()
             
@@ -84,11 +100,12 @@ def rename_fastqs(config_id, output_dir, map_file):
             for read_type in ['R1', 'R2', 'I1', 'I2']:
                 illumina_name = f"{sample_name}_S{s_num}_L{lane:03d}_{read_type}_001.fastq.gz"
                 illumina_path = os.path.join(project_dir, illumina_name)
+                found_path = _find_illumina_fastq(project_dir, sample_name, lane, read_type)
                 stem_name = f"{run}-L{lane}-G{group}-{position}-{barcode}-{read_type}.fastq.gz"
                 stem_path = os.path.join(project_dir, stem_name)
                 
                 # If already in Illumina format, all good
-                if os.path.exists(illumina_path):
+                if os.path.exists(illumina_path) or found_path:
                     continue
                 
                 # If in stem format, reverse-rename to Illumina
@@ -104,13 +121,18 @@ def rename_fastqs(config_id, output_dir, map_file):
                 
                 # If neither exists, that's OK (R2/I1/I2 may not exist for single-end or non-indexed)
                 if read_type == 'R1':
-                    print(f"Missing FASTQ for 10x/Parse/BD: {illumina_path}")
+                    print(f"Missing FASTQ for 10x/Parse/BD: {os.path.join(project_dir, f'{sample_name}_S*_L{lane:03d}_R1_001.fastq.gz')}")
             continue
 
         # Default: rename to custom xR0<run>-L<lane>-G<group>-P<position>-<barcode>-R<read>.fastq.gz
         for read_type in ['R1', 'R2', 'I1', 'I2']:
             old_name = f"{sample_name}_S{s_num}_L{lane:03d}_{read_type}_001.fastq.gz"
             old_path = os.path.join(project_dir, old_name)
+            if not os.path.exists(old_path):
+                found = _find_illumina_fastq(project_dir, sample_name, lane, read_type)
+                if found:
+                    old_path = found
+                    old_name = os.path.basename(found)
 
             new_name = f"{run}-L{lane}-G{group}-{position}-{barcode}-{read_type}.fastq.gz"
             new_path = os.path.join(project_dir, new_name)

@@ -7,6 +7,7 @@ lanes: [1,2,3,4,5,6,7,8]
 fastp_threads: 4
 metadata: "metadata/default.xlsx"
 data_dir: "/staging/nextcloud/NovaseqX/default"
+flexbar_bin: "/home/kstachel/TOOLS/flexbar-speedup/build_parasail/src/flexbar"
 tiles: ""
 email_sender: "kstachel@uci.edu"
 email_recipient: "kstachel@uci.edu"
