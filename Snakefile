@@ -41,6 +41,13 @@ if os.path.exists(_PROJECT_CONFIG):
     config.update(_project_config)
 
 # All config values read AFTER merge - project-specific config takes priority
+
+# Fail fast if required config values are missing or empty
+_required = {"library_name", "metadata", "data_dir"}
+_missing = [k for k in _required if not config.get(k, "")]
+if _missing:
+    raise SystemExit(f"Error: required config value(s) are empty or missing: {', '.join(sorted(_missing))}")
+
 SAMPLE_SHEET = config.get("sample_sheet", "src/SampleSheet_default.csv")
 NUM_READS = config.get("num_reads", 2)
 LIBRARY = config.get("library_name", "xR079")  # From merged config (project-specific if exists)
@@ -111,12 +118,14 @@ PROJECT_LINKS_BY_LANE = {}
 ORDER_ID_LOOKUP = {}
 PROJECT_ORDER_ID = {}  # keyed by (project, lane) -> order_id
 PROJECT_LAB_ID = {}  # keyed by (project, lane) -> lab_id
+IS_MISEQ_FORMAT = False
 
 if METADATA_FILE and os.path.exists(METADATA_FILE):
     try:
         # Check if this is MiSeq format (simple) or NovaSeqX format (complex with Summary sheet)
         xl = pd.ExcelFile(METADATA_FILE)
         is_miseq_format = 'Barcode Entries' in xl.sheet_names and 'Summary' not in xl.sheet_names
+        IS_MISEQ_FORMAT = is_miseq_format
         
         if is_miseq_format:
             # MiSeq: simple format, assume single lane
@@ -225,6 +234,10 @@ for (_lane, _group), _oid in ORDER_ID_LOOKUP.items():
 # print("ORDER_ID_LOOKUP:", ORDER_ID_LOOKUP)
 # print("PROJECT_ORDER_ID:", PROJECT_ORDER_ID)
 
+VALIDATE_CONFIG_ID_PATTERN = "[^/]+" if IS_MISEQ_FORMAT else r"lane\d+"
+
+ruleorder: validate_barcode_hamming_distances_rc > validate_barcode_hamming_distances
+
 # Build project directory rename map: (config_id, old_project) -> new_folder_name
 # Format: {LabID}_{OrderID}_{library_name}_L{lane}_G{group}
 PROJECT_RENAME_MAP = {}      # (config_id, old_project) -> new_folder_name
@@ -328,6 +341,18 @@ for _oid in list(ORDER_ID_CONFIGS.keys()):
     if _new_projects:
         ORDER_ID_CONFIGS[_oid] = _new_projects
     # else leave as-is (projects with no rename entry keep old names)
+
+# Exclude order IDs (and their projects) from all targets in rule all.
+EXCLUDE_ORDER_IDS = set(config.get("exclude_order_ids", []))
+if EXCLUDE_ORDER_IDS:
+    _exclude_projects = set()
+    for _oid in EXCLUDE_ORDER_IDS:
+        _exclude_projects.update(ORDER_ID_CONFIGS.pop(_oid, []))
+    ORDER_ID_REPORTS = [f"Reports/order_{oid}/index.html" for oid in ORDER_ID_CONFIGS.keys()]
+    ORDER_ID_MD5S = [f"Reports/order_{oid}/md5sums.txt" for oid in ORDER_ID_CONFIGS.keys()]
+    CONFIG_PROJECT_PAIRS = [(c, p) for c, p in CONFIG_PROJECT_PAIRS if p not in _exclude_projects]
+    PROJECTS = [p for p in PROJECTS if p not in _exclude_projects]
+
 PROJECT_LINK_LOGS = [f"logs/project_link_{config_id}---{project}.log" for config_id, project in CONFIG_PROJECT_PAIRS]
 
 # print("CONFIG_PROJECT_PAIRS:", CONFIG_PROJECT_PAIRS)
@@ -402,6 +427,20 @@ rule report_order_id:
         
         import yaml as _yaml
 
+        def _as_file_list(value):
+            """Normalize Snakemake named inputs to a list of file paths.
+
+            With a single upstream file, named inputs can be exposed as a scalar path.
+            """
+            if value is None:
+                return []
+            if isinstance(value, (str, os.PathLike)):
+                return [str(value)]
+            try:
+                return [str(v) for v in value]
+            except TypeError:
+                return [str(value)]
+
         order_id = params.order_id
         report_dir = params.report_dir
         log_file = log[0]
@@ -414,7 +453,8 @@ rule report_order_id:
 
         # Merge individual per-project yaml files into a single dict
         merged_links = {}
-        for yaml_path in input.links_yamls:
+        links_yaml_files = _as_file_list(input.links_yamls)
+        for yaml_path in links_yaml_files:
             if os.path.exists(yaml_path):
                 with open(yaml_path) as _yf:
                     _data = _yaml.safe_load(_yf) or {}
@@ -434,19 +474,29 @@ rule report_order_id:
         # of ORDER_ID_CONFIGS without the original --configfile)
         projects = sorted(merged_links.keys())
 
+        # Build renamed→original project name mapping for all projects in this order_id.
+        # generate_report.py uses this to display original metadata names in the HTML.
+        import json as _json
+        project_name_map = {}
+        for _proj in projects:
+            _orig = next(
+                (p for cid, p in _CONFIG_PROJECT_PAIRS_RAW
+                 if PROJECT_RENAME_MAP.get((cid, p), p) == _proj),
+                _proj
+            )
+            project_name_map[_proj] = _orig
+        project_name_map_json = _json.dumps(project_name_map)
+
         # Open log file
         with open(log_file, 'w') as lf:
             lf.write(f"Generating report for order_id: {order_id}\n")
-            lf.write(f"Projects: {projects}\n\n")
+            lf.write(f"Link YAML inputs: {links_yaml_files}\n")
+            lf.write(f"Projects: {projects}\n")
+            lf.write(f"Project name map: {project_name_map}\n\n")
 
         # Generate report for each project in this order_id
         for project in projects:
-            # Resolve original (pre-rename) project name for fastp file lookups
-            orig_project = next(
-                (p for cid, p in _CONFIG_PROJECT_PAIRS_RAW
-                 if PROJECT_RENAME_MAP.get((cid, p), p) == project),
-                project
-            )
+            orig_project = project_name_map.get(project, project)
 
             # Get fastq links for this project in this order_id
             fastq_links = get_project_links_from_yaml(merged_yaml_path, project, lane=None, order_id=order_id)
@@ -466,7 +516,8 @@ rule report_order_id:
                 LIBRARY,  # library_name
                 str(config.get('plots_total_width', 900)),
                 str(config.get('plots_quality', 35)),
-                orig_project,  # orig_project_name for fastp lookups
+                orig_project,          # orig_project_name for fastp lookups
+                project_name_map_json, # full renamed→original map for report display
             ]
             
             result = subprocess.run(cmd, capture_output=True, text=True)
@@ -478,7 +529,8 @@ rule report_order_id:
         
         # Consolidate md5 sums from all projects in this order_id
         all_md5s = []
-        for md5_file in input.md5_files:
+        md5_input_files = _as_file_list(input.md5_files)
+        for md5_file in md5_input_files:
             try:
                 with open(md5_file, 'r') as f:
                     for line in f:
@@ -677,9 +729,16 @@ rule fastp_plots_per_config:
     wildcard_constraints:
         config_id = "lane.*"
 
+def get_project_done_sentinels(wildcards):
+    return [
+        f"output/{config_id}/{project}/.project_done"
+        for config_id, project in CONFIG_PROJECT_PAIRS
+        if project == wildcards.project
+    ]
+
 rule summarize_project_reads:
     input:
-        get_project_fastp_targets
+        get_project_done_sentinels
     output:
         "results/read_counts_{project}.csv"
     log:
@@ -689,41 +748,35 @@ rule summarize_project_reads:
     run:
         import sys
         sys.stderr = sys.stdout = open(log[0], 'w')
-        import json
         import pandas as pd
         import os
-        
+
         data = []
-        for json_file in input:
+        for demux_path in input:
+            if not os.path.exists(demux_path):
+                print(f"Skipping missing {demux_path}")
+                continue
+            # Path: output/{config_id}/Reports/Demultiplex_Stats.csv
+            parts = demux_path.split('/')
+            config_id = parts[1]
             try:
-                with open(json_file, 'r') as f:
-                    j = json.load(f)
-                
-                # Extract info from path or json
-                # Path: results/fastp/{config_id}/{project}/{stem}.json
-                parts = json_file.split('/')
-                # parts[-1] is filename (stem.json)
-                # parts[-2] is project
-                # parts[-3] is config_id
-                
-                config_id = parts[-3]
-                filename = parts[-1]
-                sample_name = os.path.splitext(filename)[0]
-                
-                # Get read counts
-                total_reads = j.get('summary', {}).get('before_filtering', {}).get('total_reads', 0)
-                passed_reads = j.get('summary', {}).get('after_filtering', {}).get('total_reads', 0)
-                
+                demux_df = pd.read_csv(demux_path)
+            except Exception as e:
+                print(f"Error reading {demux_path}: {e}")
+                continue
+
+            matches = demux_df[demux_df['Sample_Project'] == wildcards.project]
+            for _, row in matches.iterrows():
+                sample_name = str(row.get('SampleID', row.get('Sample_ID', ''))).strip()
+                read_pairs = int(row.get('# Reads', 0))
                 data.append({
                     'Config': config_id,
                     'Project': wildcards.project,
                     'Sample': sample_name,
-                    'Total_Reads': total_reads,
-                    'Passed_Reads': passed_reads
+                    'Total_Reads': read_pairs,
+                    'Passed_Reads': read_pairs,
                 })
-            except Exception as e:
-                print(f"Error processing {json_file}: {e}")
-        
+
         df = pd.DataFrame(data)
         if not df.empty:
             df = df.sort_values(['Config', 'Sample'])
@@ -928,8 +981,6 @@ rule fastp_plots_lane:
         touch("results/fastp_plots_summary_lane{lane}.done")
     log:
         "logs/fastp_plots_lane{lane}.log"
-    benchmark:
-        "benchmarks/fastp_plots_lane_{lane}.bench"
     wildcard_constraints:
         lane = r"\d+"
 
@@ -1308,9 +1359,53 @@ rule generate_renaming_map:
         # Fallback: derive from SampleSheet data section
         build_map_from_samplesheet(input.sample_sheet, output.map, params.library)
 
+rule validate_barcode_hamming_distances:
+    """Pre-flight validation: check barcode Hamming distances for a single config_id.
+    Runs per-lane so re-running one lane's validation does not invalidate others.
+    With --fix: sets BarcodeMismatchesIndex1/2 to 0 for conflicting samples and retries.
+    """
+    input:
+        samplesheet = "results/SampleSheet_{config_id}.csv"
+    output:
+        report = "logs/barcode_hamming_validation_{config_id}.txt",
+        marker = touch("logs/barcode_hamming_validation_{config_id}.done"),
+        fixed_sheet = "results/SampleSheet_{config_id}_validated.csv"
+    log:
+        "logs/barcode_hamming_validation_{config_id}.log"
+    benchmark:
+        "benchmarks/barcode_hamming_validation_{config_id}.bench"
+    wildcard_constraints:
+        config_id = VALIDATE_CONFIG_ID_PATTERN
+    params:
+        script = "scripts/validate_barcode_hamming_distance.py",
+        tolerance = 1
+    shell:
+        """
+        (
+        echo "Validating barcode Hamming distances for {wildcards.config_id}..."
+        python3 {params.script} \
+            --samplesheets {input.samplesheet} \
+            --mismatch-tolerance {params.tolerance} \
+            --output {output.report} \
+            --output-sheet {output.fixed_sheet} \
+            --fix
+
+        exit_code=$?
+        if [ $exit_code -ne 0 ]; then
+            echo ""
+            echo "=========================================================="
+            echo "ERROR: Barcode Hamming distance validation FAILED for {wildcards.config_id} (after auto-fix attempt)"
+            echo "=========================================================="
+            echo ""
+            cat {output.report}
+            exit 1
+        fi
+        ) > {log} 2>&1
+        """
+
 rule bcl_convert:
     input:
-        sample_sheet=lambda wildcards: f"results/SampleSheet_{wildcards.config_id}.csv",
+        sample_sheet=lambda wildcards: f"results/SampleSheet_{wildcards.config_id}_validated.csv",
         renaming_map = "results/renaming_map_{config_id}.csv",
         data_dir=DATA_DIR,
         _sheet_done=lambda wildcards: f"logs/generate_samplesheets_{wildcards.config_id}.done",
@@ -1513,8 +1608,10 @@ rule bcl_project_done:
                     # Force-overwrite so RC-corrected Demultiplex_Stats and summaries
                     # replace any stale copy previously written from .output.
                     shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
-                elif not os.path.exists(dst_item):
-                    shutil.copytree(src_item, dst_item)
+                else:
+                    # dirs_exist_ok=True prevents TOCTOU race when multiple
+                    # bcl_project_done jobs run concurrently on the same lane.
+                    shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
             elif not os.path.exists(dst_item):
                 shutil.copy2(src_item, dst_item)
 
@@ -1689,13 +1786,60 @@ rule generate_rc_samplesheet:
         if result.returncode != 0:
             raise RuntimeError(f"apply_rc_to_samplesheet.py failed:\n{result.stderr}")
 
+rule validate_barcode_hamming_distances_rc:
+    """Validate RC sample sheet barcode Hamming distances before bcl_convert_rc.
+
+    Runs the same Hamming distance check as validate_barcode_hamming_distances but
+    on the RC-corrected sample sheet.  Respects dual vs single index: the validation
+    script only flags an error when BOTH i7 and i5 distances are insufficient for
+    dual-indexed samples, and checks i7 alone for single-indexed samples.
+    """
+    input:
+        samplesheet = "results/SampleSheet_{config_id}_rc.csv"
+    output:
+        report = "logs/barcode_hamming_validation_rc_{config_id}.txt",
+        marker = touch("logs/barcode_hamming_validation_rc_{config_id}.done"),
+        fixed_sheet = "results/SampleSheet_{config_id}_rc_validated.csv"
+    log:
+        "logs/barcode_hamming_validation_rc_{config_id}.log"
+    benchmark:
+        "benchmarks/barcode_hamming_validation_rc_{config_id}.bench"
+    wildcard_constraints:
+        config_id = "[^/]+"
+    params:
+        script = "scripts/validate_barcode_hamming_distance.py",
+        tolerance = 1
+    shell:
+        """
+        (
+        echo "Validating RC sample sheet barcode Hamming distances for {wildcards.config_id}..."
+        python3 {params.script} \
+            --samplesheets {input.samplesheet} \
+            --mismatch-tolerance {params.tolerance} \
+            --output {output.report} \
+            --output-sheet {output.fixed_sheet} \
+            --fix
+
+        exit_code=$?
+        if [ $exit_code -ne 0 ]; then
+            echo ""
+            echo "=========================================================="
+            echo "ERROR: RC barcode Hamming distance validation FAILED for {wildcards.config_id} (after auto-fix attempt)"
+            echo "=========================================================="
+            echo ""
+            cat {output.report}
+            exit 1
+        fi
+        ) > {log} 2>&1
+        """
+
 rule bcl_convert_rc:
     """Run BCL Convert with an i7-RC SampleSheet for config_ids where RC suspect
     projects were detected. If no suspects exist, creates an empty marker
     directory without running BCL Convert.
     """
     input:
-        rc_samplesheet = "results/SampleSheet_{config_id}_rc.csv",
+        rc_samplesheet = "results/SampleSheet_{config_id}_rc_validated.csv",
         renaming_map = "results/renaming_map_{config_id}.csv",
         candidates = "logs/rc_candidates_{config_id}.json",
         data_dir = DATA_DIR,
@@ -1925,6 +2069,8 @@ rule project_link:
         # Relaxed to accept any lane-prefixed config with additional underscore-separated tokens
         config_id = "[^/]+",
         project = ".+"
+    resources:
+        serial_operation=1
     params:
         work_dir = os.getcwd(),
         order_id = lambda wildcards: PROJECT_ORDER_ID.get(
@@ -2170,7 +2316,11 @@ rule rescan_nextcloud:
         if [ -n "$nc_owner" ] && [ -n "$nc_internal" ]; then
             # strip leading slashes from internal
             internal=$(echo "$nc_internal" | sed 's@^/*@@')
-            occ_path="users/$nc_owner/files/$internal"
+            # OCC expects "<user>/files/<path>", not "users/<user>/files/<path>".
+            # Normalize if internal path already includes a user/files prefix.
+            internal=$(echo "$internal" | sed "s@^users/${{nc_owner}}/files/@@")
+            internal=$(echo "$internal" | sed 's@^files/@@')
+            occ_path="$nc_owner/files/$internal"
         elif [ -n "$nc_path" ]; then
             occ_path="$nc_path"
         else
@@ -2179,6 +2329,12 @@ rule rescan_nextcloud:
         fi
 
         ssh kstachel@precision.biochem.uci.edu "docker exec --user www-data nextcloud-aio-nextcloud php occ files:scan --path='$occ_path'" > {log} 2>&1
+
+        # OCC can report malformed --path usage while still returning quickly.
+        if grep -q "Unknown user" {log}; then
+            echo "ERROR: files:scan used an invalid user path: $occ_path" >> {log}
+            exit 1
+        fi
         """
 
 

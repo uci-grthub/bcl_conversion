@@ -1712,6 +1712,13 @@ def get_project_fastp_targets(wildcards):
                 print(f"Error reading map file {map_path}: {e}")
     return targets
 
+def get_project_demux_stats(wildcards):
+    return [
+        f"output/{config_id}/Reports/Demultiplex_Stats.csv"
+        for config_id, project in CONFIG_PROJECT_PAIRS
+        if project == wildcards.project
+    ]
+
 def get_fastp_plots_lane_inputs(wildcards):
     lane = wildcards.lane
     config_id = f"lane{lane}"

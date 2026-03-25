@@ -162,13 +162,16 @@ def compose_plots_base64(image_paths, total_width=900, quality=35, background_co
         print(f"Error composing plots {image_paths}: {e}")
         return None
 
-def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_dir, report_dir, fastq_links_str, lane_filter=None, append_mode=False, links_yaml=None, order_id=None, library_name=None, plots_total_width=900, plots_quality=35, orig_project_name=None):
+def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_dir, report_dir, fastq_links_str, lane_filter=None, append_mode=False, links_yaml=None, order_id=None, library_name=None, plots_total_width=900, plots_quality=35, orig_project_name=None, project_name_map=None):
     os.makedirs(report_dir, exist_ok=True)
     lane_label = f" (Lane {lane_filter})" if lane_filter is not None else ""
-    
+
     # Default library name if not provided
     if not library_name:
         library_name = "Unknown"
+
+    # Display name: prefer original metadata project name over renamed directory name
+    display_project = (project_name_map or {}).get(project) or orig_project_name or project
     
     # Parse fastq_links (semicolon-separated) for current project
     project_fastq_links = [link.strip() for link in fastq_links_str.split(';') if link.strip()]
@@ -247,9 +250,9 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                 lane_match = re.match(r'lane(\d+)', config_id)
                 lane_num = lane_match.group(1) if lane_match else ''
                 all_download_links.append({
-                    'link': lk, 
-                    'project': proj_name, 
-                    'config_id': config_id, 
+                    'link': lk,
+                    'project': (project_name_map or {}).get(proj_name, proj_name),
+                    'config_id': config_id,
                     'lane': lane_num,
                     'run': library_name,
                     'group': group
@@ -262,8 +265,8 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
             # Try to determine config_id from the link path or from available data
             # For now, use basic metadata
             all_download_links.append({
-                'link': lk, 
-                'project': project, 
+                'link': lk,
+                'project': display_project,
                 'config_id': '', 
                 'lane': str(lane_filter) if lane_filter else '',
                 'run': library_name,
@@ -373,7 +376,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Report for {project}{lane_label}</title>
+<title>Report for {display_project}{lane_label}</title>
 </head>
 <body style="font-family: 'Public Sans', 'Work Sans', Arial, sans-serif; margin: 0; padding: 20px; background-color: #f5f7fb; color: #1c2b36;">
 <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 900px; margin: 0 auto;">
@@ -424,7 +427,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
     # Add a project separator for this new project's samples
     html_content += f"""
 <div style="background: #e6f2ff; border-left: 4px solid #0066cc; padding: 12px 16px; margin: 24px 0 16px 0; border-radius: 6px;">
-<h3 style="margin: 0; color: #003d82; font-size: 18px;">Project: {project}</h3>
+<h3 style="margin: 0; color: #003d82; font-size: 18px;">Project: {display_project}</h3>
 {project_download_links_html}
 </div>
 """
@@ -539,11 +542,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
             read2_len = summary.get('read2_mean_length', 0)
             
             is_paired = read2_len > 0
-            
-            if is_paired:
-                paired_reads = total_reads // 2
-            else:
-                paired_reads = total_reads
+            paired_reads = None
             
             # Extract Barcode from stem or sample_name
             # For 10x/Parse/BD: need to look up barcode from renaming map
@@ -589,13 +588,9 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                 else:
                     barcode = "Unknown"
 
-            # Override paired_reads with demux stats count if available and non-zero
-            # (more accurate than fastp subsampled count). Skip the override when demux
-            # stats show 0 — this can happen when the original-orientation demux CSV is
-            # present but the project used RC orientation, yielding 0 in the wrong-pass stats.
-            demux_reads = demux_stats_cache.get(config_id, {}).get((fastp_lookup_name, barcode))
-            if demux_reads is not None and demux_reads > 0:
-                paired_reads = demux_reads
+            _cache = demux_stats_cache.get(config_id, {})
+            demux_reads = _cache.get((fastp_lookup_name, barcode)) or _cache.get((fastp_lookup_name, rc_index2(barcode)))
+            paired_reads = demux_reads if (demux_reads is not None and demux_reads > 0) else "N/A"
 
             # File paths: check if 10x/Parse/BD project (uses Illumina naming) or default (uses stem naming)
             
@@ -723,10 +718,12 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
         for config_id in lane_configs:
             info = samples[stem][config_id]
             type_str = "Paired" if info['is_paired'] else "Single"
+            pr = info['paired_reads']
+            pr_str = f"{pr:,}" if isinstance(pr, int) else pr
             html_content += f"""
 <tr>
 <td style="border: 1px solid #dddddd; padding: 8px;">{info['barcode']}</td>
-<td style="border: 1px solid #dddddd; padding: 8px;">{info['paired_reads']:,}</td>
+<td style="border: 1px solid #dddddd; padding: 8px;">{pr_str}</td>
 <td style="border: 1px solid #dddddd; padding: 8px;">{type_str}</td>
 <td style="border: 1px solid #dddddd; padding: 8px;">{info['r1_size']}</td>
 <td style="border: 1px solid #dddddd; padding: 8px; font-family: monospace; font-size: 11px;">{info['r1_md5']}</td>
@@ -902,7 +899,17 @@ if __name__ == "__main__":
         if val and val != "None":
             orig_project_name = val
 
+    project_name_map = None
+    if len(sys.argv) >= 15:
+        val = sys.argv[14]
+        if val and val != "None":
+            try:
+                import json as _json
+                project_name_map = _json.loads(val)
+            except Exception:
+                pass
+
     # If report_dir already exists with an index.html, this is a continuation (multiple projects for same order_id)
     append_mode = os.path.exists(os.path.join(report_dir, "index.html"))
 
-    generate_report(project, output_base, fastp_plots_base, fastp_base, report_dir, fastq_links, lane_filter, append_mode=append_mode, links_yaml=links_yaml, order_id=order_id, library_name=library_name, plots_total_width=plots_total_width, plots_quality=plots_quality, orig_project_name=orig_project_name)
+    generate_report(project, output_base, fastp_plots_base, fastp_base, report_dir, fastq_links, lane_filter, append_mode=append_mode, links_yaml=links_yaml, order_id=order_id, library_name=library_name, plots_total_width=plots_total_width, plots_quality=plots_quality, orig_project_name=orig_project_name, project_name_map=project_name_map)
