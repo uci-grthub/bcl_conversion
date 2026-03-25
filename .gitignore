@@ -26,3 +26,6 @@ regenerate_and_email_0226I-12_17.sh
 .claude/worktrees
 .output/
 .output_rc/
+src/flexbar/*.fastq
+src/flexbar/flexbarOut.log
+src/flexbar/xR074-L1-G8-flexbar-barcodes.tsv.fa
