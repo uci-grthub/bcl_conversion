@@ -177,6 +177,15 @@ def is_parse_or_10x(project_name):
         p = ""
     return ("10x" in p) or ("parse" in p) or ("bd" in p)
 
+
+def is_special_atac_project_or_sheet(name):
+    """Return True for ATAC projects/sheets that need index-read preservation behavior."""
+    try:
+        n = str(name or "").replace("_", "").replace(" ", "").lower()
+    except Exception:
+        n = ""
+    return n in ("bdrhapsodyatacseq", "10xmultiomeatacseq")
+
 # Write renaming map with a fixed schema to avoid malformed CSVs
 def write_renaming_map(map_df, map_file):
     required_cols = [
@@ -429,14 +438,14 @@ def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name)
         f.write("\n")
         
         f.write("[BCLConvert_Settings]\n")
-        # BD_Rhapsody_ATACseq special settings
-        bd_rhapsody_atac = False
+        # BD_Rhapsody_ATACseq / 10xMultiomeATACseq special settings
+        special_atac_index_reads = False
         if 'Sample_Project' in df_samples.columns:
             for proj in df_samples['Sample_Project'].unique():
-                if isinstance(proj, str) and 'BD_Rhapsody_ATACseq' in proj:
-                    bd_rhapsody_atac = True
+                if is_special_atac_project_or_sheet(proj):
+                    special_atac_index_reads = True
                     break
-        if bd_rhapsody_atac:
+        if special_atac_index_reads:
             f.write("CreateFastqForIndexReads,1\n")
         else:
             f.write("CreateFastqForIndexReads,0\n")
@@ -756,13 +765,20 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         config_id = config['id']
         # Filter by Lane only — multiple masking groups are merged into one SampleSheet
         lane_df = df[df['Lane'] == lane].copy()
-        # Determine if this config comes from a BD_Rhapsody_ATACseq sheet (allow both space and underscore)
-        bd_rhapsody_atac = False
+        # Determine if this config comes from a special ATAC sheet (allow both space and underscore)
+        # that should preserve index-read handling.
+        special_atac_index_reads = False
         if not lane_df.empty and '__sheet_name__' in lane_df.columns:
             for s in lane_df['__sheet_name__'].unique():
-                s_norm = str(s).replace('_', ' ').strip().lower()
-                if s_norm == 'bd rhapsody atacseq':
-                    bd_rhapsody_atac = True
+                if is_special_atac_project_or_sheet(s):
+                    special_atac_index_reads = True
+                    break
+
+        # Also detect by project name in case the tab name does not encode application type.
+        if not special_atac_index_reads and 'Project' in lane_df.columns:
+            for p in lane_df['Project'].dropna().unique():
+                if is_special_atac_project_or_sheet(p):
+                    special_atac_index_reads = True
                     break
 
         def parse_i1_i2_lengths(masking):
@@ -1036,14 +1052,14 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 print(f"Error parsing masking '{masking_str}' for lane {lane}: {e}")
             return ""
 
-        # Determine per-row whether to strip I2 (BD_Rhapsody_ATACseq or ATAC with no index2 data)
+        # Determine per-row whether to strip I2 (special ATAC projects are exempt).
         override_cycles_list = []
         for _, row in lane_df.iterrows():
             row_masking = str(row.get('Masking', '')).strip()
             row_project = str(row.get('Project', '')).strip().upper()
             row_index2 = str(row.get('index2', '')).strip()
             row_has_index2 = row_index2 and row_index2.lower() != 'nan'
-            strip_i2 = not bd_rhapsody_atac and ('ATAC' in row_project and not row_has_index2)
+            strip_i2 = not special_atac_index_reads and ('ATAC' in row_project and not row_has_index2)
             override_cycles_list.append(compute_override_cycles(row_masking, run_reads, strip_i2=strip_i2))
 
         ss_data['OverrideCycles'] = override_cycles_list
@@ -1093,12 +1109,12 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             # Add Settings block
             f.write("[BCLConvert_Settings]\n")
 
-            # BD_Rhapsody_ATACseq special settings (now based on sheet/tab name)
+            # Special ATAC settings (BD_Rhapsody_ATACseq / 10xMultiomeATACseq)
             # If ANY project on the lane needs index read FASTQs, set globally for the run.
             # (DRAGEN 4.x does not support CreateFastqForIndexReads as a per-sample column.)
             _INDEX_READ_KEYWORDS = ["10x", "BD", "parse", "Parse", "SMK", "smk", "CITE", "cite", "Hashtag", "hashtag"]
             create_fastq_for_index = "0"
-            if bd_rhapsody_atac:
+            if special_atac_index_reads:
                 f.write("CreateFastqForIndexReads,1\n")
             else:
                 # Check both Project Name and Sample Sheet tab columns for index-read keywords
