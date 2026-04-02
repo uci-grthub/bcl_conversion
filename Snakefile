@@ -1031,8 +1031,18 @@ rule flexbar_per_config:
             fi
         fi
 
-        "$flexbar_cmd" -r {params.r1_abs} -b {params.barcodes_abs} -a {params.adapter_abs} \
-            --target {params.outdir}/flexbarOut -n {threads} --zip-output GZ
+        "$flexbar_cmd" -r {params.r1_abs} -b {params.barcodes_abs} \
+            --barcode-trim-end LTAIL \
+            --barcode-error-rate 0 \
+            --adapters {params.adapter_abs} \
+            --adapter-error-rate 0.1 \
+            --adapter-min-overlap 1 \
+            --adapter-trim-end RIGHT \
+            --zip-output GZ \
+            --barcode-unassigned \
+            --min-read-length 15 \
+            --umi-tags \
+            --target {params.outdir}/flexbarOut -n {threads}
             
         # 2. Process R2 based on R1 results using seqtk
         # Iterate over generated R1 files
