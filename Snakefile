@@ -1000,11 +1000,11 @@ rule flexbar_per_config:
     params:
         outdir = "output/{config_id}/flexbar",
         lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', ''),
-        r1 = lambda wildcards: f"output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R1_001.fastq.gz",
-        r2 = lambda wildcards: f"output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R2_001.fastq.gz",
+        r1 = lambda wildcards: f".output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R1_001.fastq.gz",
+        r2 = lambda wildcards: f".output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R2_001.fastq.gz",
         barcodes_abs = lambda wildcards, input: os.path.abspath(input.barcodes),
         adapter_abs = lambda wildcards, input: os.path.abspath(input.adapter),
-        r1_abs = lambda wildcards, input: os.path.abspath(f"output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R1_001.fastq.gz"),
+        r1_abs = lambda wildcards, input: os.path.abspath(f".output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R1_001.fastq.gz"),
         flexbar_bin = FLEXBAR_BIN
     shell:
         """
@@ -1031,7 +1031,30 @@ rule flexbar_per_config:
             fi
         fi
 
-        "$flexbar_cmd" -r {params.r1_abs} -b {params.barcodes_abs} \
+        # Preprocess raw barcodes: reverse-complement and add padding
+        processed_barcodes="{params.outdir}/barcodes_processed.fa"
+        awk '
+        /^>/ {{ print; next }}
+        {{
+            barcode = $0
+            # Complement: A↔T, C↔G
+            gsub(/A/, "X", barcode)
+            gsub(/T/, "A", barcode)
+            gsub(/X/, "T", barcode)
+            gsub(/C/, "Y", barcode)
+            gsub(/G/, "C", barcode)
+            gsub(/Y/, "G", barcode)
+            # Reverse
+            reversed = ""
+            for (i = length(barcode); i >= 1; i--) {{
+                reversed = substr(barcode, i, 1) reversed
+            }}
+            # Add padding: 5 N prefix, 4 N suffix
+            print "NNNNN" reversed "NNNN"
+        }}
+        ' {params.barcodes_abs} > "$processed_barcodes"
+
+        "$flexbar_cmd" -r {params.r1_abs} -b "$processed_barcodes" \
             --barcode-trim-end LTAIL \
             --barcode-error-rate 0 \
             --adapters {params.adapter_abs} \
