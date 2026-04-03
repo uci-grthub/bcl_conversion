@@ -416,6 +416,66 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
 
         # Masking validation runs after all sheets are processed
 
+    # Validate project-name parity between Summary and non-Summary tabs
+    def _clean_project_name(val):
+        if pd.isna(val):
+            return ''
+        s = str(val).strip()
+        if not s or s.lower() in ('nan', 'none'):
+            return ''
+        s = s.replace('_', ' ')
+        s = ' '.join(s.split())
+        return s
+
+    summary_projects = set()
+    non_summary_projects = set()
+    non_summary_project_sheets = {}
+
+    for sheet, df in sheet_dfs.items():
+        proj_col = None
+        for c in ('Project', 'Project Name', 'Project name', 'Sample_Project'):
+            if c in df.columns:
+                proj_col = c
+                break
+        if proj_col is None:
+            continue
+
+        is_summary_tab = False
+        try:
+            is_summary_tab = isinstance(sheet, str) and 'summary' in sheet.lower()
+        except Exception:
+            is_summary_tab = False
+
+        for raw_proj in df[proj_col].tolist():
+            proj = _clean_project_name(raw_proj)
+            if not proj:
+                continue
+            if is_summary_tab:
+                summary_projects.add(proj)
+            else:
+                non_summary_projects.add(proj)
+                non_summary_project_sheets.setdefault(proj, set()).add(sheet)
+
+    missing_in_tabs = sorted(summary_projects - non_summary_projects)
+    for proj in missing_in_tabs:
+        issues.append({
+            'sheet': 'Summary',
+            'row': '',
+            'col': 'Project',
+            'message': f"Project listed in Summary but missing from non-Summary tabs: {proj}"
+        })
+
+    missing_in_summary = sorted(non_summary_projects - summary_projects)
+    for proj in missing_in_summary:
+        sheets = sorted(non_summary_project_sheets.get(proj, set()))
+        sheet_list = ', '.join(sheets) if sheets else 'unknown sheet'
+        issues.append({
+            'sheet': 'Summary',
+            'row': '',
+            'col': 'Project',
+            'message': f"Project present in non-Summary tabs but missing from Summary: {proj} (tabs: {sheet_list})"
+        })
+
     # Validate masking against index lengths after all sheets are processed
     def _mask_len_map(masking_str):
         parts = re.split(r'[;,]', str(masking_str))
@@ -450,6 +510,45 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
             if ck in barcode_len_by_lane_group:
                 return barcode_len_by_lane_group.get(ck)
         return None
+
+    def _is_10x_multiome_atac_row(row):
+        """Return True when a row appears to be 10xMultiomeATACseq metadata."""
+        try:
+            name_fields = [
+                row.get('Sample sheet tab'),
+                row.get('Project'),
+                row.get('Project name'),
+                row.get('Project Name'),
+                row.get('Sample_Project'),
+            ]
+            for val in name_fields:
+                if pd.isna(val):
+                    continue
+                norm = str(val).replace('_', '').replace(' ', '').strip().lower()
+                if '10xmultiomeatacseq' in norm:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def _is_flexbar_row(row):
+        """Return True when project or sheet metadata indicates a flexbar workflow."""
+        try:
+            name_fields = [
+                row.get('Sample sheet tab'),
+                row.get('Project'),
+                row.get('Project name'),
+                row.get('Project Name'),
+                row.get('Sample_Project'),
+            ]
+            for val in name_fields:
+                if pd.isna(val):
+                    continue
+                if 'flexbar' in str(val).lower():
+                    return True
+        except Exception:
+            return False
+        return False
 
     for sheet, df in sheet_dfs.items():
         if 'Masking' not in df.columns:
@@ -588,6 +687,17 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                 })
 
             if i2_len is not None:
+                skip_i2_len_check = (
+                    len2 == 0
+                    and (
+                        _is_10x_multiome_atac_row(row)
+                        or _is_flexbar_row(row)
+                    )
+                )
+
+                if skip_i2_len_check:
+                    continue
+
                 if i2_len == 0 and len2 != 0:
                     issues.append({
                         'sheet': sheet,

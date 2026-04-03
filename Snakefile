@@ -990,7 +990,7 @@ rule flexbar_per_config:
         # Expecting a barcode file named specifically for this config
         barcodes = "metadata/flexbar_barcodes_{config_id}.fasta",
         adapter = "src/flexbar/adapter.3.fa"
-    threads: 32
+    threads: 16
     output:
         touch("results/flexbar_{config_id}.done")
     log:
@@ -1048,10 +1048,16 @@ rule flexbar_per_config:
         # Iterate over generated R1 files
         for r1_out in {params.outdir}/flexbarOut_barcode_*.fastq.gz; do
             [ -e "$r1_out" ] || continue
-            
+
             base_name=$(basename "$r1_out" .fastq.gz)
             # Example base_name: flexbarOut_barcode_L-0-1
-            
+
+            # Skip R2 conversion for unassigned reads
+            if [[ "$base_name" == *"unassigned"* ]]; then
+                echo "Skipping R2 conversion for unassigned: $base_name"
+                continue
+            fi
+
             echo "Processing R2 for $base_name..."
             
             # Extract headers from R1
