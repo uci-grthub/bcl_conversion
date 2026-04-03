@@ -294,6 +294,26 @@ CONFIG_IDS = list(SAMPLE_SHEETS_DICT.keys()) if SAMPLE_SHEETS_DICT else []
 if not CONFIG_IDS and detected_lanes:
     CONFIG_IDS = [f"lane{l}" for l in detected_lanes]
 
+# Optional preferred bcl_convert sequencing by config_id.
+# Example in config YAML:
+# bcl_convert_order:
+#   - lane3
+#   - lane1
+#   - lane2
+_preferred_bcl_order = [str(x) for x in config.get("bcl_convert_order", [])]
+_preferred_bcl_order = [cid for cid in _preferred_bcl_order if cid in CONFIG_IDS]
+BCL_CONVERT_ORDER = _preferred_bcl_order + [cid for cid in CONFIG_IDS if cid not in _preferred_bcl_order]
+BCL_CONVERT_PREV = {
+    cid: (BCL_CONVERT_ORDER[i - 1] if i > 0 else None)
+    for i, cid in enumerate(BCL_CONVERT_ORDER)
+}
+
+def get_prev_bcl_done(wildcards):
+    prev_cid = BCL_CONVERT_PREV.get(wildcards.config_id)
+    if not prev_cid:
+        return []
+    return [maybe_ancient(f".output/{prev_cid}/.done")]
+
 FASTP_THREADS = config.get("fastp_threads", 4)
 
 PROJECTS = get_all_projects(SAMPLE_SHEETS_DICT)
@@ -348,14 +368,26 @@ for _oid in list(ORDER_ID_CONFIGS.keys()):
         ORDER_ID_CONFIGS[_oid] = _new_projects
     # else leave as-is (projects with no rename entry keep old names)
 
+# Only build order-level report targets for order IDs that resolve to at least
+# one project present in CONFIG_PROJECT_PAIRS. This prevents report_order_id
+# jobs from starting with empty dynamic inputs.
+_projects_in_pairs = {p for _, p in CONFIG_PROJECT_PAIRS}
+ACTIVE_ORDER_IDS = [
+    oid for oid, projects in ORDER_ID_CONFIGS.items()
+    if set(projects or []).intersection(_projects_in_pairs)
+]
+ORDER_ID_REPORTS = [f"Reports/order_{oid}/index.html" for oid in ACTIVE_ORDER_IDS]
+ORDER_ID_MD5S = [f"Reports/order_{oid}/md5sums.txt" for oid in ACTIVE_ORDER_IDS]
+
 # Exclude order IDs (and their projects) from all targets in rule all.
 EXCLUDE_ORDER_IDS = set(config.get("exclude_order_ids", []))
 if EXCLUDE_ORDER_IDS:
     _exclude_projects = set()
     for _oid in EXCLUDE_ORDER_IDS:
         _exclude_projects.update(ORDER_ID_CONFIGS.pop(_oid, []))
-    ORDER_ID_REPORTS = [f"Reports/order_{oid}/index.html" for oid in ORDER_ID_CONFIGS.keys()]
-    ORDER_ID_MD5S = [f"Reports/order_{oid}/md5sums.txt" for oid in ORDER_ID_CONFIGS.keys()]
+    ACTIVE_ORDER_IDS = [oid for oid in ACTIVE_ORDER_IDS if oid not in EXCLUDE_ORDER_IDS]
+    ORDER_ID_REPORTS = [f"Reports/order_{oid}/index.html" for oid in ACTIVE_ORDER_IDS]
+    ORDER_ID_MD5S = [f"Reports/order_{oid}/md5sums.txt" for oid in ACTIVE_ORDER_IDS]
     CONFIG_PROJECT_PAIRS = [(c, p) for c, p in CONFIG_PROJECT_PAIRS if p not in _exclude_projects]
     PROJECTS = [p for p in PROJECTS if p not in _exclude_projects]
 
@@ -377,7 +409,7 @@ rule all:
         expand("logs/project_links_{config_id}---{project}.yaml", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         f"results/{LIBRARY}-count.csv",
         f"Reports/{LIBRARY}_read_counts_email.done",
-        expand("Reports/order_{order_id}/email_sent.done", order_id=ORDER_ID_CONFIGS.keys()),
+        expand("Reports/order_{order_id}/email_sent.done", order_id=ACTIVE_ORDER_IDS),
         expand("logs/verify_project_link_{config_id}---{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         ([VALIDATION_XLSX] if VALIDATION_XLSX else []),
         expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
@@ -1483,7 +1515,8 @@ rule bcl_convert:
         renaming_map = "results/renaming_map_{config_id}.csv",
         data_dir=DATA_DIR,
         _sheet_done=lambda wildcards: f"logs/generate_samplesheets_{wildcards.config_id}.done",
-        run_info = "src/RunInfo_nn.xml"
+        run_info = "src/RunInfo_nn.xml",
+        prev_done = get_prev_bcl_done
     output:
         done_file = touch(".output/{config_id}/.done")
     log:

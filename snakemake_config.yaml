@@ -29,3 +29,12 @@ exclude_order_ids: []
 # Report plot composition settings
 plots_total_width: 900  # Total width in pixels for composed plots (default: 900)
 plots_quality: 35       # JPEG quality for composed plots, 1-95 (default: 35, lower = smaller file)
+bcl_convert_order:
+  - lane1
+  - lane2
+  - lane3
+  - lane4
+  - lane5
+  - lane6
+  - lane7
+  - lane8
