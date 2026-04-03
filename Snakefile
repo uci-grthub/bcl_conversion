@@ -56,6 +56,10 @@ DRYRUN = config.get("dryrun", False)
 DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20260115_LH00626_0088_A233NM2LT4")  # From merged config
 TILES = config.get("tiles", "1_1101")
 FLEXBAR_BIN = config.get("flexbar_bin", "")
+USE_ANCIENT = config.get("use_ancient", True)
+
+def maybe_ancient(path):
+    return ancient(path) if USE_ANCIENT else path
 
 SCRATCH_DIR = config.get("scratch_dir", "")
 
@@ -318,7 +322,9 @@ PROJECT_LANE_MD5S = [f"Reports/{p}/lane{l}/md5sums.txt" for p, l in PROJECT_LANE
 
 FLEXBAR_CONFIGS = []
 for config in LANE_CONFIGS:
-    barcode_path = os.path.join("metadata", f"flexbar_barcodes_{config['id']}.fasta")
+    if config['id'] not in CONFIG_IDS:
+        continue
+    barcode_path = os.path.join("metadata", f"flexbar_barcodes_{config['id']}.txt")
     if os.path.exists(barcode_path):
         FLEXBAR_CONFIGS.append(config['id'])
 
@@ -374,6 +380,7 @@ rule all:
         expand("Reports/order_{order_id}/email_sent.done", order_id=ORDER_ID_CONFIGS.keys()),
         expand("logs/verify_project_link_{config_id}---{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         ([VALIDATION_XLSX] if VALIDATION_XLSX else []),
+        expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
         # "logs/rsync_to_external_drive.done",
         # "results/check_index_rc_swap.txt"
     benchmark:
@@ -730,15 +737,38 @@ rule fastp_plots_per_config:
         config_id = "lane.*"
 
 def get_project_done_sentinels(wildcards):
+    target_projects = {wildcards.project}
+    for (config_id, old_project), new_project in PROJECT_RENAME_MAP.items():
+        if old_project == wildcards.project:
+            target_projects.add(new_project)
+        elif new_project == wildcards.project:
+            target_projects.add(old_project)
+
     return [
         f"output/{config_id}/{project}/.project_done"
         for config_id, project in CONFIG_PROJECT_PAIRS
-        if project == wildcards.project
+        if project in target_projects
+    ]
+
+
+def get_project_bcl_done_sentinels(wildcards):
+    target_projects = {wildcards.project}
+    for (config_id, old_project), new_project in PROJECT_RENAME_MAP.items():
+        if old_project == wildcards.project:
+            target_projects.add(new_project)
+        elif new_project == wildcards.project:
+            target_projects.add(old_project)
+
+    return [
+        f".output/{config_id}/.done"
+        for config_id, project in CONFIG_PROJECT_PAIRS
+        if project in target_projects
     ]
 
 rule summarize_project_reads:
     input:
-        get_project_done_sentinels
+        project_done = get_project_done_sentinels,
+        bcl_done = get_project_bcl_done_sentinels
     output:
         "results/read_counts_{project}.csv"
     log:
@@ -751,21 +781,38 @@ rule summarize_project_reads:
         import pandas as pd
         import os
 
+        target_projects = {wildcards.project}
+        for (config_id, old_project), new_project in PROJECT_RENAME_MAP.items():
+            if old_project == wildcards.project:
+                target_projects.add(new_project)
+            elif new_project == wildcards.project:
+                target_projects.add(old_project)
+
         data = []
-        for demux_path in input:
+        for done_marker in input.bcl_done:
+            parts = str(done_marker).split('/')
+            if len(parts) < 3:
+                print(f"Skipping unexpected done marker path: {done_marker}")
+                continue
+
+            config_id = parts[1]
+            demux_path = f"output/{config_id}/Reports/Demultiplex_Stats.csv"
+
             if not os.path.exists(demux_path):
                 print(f"Skipping missing {demux_path}")
                 continue
-            # Path: output/{config_id}/Reports/Demultiplex_Stats.csv
-            parts = demux_path.split('/')
-            config_id = parts[1]
+
             try:
                 demux_df = pd.read_csv(demux_path)
             except Exception as e:
                 print(f"Error reading {demux_path}: {e}")
                 continue
 
-            matches = demux_df[demux_df['Sample_Project'] == wildcards.project]
+            if 'Sample_Project' not in demux_df.columns:
+                print(f"Missing Sample_Project column in {demux_path}")
+                continue
+
+            matches = demux_df[demux_df['Sample_Project'].astype(str).isin(target_projects)]
             for _, row in matches.iterrows():
                 sample_name = str(row.get('SampleID', row.get('Sample_ID', ''))).strip()
                 read_pairs = int(row.get('# Reads', 0))
@@ -986,7 +1033,7 @@ rule fastp_plots_lane:
 
 rule flexbar_per_config:
     input:
-        bcl_dir = ".output/{config_id}",
+        bcl_done = ".output/{config_id}/.done",
         raw_barcodes = "metadata/flexbar_barcodes_{config_id}.txt",
         adapter = "src/flexbar/adapter.3.fa"
     threads: 16
@@ -1560,7 +1607,7 @@ rule bcl_project_done:
     .output_rc (reverse-complement) for this project.
     """
     input:
-        done = ancient(".output/{config_id}/.done"),
+        done = maybe_ancient(".output/{config_id}/.done"),
         decision = "logs/orientation_decision_{config_id}.json"
     output:
         sentinel = touch("output/{config_id}/{project}/.project_done")
@@ -1940,7 +1987,7 @@ rule pick_orientation:
     Non-suspect projects are omitted (callers default to 'original').
     """
     input:
-        done_orig = ancient(".output/{config_id}/.done"),
+        done_orig = maybe_ancient(".output/{config_id}/.done"),
         done_rc = ".output_rc/{config_id}/.done",
         candidates = "logs/rc_candidates_{config_id}.json"
     output:
@@ -2059,7 +2106,7 @@ rule update_validation_workbook:
     """
     input:
         decisions = expand("logs/orientation_decision_{config_id}.json", config_id=CONFIG_IDS),
-        metadata = ancient(metadata)
+        metadata = maybe_ancient(metadata)
     output:
         xlsx = VALIDATION_XLSX
     run:

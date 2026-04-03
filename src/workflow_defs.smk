@@ -186,6 +186,15 @@ def is_special_atac_project_or_sheet(name):
         n = ""
     return n in ("bdrhapsodyatacseq", "10xmultiomeatacseq")
 
+
+def is_10x_multiome_atac_project_or_sheet(name):
+    """Return True for 10x Multiome ATAC project/sheet names."""
+    try:
+        n = str(name or "").replace("_", "").replace(" ", "").lower()
+    except Exception:
+        n = ""
+    return "10xmultiomeatacseq" in n
+
 # Write renaming map with a fixed schema to avoid malformed CSVs
 def write_renaming_map(map_df, map_file):
     required_cols = [
@@ -768,17 +777,21 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         # Determine if this config comes from a special ATAC sheet (allow both space and underscore)
         # that should preserve index-read handling.
         special_atac_index_reads = False
+        special_10x_atac = False
         if not lane_df.empty and '__sheet_name__' in lane_df.columns:
             for s in lane_df['__sheet_name__'].unique():
                 if is_special_atac_project_or_sheet(s):
                     special_atac_index_reads = True
-                    break
+                if is_10x_multiome_atac_project_or_sheet(s):
+                    special_10x_atac = True
 
         # Also detect by project name in case the tab name does not encode application type.
         if not special_atac_index_reads and 'Project' in lane_df.columns:
             for p in lane_df['Project'].dropna().unique():
                 if is_special_atac_project_or_sheet(p):
                     special_atac_index_reads = True
+                if is_10x_multiome_atac_project_or_sheet(p):
+                    special_10x_atac = True
                     break
 
         def parse_i1_i2_lengths(masking):
@@ -829,6 +842,13 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         )
         if valid_indices.any():
             lane_df = lane_df[valid_indices]
+
+        # Normalize NaN/blank in index columns to '' so that deduplication treats them as equal
+        for _col in ['index', 'index2']:
+            if _col in lane_df.columns:
+                lane_df[_col] = lane_df[_col].apply(
+                    lambda x: '' if pd.isna(x) or str(x).strip().lower() == 'nan' else str(x).strip()
+                )
 
         # True de-duplication based on Lane + Project + index + index2
         # (prevents duplicate rows from multiple tabs like Barcode List, but preserves dual-indexed samples)
@@ -1036,7 +1056,10 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                             if type_.startswith('R'):
                                 cycle_str = f"U{len_}" if actual_is_index else f"Y{len_}"
                             elif type_.startswith('I'):
-                                cycle_str = f"I{len_}"
+                                if type_ == 'I2' and special_10x_atac and not row_has_index2:
+                                    cycle_str = f"U{len_}"
+                                else:
+                                    cycle_str = f"I{len_}"
                             elif type_.startswith('U'):
                                 cycle_str = f"U{len_}"
 
@@ -1126,6 +1149,8 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 if any(kw in name for name in names_to_check for kw in _INDEX_READ_KEYWORDS):
                     create_fastq_for_index = "1"
                 f.write(f"CreateFastqForIndexReads,{create_fastq_for_index}\n")
+            if special_10x_atac:
+                f.write("TrimUMI,0\n")
             f.write("MinimumTrimmedReadLength,8\n")
             f.write("MaskShortReads,8\n")
             # When multiple masking groups with different index lengths are merged, DRAGEN
@@ -1148,24 +1173,31 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
 
             i1_lens = [_effective_index_len(c, 1) for c in override_cycles_list]
             i2_lens = [_effective_index_len(c, 2) for c in override_cycles_list]
+            # Use actual index columns to decide whether a barcode index exists.
+            # Some assays (e.g., 10x) can have an I2 segment in OverrideCycles for
+            # biology/UMI structure while index2 is intentionally blank.
+            has_i1 = [bool(str(v).strip()) for v in ss_data['index'].fillna('').astype(str)]
+            has_i2 = [bool(str(v).strip()) for v in ss_data['index2'].fillna('').astype(str)]
 
             # Use per-sample BarcodeMismatchesIndex1/2 columns instead of global settings.
             # DRAGEN rejects global settings when any sample lacks that index entirely (len=0).
             # Per-sample: 0 when active-index lengths are mixed (avoids N-pad collision errors),
             # 1 when all active-index samples share the same length. Samples with no active
             # index for that position get a blank cell (DRAGEN ignores blank per-sample values).
-            active_i1 = [l for l in i1_lens if l > 0]
-            active_i2 = [l for l in i2_lens if l > 0]
+            active_i1 = [l for l, present in zip(i1_lens, has_i1) if present and l > 0]
+            active_i2 = [l for l, present in zip(i2_lens, has_i2) if present and l > 0]
             mixed_i1 = len(set(active_i1)) > 1 if active_i1 else False
             mixed_i2 = len(set(active_i2)) > 1 if active_i2 else False
 
             if active_i1:
                 ss_data['BarcodeMismatchesIndex1'] = [
-                    (0 if mixed_i1 else 1) if l > 0 else '' for l in i1_lens
+                    (0 if mixed_i1 else 1) if (present and l > 0) else ''
+                    for l, present in zip(i1_lens, has_i1)
                 ]
             if active_i2:
                 ss_data['BarcodeMismatchesIndex2'] = [
-                    (0 if mixed_i2 else 1) if l > 0 else '' for l in i2_lens
+                    (0 if mixed_i2 else 1) if (present and l > 0) else ''
+                    for l, present in zip(i2_lens, has_i2)
                 ]
             f.write("FastqCompressionFormat,gzip\n")
             f.write("\n")
