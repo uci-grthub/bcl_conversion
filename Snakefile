@@ -989,7 +989,7 @@ rule flexbar_per_config:
         bcl_dir = ".output/{config_id}",
         raw_barcodes = "metadata/flexbar_barcodes_{config_id}.txt",
         adapter = "src/flexbar/adapter.3.fa"
-    threads: 32
+    threads: 16
     output:
         touch("results/flexbar_{config_id}.done")
     log:

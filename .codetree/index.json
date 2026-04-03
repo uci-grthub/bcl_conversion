@@ -1,0 +1,1507 @@
+{
+  "run_validation.py": {
+    "mtime": 1773867520.2610183,
+    "skeleton": []
+  },
+  "debug/consolidate_md5sums.py": {
+    "mtime": 1773867520.2550182,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "extract_lane_from_config_id",
+        "line": 18,
+        "parent": null,
+        "params": "(config_id)",
+        "doc": "Extract lane number from config_id like 'lane1_R1-151_I1-8_I2-8_R2-151'"
+      },
+      {
+        "type": "function",
+        "name": "consolidate_md5sums",
+        "line": 25,
+        "parent": null,
+        "params": "(dry_run=False)",
+        "doc": "Consolidate md5sums.txt files from Reports to output directories."
+      }
+    ]
+  },
+  "debug/debug_lane_masking.py": {
+    "mtime": 1773867520.2550182,
+    "skeleton": []
+  },
+  "debug/debug_read_sheet.py": {
+    "mtime": 1773867520.2550182,
+    "skeleton": []
+  },
+  "debug/debug_read_sheet_v2.py": {
+    "mtime": 1773867520.2550182,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "read_sample_sheet",
+        "line": 5,
+        "parent": null,
+        "params": "(sheet_path)",
+        "doc": ""
+      }
+    ]
+  },
+  "debug/inspect_all_sheets.py": {
+    "mtime": 1773867520.2550182,
+    "skeleton": []
+  },
+  "debug/inspect_barcode_list.py": {
+    "mtime": 1773867520.2550182,
+    "skeleton": []
+  },
+  "debug/inspect_metadata.py": {
+    "mtime": 1773867520.2550182,
+    "skeleton": []
+  },
+  "debug/inspect_summary.py": {
+    "mtime": 1773867520.2550182,
+    "skeleton": []
+  },
+  "debug/reproduce_issue.py": {
+    "mtime": 1773867520.2550182,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "get_run_read_lengths",
+        "line": 11,
+        "parent": null,
+        "params": "(run_info_path)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "generate_lane_samplesheets",
+        "line": 29,
+        "parent": null,
+        "params": "(metadata_file, lane_configs, project_lookup, masking_lookup, out_dir, run_info_path=None)",
+        "doc": ""
+      }
+    ]
+  },
+  "debug/validate_metadata.py": {
+    "mtime": 1773867520.2550182,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "_resolve_repo_root",
+        "line": 20,
+        "parent": null,
+        "params": "()",
+        "doc": "Return repository root (parent of this debug directory)."
+      },
+      {
+        "type": "function",
+        "name": "_load_metadata_from_config",
+        "line": 25,
+        "parent": null,
+        "params": "(config_path: str)",
+        "doc": "Read metadata path from YAML config."
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 40,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "scripts/check_index_rc_swap.py": {
+    "mtime": 1773867520.2620184,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "rc",
+        "line": 23,
+        "parent": null,
+        "params": "(seq)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "infer_config_id_from_samplesheet",
+        "line": 28,
+        "parent": null,
+        "params": "(path)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "infer_config_id_from_undetermined",
+        "line": 34,
+        "parent": null,
+        "params": "(path)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "parse_bclconvert_samplesheet",
+        "line": 40,
+        "parent": null,
+        "params": "(path)",
+        "doc": "Parse a BCLConvert-style SampleSheet in attachments."
+      },
+      {
+        "type": "function",
+        "name": "parse_undetermined",
+        "line": 85,
+        "parent": null,
+        "params": "(path)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "classify_observed",
+        "line": 114,
+        "parent": null,
+        "params": "(obs_seq, expected_set)",
+        "doc": "Return list of match types and matched expected pairs for obs_seq."
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 163,
+        "parent": null,
+        "params": "(argv)",
+        "doc": ""
+      }
+    ]
+  },
+  "scripts/fix_bd_10x_sample_name_suffixes.py": {
+    "mtime": 1774464871.5265024,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "is_bd_or_10x",
+        "line": 38,
+        "parent": null,
+        "params": "(project: str)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "strip_suffix",
+        "line": 43,
+        "parent": null,
+        "params": "(name: str)",
+        "doc": "Remove a trailing _<digits> suffix added by filldown_and_make_unique."
+      },
+      {
+        "type": "function",
+        "name": "rename",
+        "line": 48,
+        "parent": null,
+        "params": "(src: str, dst: str, dry_run: bool)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "fix_renaming_map",
+        "line": 63,
+        "parent": null,
+        "params": "(map_path: str, dry_run: bool)",
+        "doc": "Update Sample_ID and Sample_Name in the renaming map CSV."
+      },
+      {
+        "type": "function",
+        "name": "fix_samplesheet",
+        "line": 96,
+        "parent": null,
+        "params": "(ss_path: str, dry_run: bool)",
+        "doc": "Strip suffixes from Sample_ID and Sample_Name in a BCL Convert SampleSheet."
+      },
+      {
+        "type": "function",
+        "name": "fix_fastq_files",
+        "line": 141,
+        "parent": null,
+        "params": "(fastq_dir: str, name_map: dict, dry_run: bool)",
+        "doc": "Rename FASTQ files in fastq_dir using the old->new sample name mapping."
+      },
+      {
+        "type": "function",
+        "name": "fix_fastp_files",
+        "line": 161,
+        "parent": null,
+        "params": "(fastp_dir: str, name_map: dict, dry_run: bool)",
+        "doc": "Rename fastp JSON/HTML files using the old->new sample name mapping."
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 177,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "scripts/validate_barcode_hamming_distance.py": {
+    "mtime": 1774464871.5265024,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "hamming_distance",
+        "line": 28,
+        "parent": null,
+        "params": "(s1, s2)",
+        "doc": "Calculate Hamming distance between two sequences."
+      },
+      {
+        "type": "function",
+        "name": "_find_data_section",
+        "line": 35,
+        "parent": null,
+        "params": "(lines)",
+        "doc": "Return (preamble, data_lines) split at the line after [BCLConvert_Data]/[Data]."
+      },
+      {
+        "type": "function",
+        "name": "parse_samplesheet_data",
+        "line": 43,
+        "parent": null,
+        "params": "(sheet_path)",
+        "doc": "Extract barcode data rows from sample sheet."
+      },
+      {
+        "type": "function",
+        "name": "validate_sheet_barcodes",
+        "line": 64,
+        "parent": null,
+        "params": "(sheet_path, tolerance=1)",
+        "doc": "Validate barcode Hamming distances in a single sample sheet."
+      },
+      {
+        "type": "function",
+        "name": "fix_sheet_conflicts",
+        "line": 166,
+        "parent": null,
+        "params": "(sheet_path, conflict_rows, output_path=None)",
+        "doc": "Set BarcodeMismatchesIndex1/2 to 0 for rows involved in barcode conflicts."
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 222,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/analyze_undetermined_indices.py": {
+    "mtime": 1773867520.2640183,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "open_fastq",
+        "line": 12,
+        "parent": null,
+        "params": "(file_path)",
+        "doc": "Open a gzipped FASTQ using pigz (multi-threaded) if available, else gzip."
+      },
+      {
+        "type": "function",
+        "name": "get_top_indices",
+        "line": 27,
+        "parent": null,
+        "params": "(file_pattern, top_n=20, output_file=None, limit=None)",
+        "doc": "Single-pass: count all clusters AND collect index sample using pigz."
+      }
+    ]
+  },
+  "src/base_composition_plot_fastp.py": {
+    "mtime": 1773867520.2640183,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "parse_fastqc_base_content",
+        "line": 27,
+        "parent": null,
+        "params": "(file_path)",
+        "doc": "Parses 'Per base sequence content' from fastqc_data.txt."
+      },
+      {
+        "type": "function",
+        "name": "parse_fastp_json",
+        "line": 68,
+        "parent": null,
+        "params": "(file_path)",
+        "doc": "Parse fastp JSON report and extract per-base sequence content."
+      },
+      {
+        "type": "function",
+        "name": "plot_composition",
+        "line": 181,
+        "parent": null,
+        "params": "(ax, df, title)",
+        "doc": "Helper function to plot data onto a specific matplotlib axis."
+      },
+      {
+        "type": "function",
+        "name": "_load_base_df",
+        "line": 205,
+        "parent": null,
+        "params": "(file_path)",
+        "doc": "Load per-base composition from either fastqc_data.txt or fastp JSON."
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 232,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/combine_reports.py": {
+    "mtime": 1773867520.2650185,
+    "skeleton": [
+      {
+        "type": "class",
+        "name": "ReportCombiner",
+        "line": 30,
+        "parent": null,
+        "params": "",
+        "doc": "Combines sequencing reports according to configuration."
+      },
+      {
+        "type": "method",
+        "name": "__init__",
+        "line": 33,
+        "parent": "ReportCombiner",
+        "params": "(self, config_path: str, reports_dir: str = \"Reports\", output_dir: str = \"Reports\")",
+        "doc": "Initialize the report combiner."
+      },
+      {
+        "type": "method",
+        "name": "_load_config",
+        "line": 47,
+        "parent": "ReportCombiner",
+        "params": "(self)",
+        "doc": "Load YAML configuration file."
+      },
+      {
+        "type": "method",
+        "name": "_get_project_report_path",
+        "line": 56,
+        "parent": "ReportCombiner",
+        "params": "(self, project: str, lane: int)",
+        "doc": "Get the path to a project's report for a given lane."
+      },
+      {
+        "type": "method",
+        "name": "_project_lane_exists",
+        "line": 60,
+        "parent": "ReportCombiner",
+        "params": "(self, project: str, lane: int)",
+        "doc": "Check if a project report exists for a given lane."
+      },
+      {
+        "type": "method",
+        "name": "_read_html_file",
+        "line": 65,
+        "parent": "ReportCombiner",
+        "params": "(self, filepath: str)",
+        "doc": "Read HTML file content."
+      },
+      {
+        "type": "method",
+        "name": "_read_md5_file",
+        "line": 74,
+        "parent": "ReportCombiner",
+        "params": "(self, filepath: str)",
+        "doc": "Read md5sums file and return lines."
+      },
+      {
+        "type": "method",
+        "name": "_extract_html_body",
+        "line": 83,
+        "parent": "ReportCombiner",
+        "params": "(self, html: str)",
+        "doc": "Extract body content from HTML, removing html/body tags."
+      },
+      {
+        "type": "method",
+        "name": "_generate_combined_html",
+        "line": 99,
+        "parent": "ReportCombiner",
+        "params": "(self, reports_data: List[Tuple[str, str, int, str]])",
+        "doc": "Generate a combined HTML report from multiple project reports."
+      },
+      {
+        "type": "method",
+        "name": "_combine_md5sums",
+        "line": 208,
+        "parent": "ReportCombiner",
+        "params": "(self, md5_data: List[Tuple[str, str, int, List[str]]])",
+        "doc": "Combine md5sum files with project/lane headers."
+      },
+      {
+        "type": "method",
+        "name": "process_combination",
+        "line": 227,
+        "parent": "ReportCombiner",
+        "params": "(self, combination: Dict)",
+        "doc": "Process a single report combination."
+      },
+      {
+        "type": "method",
+        "name": "run",
+        "line": 327,
+        "parent": "ReportCombiner",
+        "params": "(self)",
+        "doc": "Process all report combinations."
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 353,
+        "parent": null,
+        "params": "()",
+        "doc": "Main entry point."
+      }
+    ]
+  },
+  "src/find_missing_samples.py": {
+    "mtime": 1773867520.2650185,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "parse_args",
+        "line": 15,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "read_renaming_maps",
+        "line": 26,
+        "parent": null,
+        "params": "(maps_dir)",
+        "doc": "Read all renaming_map CSV files and extract sample information."
+      },
+      {
+        "type": "function",
+        "name": "read_count_file",
+        "line": 80,
+        "parent": null,
+        "params": "(count_file)",
+        "doc": "Read the count CSV and extract sample names."
+      },
+      {
+        "type": "function",
+        "name": "find_missing_samples",
+        "line": 107,
+        "parent": null,
+        "params": "(expected_samples, samples_with_counts)",
+        "doc": "Compare expected samples with samples that have counts."
+      },
+      {
+        "type": "function",
+        "name": "format_output",
+        "line": 128,
+        "parent": null,
+        "params": "(missing_samples)",
+        "doc": "Format missing samples for output."
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 174,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/fix_fastp_filenames_by_barcode.py": {
+    "mtime": 1773867520.2650185,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "fix_fastp_filenames_by_barcode",
+        "line": 14,
+        "parent": null,
+        "params": "(config_id, results_dir, map_file)",
+        "doc": "Rename fastp and fastp_plots files to correct positions by matching on barcode sequences."
+      }
+    ]
+  },
+  "src/fix_positions_by_barcode.py": {
+    "mtime": 1773867520.2650185,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "fix_positions_by_barcode",
+        "line": 13,
+        "parent": null,
+        "params": "(config_id, output_dir, map_file)",
+        "doc": "Rename files to correct positions by matching on barcode sequences."
+      }
+    ]
+  },
+  "src/generate_download_instructions_pdf.py": {
+    "mtime": 1773867520.2650185,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "generate_download_instructions_pdf",
+        "line": 16,
+        "parent": null,
+        "params": "(output_path)",
+        "doc": "Generate a PDF with download instructions."
+      }
+    ]
+  },
+  "src/generate_nextcloud_links.py": {
+    "mtime": 1773867520.2650185,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "get_env",
+        "line": 25,
+        "parent": null,
+        "params": "(var)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "local_to_nc_path",
+        "line": 46,
+        "parent": null,
+        "params": "(local_path)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "get_share_link",
+        "line": 56,
+        "parent": null,
+        "params": "(nc_path, max_retries=5)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "verify_link_exists",
+        "line": 110,
+        "parent": null,
+        "params": "(link)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 121,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/generate_rulegraph_images.py": {
+    "mtime": 1773867520.2650185,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "parse_dot_file",
+        "line": 13,
+        "parent": null,
+        "params": "(dot_path)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "get_rule_subgraph",
+        "line": 29,
+        "parent": null,
+        "params": "(rule_idx, nodes, edges)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "_color_for_label",
+        "line": 37,
+        "parent": null,
+        "params": "(label)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "_sanitize_filename",
+        "line": 44,
+        "parent": null,
+        "params": "(s)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "write_dot",
+        "line": 49,
+        "parent": null,
+        "params": "(sub_nodes, sub_edges, nodes, out_path)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "generate_images",
+        "line": 62,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/mean_phred_plot_fastp.py": {
+    "mtime": 1773867520.2660184,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "parse_fastqc_quality",
+        "line": 26,
+        "parent": null,
+        "params": "(file_path)",
+        "doc": "Parses the 'Per base sequence quality' module from a fastqc_data.txt file."
+      },
+      {
+        "type": "function",
+        "name": "parse_fastp_quality_json",
+        "line": 66,
+        "parent": null,
+        "params": "(file_path)",
+        "doc": "Parse mean PHRED per position from a fastp JSON report."
+      },
+      {
+        "type": "function",
+        "name": "_load_quality",
+        "line": 204,
+        "parent": null,
+        "params": "(file_path)",
+        "doc": "Attempt to load per-base mean PHRED from FastQC text or fastp JSON."
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 231,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/metadata_validation.py": {
+    "mtime": 1773867520.2660184,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "validate_metadata_and_write_report",
+        "line": 16,
+        "parent": null,
+        "params": "(metadata_file, out_xlsx=None)",
+        "doc": "Validate metadata Excel and write a highlighted copy + change list."
+      }
+    ]
+  },
+  "src/parse_timeline.py": {
+    "mtime": 1773867520.2660184,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "format_time_hms",
+        "line": 13,
+        "parent": null,
+        "params": "(seconds)",
+        "doc": "Format seconds into HH:MM:SS format."
+      },
+      {
+        "type": "function",
+        "name": "parse_benchmark_file",
+        "line": 23,
+        "parent": null,
+        "params": "(path)",
+        "doc": "Parse a single .bench file and return the duration in seconds."
+      },
+      {
+        "type": "function",
+        "name": "extract_rule_from_filename",
+        "line": 37,
+        "parent": null,
+        "params": "(filename)",
+        "doc": "Extract rule name from benchmark filename (e.g., 'bcl_convert_lane1_...' -> 'bcl_convert')."
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 58,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/plot_timings_boxplot.py": {
+    "mtime": 1773867520.2660184,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "read_entries",
+        "line": 10,
+        "parent": null,
+        "params": "(path)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 32,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/rename_pipeline_outputs.py": {
+    "mtime": 1773867520.2660184,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "ensure_dir",
+        "line": 33,
+        "parent": null,
+        "params": "(path: str)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "rename_file_if_exists",
+        "line": 37,
+        "parent": null,
+        "params": "(src: str, dst: str, dry_run: bool = False)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "load_map_rows",
+        "line": 57,
+        "parent": null,
+        "params": "(map_file: str)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "row_stem",
+        "line": 73,
+        "parent": null,
+        "params": "(row: dict, default_run: str = \"\")",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "rename_fastp_and_plots",
+        "line": 102,
+        "parent": null,
+        "params": "(config_id: str, map_rows: List[dict], results_base: str = \"results\", dry_run: bool = False)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "rename_fastqs_outputs",
+        "line": 157,
+        "parent": null,
+        "params": "(config_id: str, output_dir: str, map_file: str, dry_run: bool = False)",
+        "doc": "Rename FASTQ outputs from bcl_convert per FASTQ_RENAME.md."
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 240,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/send_email.py": {
+    "mtime": 1773867520.2670186,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "recompress_for_email",
+        "line": 53,
+        "parent": null,
+        "params": "(image_bytes)",
+        "doc": "Resize and recompress a JPEG/PNG for inline email embedding."
+      }
+    ]
+  },
+  "src/send_email_retry.py": {
+    "mtime": 1773867520.2670186,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "run_with_lock",
+        "line": 19,
+        "parent": null,
+        "params": "(lock_path, fn, *args, **kwargs)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "is_retryable_output",
+        "line": 32,
+        "parent": null,
+        "params": "(text)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "call_send",
+        "line": 43,
+        "parent": null,
+        "params": "(send_script, sender, receiver, subject, html, attachments, cc)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 50,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/sort_md5_by_po.py": {
+    "mtime": 1773867520.2670186,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "extract_po",
+        "line": 10,
+        "parent": null,
+        "params": "(filename: str)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "sort_md5_file",
+        "line": 16,
+        "parent": null,
+        "params": "(path: str)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 32,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/summarize_benchmarks.py": {
+    "mtime": 1773867520.2670186,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "load_rule_patterns",
+        "line": 24,
+        "parent": null,
+        "params": "(snakefile_path)",
+        "doc": "Return {rule_name: benchmark_path_pattern} parsed from the Snakefile."
+      },
+      {
+        "type": "function",
+        "name": "pattern_to_regex",
+        "line": 53,
+        "parent": null,
+        "params": "(pattern)",
+        "doc": "Convert a Snakemake benchmark path pattern to a compiled regex."
+      },
+      {
+        "type": "function",
+        "name": "match_rule",
+        "line": 67,
+        "parent": null,
+        "params": "(rel_path, compiled_patterns)",
+        "doc": "Return rule name for rel_path (relative to benchmarks/), or None."
+      },
+      {
+        "type": "function",
+        "name": "parse_bench_file",
+        "line": 75,
+        "parent": null,
+        "params": "(path)",
+        "doc": "Return {col: float} from a benchmark file, or None on error."
+      },
+      {
+        "type": "function",
+        "name": "fmt",
+        "line": 94,
+        "parent": null,
+        "params": "(v)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 98,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/tabulate_bcl_output_sizes.py": {
+    "mtime": 1773867520.2670186,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "human_readable_size",
+        "line": 15,
+        "parent": null,
+        "params": "(num_bytes: int)",
+        "doc": "Convert bytes to a human-friendly string (decimal units)."
+      },
+      {
+        "type": "function",
+        "name": "extract_lane",
+        "line": 25,
+        "parent": null,
+        "params": "(dirname: str)",
+        "doc": "Extract lane identifier from directory name (e.g., 'lane1' from 'lane1_R1-151_I1-8...')."
+      },
+      {
+        "type": "function",
+        "name": "dir_size_bytes",
+        "line": 30,
+        "parent": null,
+        "params": "(path: str)",
+        "doc": "Recursively sum file sizes under a directory, excluding Undetermined*.fastq.gz files."
+      },
+      {
+        "type": "function",
+        "name": "find_bcl_output_dirs",
+        "line": 46,
+        "parent": null,
+        "params": "(base_dir: str)",
+        "doc": "Yield (config_id, path) for bcl_convert outputs under base_dir."
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 64,
+        "parent": null,
+        "params": "(argv: Iterable[str])",
+        "doc": ""
+      }
+    ]
+  },
+  "src/test_nextcloud_links.py": {
+    "mtime": 1773867520.2670186,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "test_link",
+        "line": 11,
+        "parent": null,
+        "params": "(url)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 21,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/split_samplesheet_for_lane1.py": {
+    "mtime": 1773869048.1189103,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "parse_samplesheet",
+        "line": 8,
+        "parent": null,
+        "params": "(path: Path)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "write_samplesheet",
+        "line": 52,
+        "parent": null,
+        "params": "(path: Path, header_lines, settings_rows, data_header, data_rows)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 67,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/find_location_of_flexbar_indexes.py": {
+    "mtime": 1774384094.8644595,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "parse_barcode_fa",
+        "line": 17,
+        "parent": null,
+        "params": "(fasta_path: Path)",
+        "doc": "Return {barcode_name: 6mer_sequence} by stripping flanking Ns from each entry."
+      },
+      {
+        "type": "function",
+        "name": "scan_reads",
+        "line": 37,
+        "parent": null,
+        "params": "(\n    fastq_gz: Path,\n    barcodes: dict[str, str],\n    n_reads: int,\n    search_len: int,\n)",
+        "doc": "Scan reads and return per-barcode position hit counters."
+      },
+      {
+        "type": "function",
+        "name": "print_summary",
+        "line": 71,
+        "parent": null,
+        "params": "(\n    counters: dict[str, Counter],\n    barcodes: dict[str, str],\n    reads_seen: int,\n    search_len: int,\n)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "parse_args",
+        "line": 112,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 147,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/inline_demux.py": {
+    "mtime": 1774390420.7835398,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "_revcomp",
+        "line": 29,
+        "parent": null,
+        "params": "(seq: str)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "load_barcodes_fasta",
+        "line": 34,
+        "parent": null,
+        "params": "(fasta_path: Path)",
+        "doc": "Return {name: r1_barcode} from a FASTA of R1-direction sequences."
+      },
+      {
+        "type": "function",
+        "name": "load_barcodes_tsv",
+        "line": 51,
+        "parent": null,
+        "params": "(tsv_path: Path)",
+        "doc": "Return {name: r1_barcode} from a TSV with TruSeq-convention barcodes."
+      },
+      {
+        "type": "function",
+        "name": "hamming",
+        "line": 67,
+        "parent": null,
+        "params": "(a: str, b: str)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "assign_barcode",
+        "line": 73,
+        "parent": null,
+        "params": "(obs: str, barcodes: dict[str, str], max_mismatches: int)",
+        "doc": "Return sample name or None (unassigned/tie)."
+      },
+      {
+        "type": "function",
+        "name": "_open_fastq",
+        "line": 93,
+        "parent": null,
+        "params": "(path: Path, mode: str = \"rt\")",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "_open_output",
+        "line": 99,
+        "parent": null,
+        "params": "(path: Path)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "read_fastq_records",
+        "line": 103,
+        "parent": null,
+        "params": "(fh)",
+        "doc": "Yield (header, seq, plus, qual) tuples."
+      },
+      {
+        "type": "function",
+        "name": "demux",
+        "line": 119,
+        "parent": null,
+        "params": "(\n    r1_path: Path,\n    r2_path: Path | None,\n    barcodes: dict[str, str],\n    out_dir: Path,\n    bc_start: int,\n    bc_len: int,\n    clip_5p: int,\n    max_mismatches: int,\n    add_umi: bool,\n    umi_prefix_len: int,\n    umi_suffix_len: int,\n    sample_name_prefix: str,\n)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "parse_args",
+        "line": 190,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 226,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/apply_rc_to_samplesheet.py": {
+    "mtime": 1774464871.5265024,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "rc",
+        "line": 22,
+        "parent": null,
+        "params": "(seq)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "_add_per_sample_barcode_mismatches",
+        "line": 27,
+        "parent": null,
+        "params": "(fieldnames, rows)",
+        "doc": "Add BarcodeMismatchesIndex1/2 columns based on dual vs single index per sample."
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 46,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/generate_report.py": {
+    "mtime": 1774464871.5265024,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "extract_po_number",
+        "line": 11,
+        "parent": null,
+        "params": "(md5_line)",
+        "doc": "Extract position number from md5sum line for sorting."
+      },
+      {
+        "type": "function",
+        "name": "get_image_base64",
+        "line": 22,
+        "parent": null,
+        "params": "(path, max_width=600, quality=35)",
+        "doc": "Load image, compress it, and return base64-encoded string."
+      },
+      {
+        "type": "function",
+        "name": "get_file_size",
+        "line": 78,
+        "parent": null,
+        "params": "(path)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "parse_lane_from_config",
+        "line": 90,
+        "parent": null,
+        "params": "(config_id)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "is_parse_or_10x",
+        "line": 96,
+        "parent": null,
+        "params": "(project_name)",
+        "doc": "Check if project uses Illumina default naming."
+      },
+      {
+        "type": "function",
+        "name": "compose_plots_base64",
+        "line": 107,
+        "parent": null,
+        "params": "(image_paths, total_width=900, quality=35, background_color=(255, 255, 255))",
+        "doc": "Compose up to three PNG plot images side-by-side into a single JPEG and return base64."
+      },
+      {
+        "type": "function",
+        "name": "generate_report",
+        "line": 165,
+        "parent": null,
+        "params": "(project, output_base_dir, fastp_plots_base_dir, fastp_base_dir, report_dir, fastq_links_str, lane_filter=None, append_mode=False, links_yaml=None, order_id=None, library_name=None, plots_total_width=900, plots_quality=35, orig_project_name=None, project_name_map=None)",
+        "doc": ""
+      }
+    ]
+  },
+  "src/masking_reference.py": {
+    "mtime": 1774464871.5265024,
+    "skeleton": []
+  },
+  "src/rename_fastqs.py": {
+    "mtime": 1774465092.5997438,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "_find_illumina_fastq",
+        "line": 7,
+        "parent": null,
+        "params": "(project_dir: str, sample_name: str, lane: int, read_type: str)",
+        "doc": "Find Illumina-style FASTQ allowing any S-number."
+      },
+      {
+        "type": "function",
+        "name": "is_parse_or_10x",
+        "line": 18,
+        "parent": null,
+        "params": "(project_name: str)",
+        "doc": "Check if project uses Illumina default naming."
+      },
+      {
+        "type": "function",
+        "name": "rename_fastqs",
+        "line": 31,
+        "parent": null,
+        "params": "(config_id, output_dir, map_file)",
+        "doc": ""
+      }
+    ]
+  },
+  "tests/test_inline_demux.py": {
+    "mtime": 1774391033.7075195,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "_make_read",
+        "line": 47,
+        "parent": null,
+        "params": "(name: str, bc: str, umi_prefix: str = UMI_PREFIX, umi_suffix: str = UMI_SUFFIX, insert: str = INSERT)",
+        "doc": "Return (header, seq, qual) for a synthetic R1 read."
+      },
+      {
+        "type": "function",
+        "name": "_write_fastq_gz",
+        "line": 54,
+        "parent": null,
+        "params": "(path: Path, records: list[tuple[str, str, str]])",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "_write_barcodes_fasta",
+        "line": 60,
+        "parent": null,
+        "params": "(path: Path)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "_read_fastq_gz",
+        "line": 66,
+        "parent": null,
+        "params": "(path: Path)",
+        "doc": "Return list of (header, seq) pairs."
+      },
+      {
+        "type": "class",
+        "name": "Failure",
+        "line": 85,
+        "parent": null,
+        "params": "",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "check",
+        "line": 89,
+        "parent": null,
+        "params": "(cond: bool, msg: str)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "run_test",
+        "line": 94,
+        "parent": null,
+        "params": "(tmp: Path)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 258,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "tests/test_workflow_defs_special_atac.py": {
+    "mtime": 1775167899.0758026,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "_load_workflow_defs_module",
+        "line": 11,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "test_special_atac_name_matching_variants",
+        "line": 22,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "test_10xmultiome_atac_still_classifies_as_parse_or_10x",
+        "line": 46,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/flexbar/run_flexbar_demux.py": {
+    "mtime": 1774388043.5858712,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "reverse_complement",
+        "line": 26,
+        "parent": null,
+        "params": "(seq: str)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "build_barcode_fasta",
+        "line": 31,
+        "parent": null,
+        "params": "(sample_info: Path, barcode_fasta: Path)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "build_flexbar_command",
+        "line": 52,
+        "parent": null,
+        "params": "(\n    flexbar_bin: Path,\n    barcode_fasta: Path,\n    raw_data: Path,\n    adapter_fasta: Path,\n    threads: int,\n)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "resolve_flexbar_bin",
+        "line": 88,
+        "parent": null,
+        "params": "(explicit: str | None, repo_root: Path)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "gzip_fastq_outputs",
+        "line": 123,
+        "parent": null,
+        "params": "(work_dir: Path)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "parse_args",
+        "line": 140,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 203,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/flexbar/deal_with_barcode.py": {
+    "mtime": 1773875800.3801618,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "reverse_complement",
+        "line": 14,
+        "parent": null,
+        "params": "(seq: str)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "convert",
+        "line": 19,
+        "parent": null,
+        "params": "(sample_info: Path, out_fasta: Path)",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 37,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  }
+}
