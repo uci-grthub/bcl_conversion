@@ -987,8 +987,7 @@ rule fastp_plots_lane:
 rule flexbar_per_config:
     input:
         bcl_dir = ".output/{config_id}",
-        # Expecting a barcode file named specifically for this config
-        barcodes = "metadata/flexbar_barcodes_{config_id}.fasta",
+        raw_barcodes = "metadata/flexbar_barcodes_{config_id}.txt",
         adapter = "src/flexbar/adapter.3.fa"
     threads: 16
     output:
@@ -1000,23 +999,20 @@ rule flexbar_per_config:
     params:
         outdir = "output/{config_id}/flexbar",
         lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', ''),
-        r1 = lambda wildcards: f"output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R1_001.fastq.gz",
-        r2 = lambda wildcards: f"output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R2_001.fastq.gz",
-        barcodes_abs = lambda wildcards, input: os.path.abspath(input.barcodes),
+        r1 = lambda wildcards: f".output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R1_001.fastq.gz",
+        r2 = lambda wildcards: f".output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R2_001.fastq.gz",
+        raw_barcodes_abs = lambda wildcards, input: os.path.abspath(input.raw_barcodes),
+        barcodes_abs = lambda wildcards: os.path.abspath(f"metadata/flexbar_barcodes_{wildcards.config_id}.fasta"),
         adapter_abs = lambda wildcards, input: os.path.abspath(input.adapter),
-        r1_abs = lambda wildcards, input: os.path.abspath(f"output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R1_001.fastq.gz"),
+        r1_abs = lambda wildcards, input: os.path.abspath(f".output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R1_001.fastq.gz"),
         flexbar_bin = FLEXBAR_BIN
     shell:
         """
         (
         mkdir -p {params.outdir}
-        
+
         echo "Starting Flexbar processing for {wildcards.config_id}"
-        
-        # 1. Run Flexbar on R1
-        # Note: Assuming flexbar is installed and available in path
-        # Using generic flexbar command structure based on description
-        
+
         flexbar_cmd="{params.flexbar_bin}"
         if [ -z "$flexbar_cmd" ]; then
             flexbar_cmd="flexbar"
@@ -1031,6 +1027,28 @@ rule flexbar_per_config:
             fi
         fi
 
+        # Build processed FASTA from raw tab-delimited barcodes.
+        awk '
+        {{
+            name = $1
+            barcode = $2
+            gsub(/\r/, "", name)
+            gsub(/\r/, "", barcode)
+            gsub(/A/, "X", barcode)
+            gsub(/T/, "A", barcode)
+            gsub(/X/, "T", barcode)
+            gsub(/C/, "Y", barcode)
+            gsub(/G/, "C", barcode)
+            gsub(/Y/, "G", barcode)
+            reversed = ""
+            for (i = length(barcode); i >= 1; i--) {{
+                reversed = reversed substr(barcode, i, 1)
+            }}
+            print ">" name
+            print "NNNNN" reversed "NNNN"
+        }}
+        ' {params.raw_barcodes_abs} > {params.barcodes_abs}
+
         "$flexbar_cmd" -r {params.r1_abs} -b {params.barcodes_abs} \
             --barcode-trim-end LTAIL \
             --barcode-error-rate 0 \
@@ -1043,9 +1061,7 @@ rule flexbar_per_config:
             --min-read-length 15 \
             --umi-tags \
             --target {params.outdir}/flexbarOut -n {threads}
-            
-        # 2. Process R2 based on R1 results using seqtk
-        # Iterate over generated R1 files
+
         for r1_out in {params.outdir}/flexbarOut_barcode_*.fastq.gz; do
             [ -e "$r1_out" ] || continue
 
@@ -1059,30 +1075,25 @@ rule flexbar_per_config:
             fi
 
             echo "Processing R2 for $base_name..."
-            
-            # Extract headers from R1
-            # Logic: zcat | grep " 1:N" | remove @ | take ID
+
             zcat "$r1_out" | grep " 1:N" | sed 's/^@//' | cut -d ' ' -f1 > "{params.outdir}/${{base_name}}_headers.txt"
-            
-            # Subseq R2
-            # Logic: seqtk subseq R2 headers | gzip > R2_out
+
             if [ -s "{params.outdir}/${{base_name}}_headers.txt" ]; then
                 seqtk subseq {params.r2} "{params.outdir}/${{base_name}}_headers.txt" | gzip > "{params.outdir}/${{base_name}}_R2.fastq.gz"
             else
                 echo "No reads found for $base_name"
             fi
-            
+
             rm "{params.outdir}/${{base_name}}_headers.txt"
         done
-        
-        # 3. Collect stats
+
         curr_dir=$PWD
         cd {params.outdir}
         md5sum *.fastq.gz > md5sum.txt
         du -h *.fastq.gz > size.txt
         cd $curr_dir
         ) > {log} 2>&1
-        
+
         touch {output}
         """
 
