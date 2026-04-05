@@ -12,8 +12,8 @@ tiles: ""
 email_sender: "kstachel@uci.edu"
 email_recipient: "kstachel@uci.edu"
 email_cc: "kstachel@uci.edu"
-nextcloud_dir_name: "Jbod"
-nextcloud_dir_path: "nextshare"
+nextcloud_dir_name: "dragenshare"
+nextcloud_dir_path: "nextcloud"
 external_drive_path: "/mnt/jbod_raid/nextshare/bcl_convert/NovaSeqX"
 
 # Fast local NVMe scratch for DRAGEN bcl-convert output (avoids writing directly to slow JBOD RAID).
