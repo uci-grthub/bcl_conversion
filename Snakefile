@@ -1043,6 +1043,7 @@ rule send_read_counts_email:
         f"logs/send_read_counts_email.log"
     benchmark:
         "benchmarks/send_read_counts_email.bench"
+    priority: 80
     params:
         script = "src/send_email.py",
         sender = EMAIL_SENDER,
@@ -1069,6 +1070,7 @@ rule flexbar_per_config:
         raw_barcodes = "metadata/flexbar_barcodes_{config_id}.txt",
         adapter = "src/flexbar/adapter.3.fa"
     threads: 16
+    priority: 99
     output:
         touch("results/flexbar_{config_id}.done")
     log:
@@ -1607,8 +1609,8 @@ rule bcl_convert:
         # Keep Undetermined reads when inline_demux will process this lane.
         # MurnJ-style samples are excluded from the DRAGEN sheet (no physical index),
         # so "flexbar" no longer appears in the sheet — check the barcode FASTA instead.
-        if [ -f "metadata/flexbar_barcodes_{wildcards.config_id}.fasta" ]; then
-            echo "Inline demux lane detected (metadata/flexbar_barcodes_{wildcards.config_id}.fasta exists); preserving Undetermined reads."
+        if [ -f "metadata/flexbar_barcodes_{wildcards.config_id}.txt" ]; then
+            echo "Inline demux lane detected (metadata/flexbar_barcodes_{wildcards.config_id}.txt exists); preserving Undetermined reads."
         else
             find "$final_out" -name "Undetermined*" -delete
             echo "Undetermined reads deleted"
@@ -1687,40 +1689,42 @@ rule bcl_project_done:
         os.makedirs(new_dir, exist_ok=True)
 
         # Copy lane-level accessory files (Reports, Logs, dragen JSONs, etc.) to output.
+        # Only the first project (alphabetically) for this lane performs the copy to avoid
+        # concurrent bcl_project_done jobs racing to copy the same lane-level files.
         # If any project on this lane selected RC orientation, prefer the RC lane-level
         # reports so Demultiplex_Stats and related summaries reflect corrected counts.
         # Skip old Sample_Project subdirectories — those are moved by their own bcl_project_done.
-        accessory_base = ".output"
-        try:
-            if any(v.startswith("rc") for v in _dec.values()):
-                accessory_base = ".output_rc"
-        except Exception:
-            pass
+        all_lane_projects = sorted([p for cid, p in _CONFIG_PROJECT_PAIRS_RAW if cid == config_id])
+        if new_project == (all_lane_projects[0] if all_lane_projects else new_project):
+            accessory_base = ".output"
+            try:
+                if any(v.startswith("rc") for v in _dec.values()):
+                    accessory_base = ".output_rc"
+            except Exception:
+                pass
 
-        staging = f"{accessory_base}/{config_id}"
-        if not os.path.isdir(staging):
-            staging = f".output/{config_id}"
-        dest_base = f"output/{config_id}"
-        os.makedirs(dest_base, exist_ok=True)
-        old_project_dirs = {p for cid, p in _CONFIG_PROJECT_PAIRS_RAW if cid == config_id}
-        for item in os.listdir(staging):
-            if item.startswith('.'):
-                continue
-            src_item = os.path.join(staging, item)
-            dst_item = os.path.join(dest_base, item)
-            if os.path.isdir(src_item) and item in old_project_dirs:
-                continue  # handled by that project's bcl_project_done
-            if os.path.isdir(src_item):
-                if accessory_base == ".output_rc":
-                    # Force-overwrite so RC-corrected Demultiplex_Stats and summaries
-                    # replace any stale copy previously written from .output.
-                    shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
+            staging = f"{accessory_base}/{config_id}"
+            if not os.path.isdir(staging):
+                staging = f".output/{config_id}"
+            dest_base = f"output/{config_id}"
+            os.makedirs(dest_base, exist_ok=True)
+            old_project_dirs = {p for cid, p in _CONFIG_PROJECT_PAIRS_RAW if cid == config_id}
+            for item in os.listdir(staging):
+                if item.startswith('.'):
+                    continue
+                src_item = os.path.join(staging, item)
+                dst_item = os.path.join(dest_base, item)
+                if os.path.isdir(src_item) and item in old_project_dirs:
+                    continue  # handled by that project's bcl_project_done
+                if os.path.isdir(src_item):
+                    if accessory_base == ".output_rc":
+                        # Force-overwrite so RC-corrected Demultiplex_Stats and summaries
+                        # replace any stale copy previously written from .output.
+                        shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
+                    else:
+                        shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
                 else:
-                    # dirs_exist_ok=True prevents TOCTOU race when multiple
-                    # bcl_project_done jobs run concurrently on the same lane.
-                    shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
-            elif not os.path.exists(dst_item):
-                shutil.copy2(src_item, dst_item)
+                    shutil.copy2(src_item, dst_item)
 
         # Remove extraneous I1/I2 FASTQs for projects that don't need index reads.
         # CreateFastqForIndexReads is set globally per lane, so these files are produced
