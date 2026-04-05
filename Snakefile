@@ -870,7 +870,8 @@ rule compile_read_counts:
             config_id=[c for c, p in CONFIG_PROJECT_PAIRS],
             project=[p for c, p in CONFIG_PROJECT_PAIRS],
         ),
-        maps = expand("results/renaming_map_{config_id}.csv", config_id=CONFIG_IDS)
+        maps = expand("results/renaming_map_{config_id}.csv", config_id=CONFIG_IDS),
+        flexbar_done = expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS)
     output:
         csv = f"results/{LIBRARY}-count.csv"
     log:
@@ -994,6 +995,44 @@ rule compile_read_counts:
                 if existing[0] == group_order:
                     existing[2] = group
                 existing[3] += read_pairs
+
+        # Parse flexbar logs and add per-barcode read counts as a "flexbar" group
+        import re as _re
+        for config_id in FLEXBAR_CONFIGS:
+            lane_num = None
+            try:
+                m = _re.match(r'lane(\d+)', config_id)
+                if m:
+                    lane_num = int(m.group(1))
+            except Exception:
+                pass
+            if lane_num is None:
+                continue
+
+            flexbar_log = os.path.join("output", config_id, "flexbar", "flexbarOut.log")
+            if not os.path.exists(flexbar_log):
+                print(f"Skipping missing flexbar log: {flexbar_log}")
+                continue
+
+            lane_group_key = (lane_num, "flexbar")
+            lane_group_counts.setdefault(lane_group_key, {})
+
+            current_barcode = None
+            with open(flexbar_log) as _fh:
+                for _line in _fh:
+                    _line = _line.strip()
+                    m_file = _re.search(r'flexbarOut_barcode_(.+)\.fastq\.gz$', _line)
+                    if m_file:
+                        current_barcode = m_file.group(1)
+                        continue
+                    m_reads = _re.match(r'written reads\s+(\d+)', _line)
+                    if m_reads and current_barcode and current_barcode != "unassigned":
+                        reads = int(m_reads.group(1))
+                        label = current_barcode
+                        if label not in lane_group_counts[lane_group_key]:
+                            lane_group_counts[lane_group_key][label] = [0, 0, "flexbar", 0]
+                        lane_group_counts[lane_group_key][label][3] += reads
+                        current_barcode = None
 
         lane_group_pairs_sorted = sorted(lane_group_counts.keys())
 
