@@ -681,7 +681,7 @@
     ]
   },
   "src/generate_report.py": {
-    "mtime": 1774910857.3992589,
+    "mtime": 1775447248.5060651,
     "skeleton": [
       {
         "type": "function",
@@ -725,16 +725,32 @@
       },
       {
         "type": "function",
-        "name": "compose_plots_base64",
+        "name": "rc_index2",
         "line": 107,
+        "parent": null,
+        "params": "(barcode)",
+        "doc": "Return a reverse-complement fallback for barcode matching."
+      },
+      {
+        "type": "function",
+        "name": "compose_plots_base64",
+        "line": 121,
         "parent": null,
         "params": "(image_paths, total_width=900, quality=35, background_color=(255, 255, 255))",
         "doc": "Compose up to three PNG plot images side-by-side into a single JPEG and return base64."
       },
       {
         "type": "function",
+        "name": "parse_flexbar_written_reads",
+        "line": 179,
+        "parent": null,
+        "params": "(log_path)",
+        "doc": "Parse flexbarOut.log and return per-barcode written read counts."
+      },
+      {
+        "type": "function",
         "name": "generate_report",
-        "line": 165,
+        "line": 215,
         "parent": null,
         "params": "(project, output_base_dir, fastp_plots_base_dir, fastp_base_dir, report_dir, fastq_links_str, lane_filter=None, append_mode=False, links_yaml=None, order_id=None, library_name=None, plots_total_width=900, plots_quality=35, orig_project_name=None, project_name_map=None)",
         "doc": ""
@@ -1498,6 +1514,80 @@
         "type": "function",
         "name": "main",
         "line": 203,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      }
+    ]
+  },
+  "src/generate_flexbar_report.py": {
+    "mtime": 1775413899.8444958,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "parse_flexbar_log",
+        "line": 28,
+        "parent": null,
+        "params": "(log_path)",
+        "doc": "Return (barcodes, per_barcode_stats, filtering_stats)."
+      },
+      {
+        "type": "function",
+        "name": "parse_size_file",
+        "line": 109,
+        "parent": null,
+        "params": "(size_path)",
+        "doc": "Return {filename: size_string} e.g. {'flexbarOut_barcode_293T-1.fastq.gz': '2.0G'}."
+      },
+      {
+        "type": "function",
+        "name": "parse_md5_file",
+        "line": 122,
+        "parent": null,
+        "params": "(md5_path)",
+        "doc": "Return {filename: md5hash}."
+      },
+      {
+        "type": "function",
+        "name": "get_download_link",
+        "line": 135,
+        "parent": null,
+        "params": "(links_yaml_path, order_id)",
+        "doc": "Extract the download link for order_id from the links YAML."
+      },
+      {
+        "type": "function",
+        "name": "make_bar_chart_svg",
+        "line": 155,
+        "parent": null,
+        "params": "(labels, values, title=\"Reads per Barcode\",\n                       width=700, bar_height=36, padding=60, label_width=130)",
+        "doc": "Return an inline SVG bar chart string."
+      },
+      {
+        "type": "function",
+        "name": "generate_report",
+        "line": 212,
+        "parent": null,
+        "params": "(flexbar_dir, report_dir, links_yaml_path, order_id, library_name)",
+        "doc": ""
+      }
+    ]
+  },
+  "split_shared_project_groups.py": {
+    "mtime": 1775448856.4048378,
+    "skeleton": [
+      {
+        "type": "function",
+        "name": "parse_args",
+        "line": 29,
+        "parent": null,
+        "params": "()",
+        "doc": ""
+      },
+      {
+        "type": "function",
+        "name": "main",
+        "line": 39,
         "parent": null,
         "params": "()",
         "doc": ""

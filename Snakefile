@@ -120,6 +120,7 @@ MASKING_LOOKUP = {}
 PROJECT_LINKS = {}
 PROJECT_LINKS_BY_LANE = {}
 ORDER_ID_LOOKUP = {}
+LAB_ID_LOOKUP = {}   # keyed by (lane, group) -> lab_id  (group-aware, unlike PROJECT_LAB_ID)
 PROJECT_ORDER_ID = {}  # keyed by (project, lane) -> order_id
 PROJECT_LAB_ID = {}  # keyed by (project, lane) -> lab_id
 IS_MISEQ_FORMAT = False
@@ -181,6 +182,7 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
                          if 'Lab ID' in df.columns:
                             lab_id_val = str(row['Lab ID']).strip()
                             if lab_id_val and lab_id_val.lower() != 'nan':
+                                LAB_ID_LOOKUP[(l, g)] = lab_id_val
                                 if p and p.lower() != 'nan':
                                     PROJECT_LAB_ID[(p, l)] = lab_id_val
                      except:
@@ -241,6 +243,8 @@ for (_lane, _group), _oid in ORDER_ID_LOOKUP.items():
 VALIDATE_CONFIG_ID_PATTERN = "[^/]+" if IS_MISEQ_FORMAT else r"lane\d+"
 
 ruleorder: validate_barcode_hamming_distances_rc > validate_barcode_hamming_distances
+ruleorder: flexbar_stage_project > bcl_project_done
+ruleorder: flexbar_stage_project > normalize_project_fastq_names
 
 # Build project directory rename map: (config_id, old_project) -> new_folder_name
 # Format: {LabID}_{OrderID}_{library_name}_L{lane}_G{group}
@@ -248,8 +252,10 @@ PROJECT_RENAME_MAP = {}      # (config_id, old_project) -> new_folder_name
 PROJECT_RENAME_MAP_INV = {}  # (config_id, new_folder_name) -> old_project
 for (lane, group), project in PROJECT_LOOKUP.items():
     config_id = f"lane{lane}"
-    order_id = PROJECT_ORDER_ID.get((project, lane), "")
-    lab_id = PROJECT_LAB_ID.get((project, lane), "")
+    # Use (lane, group)-keyed lookups so duplicate project names on the same lane
+    # each get their own order_id/lab_id rather than sharing the last-written value.
+    order_id = ORDER_ID_LOOKUP.get((lane, group), "") or PROJECT_ORDER_ID.get((project, lane), "")
+    lab_id = LAB_ID_LOOKUP.get((lane, group), "") or PROJECT_LAB_ID.get((project, lane), "")
     if lab_id and order_id:
         new_name = f"{lab_id}_{order_id}_{LIBRARY}_L{lane}_G{group}"
         PROJECT_RENAME_MAP[(config_id, project)] = new_name
@@ -348,22 +354,48 @@ for config in LANE_CONFIGS:
     if os.path.exists(barcode_path):
         FLEXBAR_CONFIGS.append(config['id'])
 
+# _CONFIG_PROJECT_PAIRS_RAW keeps the *original* Sample_Project names from the
+# renaming-map CSVs.  These are the names under which fastp JSONs and BCL
+# staging directories are stored, so they must remain unchanged here.
 _CONFIG_PROJECT_PAIRS_RAW = get_config_project_pairs(SAMPLE_SHEETS_DICT)
-CONFIG_PROJECT_PAIRS = [
-    (cid, PROJECT_RENAME_MAP.get((cid, p), p))
-    for cid, p in _CONFIG_PROJECT_PAIRS_RAW
-]
+
+# Build CONFIG_PROJECT_PAIRS with per-group expansion for projects whose name is
+# shared across multiple groups on the same lane.  For those projects
+# PROJECT_RENAME_MAP only holds the last-written entry, so we expand them
+# explicitly here using ORDER_ID_LOOKUP / LAB_ID_LOOKUP instead.
+CONFIG_PROJECT_PAIRS = []
+for _cid, _p in _CONFIG_PROJECT_PAIRS_RAW:
+    _lm = re.match(r'lane(\d+)', _cid)
+    if _lm:
+        _lane = int(_lm.group(1))
+        _groups = [g for (l, g), proj in PROJECT_LOOKUP.items() if l == _lane and proj == _p]
+        if len(_groups) > 1:
+            for _g in _groups:
+                _oid = ORDER_ID_LOOKUP.get((_lane, _g), "")
+                _lid = LAB_ID_LOOKUP.get((_lane, _g), "")
+                if _lid and _oid:
+                    CONFIG_PROJECT_PAIRS.append((_cid, f"{_lid}_{_oid}_{LIBRARY}_L{_lane}_G{_g}"))
+            continue
+    CONFIG_PROJECT_PAIRS.append((_cid, PROJECT_RENAME_MAP.get((_cid, _p), _p)))
 
 # Translate old Sample_Project names in ORDER_ID_CONFIGS to new renamed folder names.
-# get_order_id_configs() returns old names from renaming_map CSVs, but CONFIG_PROJECT_PAIRS
-# now uses renamed names, so the filter in report_order_id must use the same names.
+# Use CONFIG_PROJECT_PAIRS (which already handles multi-group expansion) so that
+# each per-group renamed folder is mapped to the correct order_id.
 for _oid in list(ORDER_ID_CONFIGS.keys()):
     _old_projects = set(ORDER_ID_CONFIGS[_oid])
     _new_projects = set()
-    for _cid, _new_p in _CONFIG_PROJECT_PAIRS_RAW:
-        _old_p = PROJECT_RENAME_MAP_INV.get((_cid, PROJECT_RENAME_MAP.get((_cid, _new_p), _new_p)), _new_p)
-        if _old_p in _old_projects:
-            _new_projects.add(PROJECT_RENAME_MAP.get((_cid, _new_p), _new_p))
+    for _cid, _renamed in CONFIG_PROJECT_PAIRS:
+        _old_p = PROJECT_RENAME_MAP_INV.get((_cid, _renamed), _renamed)
+        if _old_p not in _old_projects:
+            continue
+        # For multi-group projects verify the encoded group's order_id matches _oid.
+        _lm = re.match(r'lane(\d+)', _cid)
+        _gm = re.search(r'_G(\d+)$', _renamed)
+        if _lm and _gm:
+            _actual_oid = ORDER_ID_LOOKUP.get((int(_lm.group(1)), int(_gm.group(1))), "")
+            if _actual_oid and _actual_oid != _oid:
+                continue
+        _new_projects.add(_renamed)
     if _new_projects:
         ORDER_ID_CONFIGS[_oid] = _new_projects
     # else leave as-is (projects with no rename entry keep old names)
@@ -393,6 +425,88 @@ if EXCLUDE_ORDER_IDS:
 
 PROJECT_LINK_LOGS = [f"logs/project_link_{config_id}---{project}.log" for config_id, project in CONFIG_PROJECT_PAIRS]
 
+# Build flexbar order ID map: config_id -> order_id
+# Flexbar projects appear in PROJECT_LOOKUP for a flexbar lane but not in any BCL convert samplesheet.
+FLEXBAR_ORDER_ID_MAP = {}   # config_id -> order_id
+FLEXBAR_ORDER_ID_PROJECT = {}  # config_id -> original project name from metadata
+_bcl_raw_projects_by_config = {}
+for _cid, _p in _CONFIG_PROJECT_PAIRS_RAW:
+    _bcl_raw_projects_by_config.setdefault(_cid, set()).add(_p)
+for _fconfig in FLEXBAR_CONFIGS:
+    _lane = int(_fconfig.replace('lane', ''))
+    _bcl_projs = _bcl_raw_projects_by_config.get(_fconfig, set())
+    for (_l, _), _proj in PROJECT_LOOKUP.items():
+        if _l == _lane and _proj not in _bcl_projs:
+            _oid = PROJECT_ORDER_ID.get((_proj, _lane), '')
+            if _oid and _oid not in EXCLUDE_ORDER_IDS:
+                FLEXBAR_ORDER_ID_MAP[_fconfig] = _oid
+                FLEXBAR_ORDER_ID_PROJECT[_fconfig] = _proj
+FLEXBAR_CONFIG_BY_ORDER_ID = {v: k for k, v in FLEXBAR_ORDER_ID_MAP.items()}
+FLEXBAR_ACTIVE_ORDER_IDS = list(FLEXBAR_ORDER_ID_MAP.values())
+FLEXBAR_ORDER_REPORTS = [f"Reports/order_{oid}/index.html" for oid in FLEXBAR_ACTIVE_ORDER_IDS]
+
+# Build flexbar renaming map: config_id -> list of row dicts (one per barcode/sample).
+# This allows flexbar-demuxed samples to flow through fastp and report_order_id.
+FLEXBAR_CONFIG_RENAMING_MAP = {}
+for _fconfig, _forder_id in FLEXBAR_ORDER_ID_MAP.items():
+    _flane = int(_fconfig.replace('lane', ''))
+    _fbarcode_path = f"metadata/flexbar_barcodes_{_fconfig}.txt"
+    if not os.path.exists(_fbarcode_path):
+        continue
+    _fproj = FLEXBAR_ORDER_ID_PROJECT.get(_fconfig)
+    if not _fproj:
+        continue
+    _fgroup = None
+    for (_fl, _fg), _fp in PROJECT_LOOKUP.items():
+        if _fl == _flane and _fp == _fproj:
+            _fgroup = _fg
+            break
+    if _fgroup is None:
+        continue
+    _frows = []
+    with open(_fbarcode_path) as _fbf:
+        for _fi, _fbline in enumerate(_fbf):
+            _fparts = _fbline.strip().split('\t')
+            if len(_fparts) >= 2 and _fparts[0].strip() and _fparts[1].strip():
+                _frows.append({
+                    'Sample_Project': _fproj,
+                    'Sample_Name': _fparts[0].strip(),
+                    'Run': LIBRARY,
+                    'Lane': _flane,
+                    'Group': _fgroup,
+                    'index': _fparts[1].strip(),
+                    'index2': '',
+                    'Position': f'P{_fi+1:03d}',
+                })
+    if _frows:
+        FLEXBAR_CONFIG_RENAMING_MAP[_fconfig] = _frows
+
+# Inject flexbar projects into CONFIG_PROJECT_PAIRS, ORDER_ID_CONFIGS, ACTIVE_ORDER_IDS
+# so they are processed through fastp, md5sums, project_link, and report_order_id.
+for _fconfig, _frows in FLEXBAR_CONFIG_RENAMING_MAP.items():
+    _forig_proj = _frows[0]['Sample_Project']
+    _frenamed_proj = PROJECT_RENAME_MAP.get((_fconfig, _forig_proj), _forig_proj)
+    _fpair = (_fconfig, _frenamed_proj)
+    if _fpair not in CONFIG_PROJECT_PAIRS:
+        CONFIG_PROJECT_PAIRS.append(_fpair)
+    _projects_in_pairs.add(_frenamed_proj)
+    _forder_id = FLEXBAR_ORDER_ID_MAP[_fconfig]
+    if _forder_id not in ORDER_ID_CONFIGS:
+        ORDER_ID_CONFIGS[_forder_id] = set()
+    elif not isinstance(ORDER_ID_CONFIGS.get(_forder_id), set):
+        ORDER_ID_CONFIGS[_forder_id] = set(ORDER_ID_CONFIGS.get(_forder_id, []))
+    ORDER_ID_CONFIGS[_forder_id].add(_frenamed_proj)
+    if _forder_id not in ACTIVE_ORDER_IDS:
+        ACTIVE_ORDER_IDS.append(_forder_id)
+
+# Integrated flexbar orders are now handled by report_order_id; remove from FLEXBAR_ACTIVE_ORDER_IDS
+FLEXBAR_ACTIVE_ORDER_IDS = [oid for oid in FLEXBAR_ACTIVE_ORDER_IDS if oid not in ACTIVE_ORDER_IDS]
+FLEXBAR_ORDER_REPORTS = [f"Reports/order_{oid}/index.html" for oid in FLEXBAR_ACTIVE_ORDER_IDS]
+
+# Rebuild order-level targets to include newly added flexbar orders
+ORDER_ID_REPORTS = [f"Reports/order_{oid}/index.html" for oid in ACTIVE_ORDER_IDS]
+ORDER_ID_MD5S = [f"Reports/order_{oid}/md5sums.txt" for oid in ACTIVE_ORDER_IDS]
+
 # print("CONFIG_PROJECT_PAIRS:", CONFIG_PROJECT_PAIRS)
 
 rule all:
@@ -409,7 +523,7 @@ rule all:
         expand("logs/project_links_{config_id}---{project}.yaml", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         f"results/{LIBRARY}-count.csv",
         f"Reports/{LIBRARY}_read_counts_email.done",
-        expand("Reports/order_{order_id}/email_sent.done", order_id=ACTIVE_ORDER_IDS),
+        expand("Reports/order_{order_id}/email_sent.done", order_id=ACTIVE_ORDER_IDS + FLEXBAR_ACTIVE_ORDER_IDS),
         expand("logs/verify_project_link_{config_id}---{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         ([VALIDATION_XLSX] if VALIDATION_XLSX else []),
         expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
@@ -493,6 +607,12 @@ rule report_order_id:
         # Merge individual per-project yaml files into a single dict
         merged_links = {}
         links_yaml_files = _as_file_list(input.links_yamls)
+        if not links_yaml_files:
+            # Fallback: glob for yaml files whose name encodes this order_id.
+            # This handles Snakemake subprocess mode where named input lambdas
+            # may resolve to [] even though the files exist on disk.
+            import glob as _glob
+            links_yaml_files = sorted(_glob.glob(f"logs/project_links_*---*_{order_id}_*.yaml"))
         for yaml_path in links_yaml_files:
             if os.path.exists(yaml_path):
                 with open(yaml_path) as _yf:
@@ -521,9 +641,31 @@ rule report_order_id:
             _orig = next(
                 (p for cid, p in _CONFIG_PROJECT_PAIRS_RAW
                  if PROJECT_RENAME_MAP.get((cid, p), p) == _proj),
-                _proj
+                None
             )
+            # For multi-group projects, PROJECT_RENAME_MAP only stores the
+            # last-written entry so the forward scan above may miss earlier
+            # groups.  Fall back to the inverse map which has an entry for
+            # every per-group renamed folder name.
+            if _orig is None:
+                _orig = next(
+                    (orig for (_, _rn), orig in PROJECT_RENAME_MAP_INV.items()
+                     if _rn == _proj),
+                    _proj
+                )
             project_name_map[_proj] = _orig
+
+        # Flexbar projects are injected into CONFIG_PROJECT_PAIRS after the main
+        # rename map is built, so they are not present in _CONFIG_PROJECT_PAIRS_RAW.
+        # Add an explicit renamed->original mapping here so generate_report.py can
+        # find the fastp JSONs under the original flexbar project directory.
+        for _fconfig in FLEXBAR_CONFIGS:
+            _forig = FLEXBAR_ORDER_ID_PROJECT.get(_fconfig)
+            if not _forig:
+                continue
+            _frenamed = PROJECT_RENAME_MAP.get((_fconfig, _forig), _forig)
+            if _frenamed in projects:
+                project_name_map[_frenamed] = _forig
         project_name_map_json = _json.dumps(project_name_map)
 
         # Open log file
@@ -591,6 +733,167 @@ rule report_order_id:
         
         with open(log_file, 'a') as f:
             f.write(f"\nConsolidated {len(all_md5s)} md5 entries into {md5_file}\n")
+
+rule flexbar_project_link:
+    """Create a Nextcloud share for the flexbar output directory and record the link."""
+    input:
+        done = "results/flexbar_{config_id}.done"
+    output:
+        link_log  = "logs/flexbar_project_link_{config_id}.log",
+        yaml_file = "logs/flexbar_project_links_{config_id}.yaml"
+    benchmark:
+        "benchmarks/flexbar_project_link_{config_id}.bench"
+    wildcard_constraints:
+        config_id = "[^/]+"
+    resources:
+        serial_operation = 1
+    params:
+        work_dir  = os.getcwd(),
+        order_id  = lambda wildcards: FLEXBAR_ORDER_ID_MAP.get(wildcards.config_id, ""),
+        project   = lambda wildcards: FLEXBAR_ORDER_ID_PROJECT.get(wildcards.config_id, "flexbar"),
+    run:
+        import traceback, subprocess, time, urllib.parse, re, os, shlex
+        from pathlib import Path
+        import yaml as _yaml
+
+        config_id = wildcards.config_id
+        order_id  = params.order_id
+        project   = params.project
+        fastq_dir = f"output/{config_id}/flexbar"
+        log_file  = output.link_log
+        yaml_file = output.yaml_file
+
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        yaml_data = {project: {config_id: {}}}
+
+        def extract_share_url(xml_text):
+            if not xml_text: return None
+            m = re.search(r'<url>(.*?)</url>', xml_text)
+            return m.group(1) if m else None
+
+        def extract_share_token(xml_text):
+            if not xml_text: return None
+            m = re.search(r'<token>(.*?)</token>', xml_text)
+            return m.group(1) if m else None
+
+        def extract_share_owner(xml_text):
+            if not xml_text: return None
+            for pattern in [r'<uid_owner>(.*?)</uid_owner>', r'<owner>(.*?)</owner>']:
+                m = re.search(pattern, xml_text)
+                if m: return m.group(1)
+            return None
+
+        def extract_internal_path(xml_text):
+            if not xml_text: return None
+            for pattern in [r'<path>(.*?)</path>', r'<folder>(.*?)</folder>']:
+                m = re.search(pattern, xml_text)
+                if m: return m.group(1)
+            return None
+
+        def fetch_existing_share(path):
+            encoded = urllib.parse.quote(path, safe="/")
+            cmd = ['curl', '-s', '-X', 'GET',
+                   '-u', f'{NEXTCLOUD_USER}:{NEXTCLOUD_PASSWORD}',
+                   '-H', 'OCS-APIRequest: true',
+                   f'{NEXTCLOUD_URL}/ocs/v2.php/apps/files_sharing/api/v1/shares?path={encoded}&reshares=true']
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=30).stdout
+
+        executed_cmds = []
+        try:
+            if os.path.isdir(fastq_dir):
+                abs_path = os.path.abspath(fastq_dir)
+                nc_path = f"/{NEXTCLOUD_DIR_NAME}/" + abs_path.split(f"/{NEXTCLOUD_DIR_PATH}/", 1)[1] \
+                          if f"/{NEXTCLOUD_DIR_PATH}/" in abs_path else abs_path
+
+                max_retries, retry_count = 30, 0
+                share_url = share_token = share_owner = share_internal_path = None
+                rate_limited, last_error = False, None
+
+                while retry_count < max_retries and not share_url:
+                    retry_count += 1
+                    wait_time = 3 * (2 ** (retry_count - 1))
+                    if rate_limited: time.sleep(10)
+                    try:
+                        cmd = ['curl', '-s', '-w', '\nHTTP_CODE:%{http_code}',
+                               '-X', 'POST',
+                               '-u', f'{NEXTCLOUD_USER}:{NEXTCLOUD_PASSWORD}',
+                               '-H', 'OCS-APIRequest: true',
+                               '-d', f'path={nc_path}', '-d', 'shareType=3',
+                               f'{NEXTCLOUD_URL}/ocs/v2.php/apps/files_sharing/api/v1/shares']
+                        executed_cmds.append(cmd)
+                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                        lines = result.stdout.split('\n')
+                        http_code = next((l.split(':')[1] for l in lines if l.startswith('HTTP_CODE:')), None)
+                        share_xml = '\n'.join(l for l in lines if not l.startswith('HTTP_CODE:'))
+                        if http_code == '429':
+                            rate_limited = True; last_error = f"Rate limited (HTTP 429)"
+                        elif http_code in ('200', '201'):
+                            share_url   = extract_share_url(share_xml)
+                            share_token = extract_share_token(share_xml)
+                            if share_url and share_token:
+                                share_owner         = extract_share_owner(share_xml)
+                                share_internal_path = extract_internal_path(share_xml)
+                                break
+                            else:
+                                last_error = f"Valid response but could not extract URL/token (HTTP {http_code})"
+                        elif http_code in ('400', '403'):
+                            share_xml   = fetch_existing_share(nc_path)
+                            share_url   = extract_share_url(share_xml)
+                            share_token = extract_share_token(share_xml)
+                            if share_url and share_token:
+                                share_owner         = extract_share_owner(share_xml)
+                                share_internal_path = extract_internal_path(share_xml)
+                                break
+                            else:
+                                last_error = f"Share may exist but could not fetch via GET (HTTP {http_code})"
+                        else:
+                            last_error = f"HTTP {http_code}: {share_xml[:100] if share_xml else 'No response'}"
+                        if retry_count < max_retries and not share_url:
+                            time.sleep(wait_time)
+                    except subprocess.TimeoutExpired:
+                        last_error = "Request timed out (30 seconds)"
+                        if retry_count < max_retries: time.sleep(wait_time)
+                    except Exception as e:
+                        last_error = f"Exception: {str(e)}"
+                        if retry_count < max_retries: time.sleep(wait_time)
+
+                with open(log_file, 'w') as f:
+                    f.write(f"Project: {project}\nConfig ID: {config_id}\nOrder ID: {order_id}\n")
+                    try: f.write(f"NC_PATH: {nc_path}\n")
+                    except Exception: pass
+                    if share_url and share_token:
+                        f.write(f"Status: SUCCESS\nBrowser URL: {share_url}\n")
+                        f.write(f"WebDAV URL: {NEXTCLOUD_URL}/public.php/dav/\nWebDAV Token: {share_token}\n")
+                        if share_owner:         f.write(f"NC_OWNER: {share_owner}\n")
+                        if share_internal_path: f.write(f"NC_INTERNAL_PATH: {share_internal_path}\n")
+                        order_key = order_id if order_id else "default"
+                        yaml_data[project][config_id][order_key] = {"link": share_url, "group": "flexbar"}
+                    else:
+                        f.write(f"Status: FAILED\nReason: {last_error}\nRetries: {retry_count}/{max_retries}\n")
+                    if executed_cmds:
+                        f.write("\nCommands executed:\n")
+                        for c in executed_cmds:
+                            try:    f.write(shlex.join(c) + "\n")
+                            except: f.write(' '.join(shlex.quote(p) for p in c) + "\n")
+            else:
+                Path(log_file).write_text(f"Directory {fastq_dir} not found.")
+        except Exception as e:
+            Path(log_file).write_text(f"Error: {str(e)}\n{traceback.format_exc()}")
+
+        Path(log_file).touch(exist_ok=True)
+        with open(yaml_file, 'w') as yf:
+            _yaml.dump(yaml_data, yf, default_flow_style=False)
+
+
+        # Generate Download Instructions PDF
+        pdf_cmd = ["python3", "src/generate_download_instructions_pdf.py",
+                   os.path.join(report_dir, "Download_Instructions.pdf")]
+        pdf_result = subprocess.run(pdf_cmd, capture_output=True, text=True)
+        with open(log_file, 'a') as f:
+            f.write(pdf_result.stdout)
+            if pdf_result.stderr:
+                f.write(f"PDF STDERR: {pdf_result.stderr}\n")
+
 
 rule send_order_email:
     input:
@@ -1210,12 +1513,110 @@ rule flexbar_per_config:
         curr_dir=$PWD
         cd {params.outdir}
         md5sum *.fastq.gz > md5sum.txt
+        count=$(wc -l < md5sum.txt)
+        echo "Generated md5sum.txt with $count entries for {wildcards.config_id}"
+        if [ "$count" -eq 0 ]; then
+            echo "ERROR: md5sum.txt is empty, no .fastq.gz files found in {params.outdir}" >&2
+            exit 1
+        fi
         du -h *.fastq.gz > size.txt
         cd $curr_dir
         ) > {log} 2>&1
 
         touch {output}
         """
+
+def _make_flexbar_stage_constraints():
+    if not FLEXBAR_CONFIG_RENAMING_MAP:
+        return "NOMATCH", "NOMATCH"
+    cfg = "|".join(re.escape(fc) for fc in FLEXBAR_CONFIG_RENAMING_MAP)
+    projs = "|".join(
+        re.escape(PROJECT_RENAME_MAP.get((fc, FLEXBAR_ORDER_ID_PROJECT[fc]), FLEXBAR_ORDER_ID_PROJECT[fc]))
+        for fc in FLEXBAR_CONFIG_RENAMING_MAP
+        if fc in FLEXBAR_ORDER_ID_PROJECT
+    )
+    return cfg, projs or "NOMATCH"
+_FLEXBAR_STAGE_CONFIG_CONSTRAINT, _FLEXBAR_STAGE_PROJECT_CONSTRAINT = _make_flexbar_stage_constraints()
+
+rule flexbar_stage_project:
+    """Stage flexbar-demuxed files into per-project directory with canonical names.
+
+    Creates real files at {stem}-R1/2.fastq.gz in the renamed project directory,
+    then points flexbarOut_barcode_{name}.fastq.gz back to those files via symlink.
+    Writes .project_done / .fastq_names_done sentinels so downstream rules
+    (calculate_md5sums, fastp_sample, project_link) treat this like a normal project.
+    """
+    input:
+        done = "results/flexbar_{config_id}.done"
+    output:
+        project_done = "output/{config_id}/{project}/.project_done",
+        names_done   = "output/{config_id}/{project}/.fastq_names_done"
+    log:
+        "logs/flexbar_stage_project_{config_id}_{project}.log"
+    wildcard_constraints:
+        config_id = _FLEXBAR_STAGE_CONFIG_CONSTRAINT,
+        project   = _FLEXBAR_STAGE_PROJECT_CONSTRAINT
+    run:
+        import os
+        import shutil
+        config_id = wildcards.config_id
+        project   = wildcards.project
+        rows      = FLEXBAR_CONFIG_RENAMING_MAP.get(config_id, [])
+        proj_dir  = f"output/{config_id}/{project}"
+        os.makedirs(proj_dir, exist_ok=True)
+        log_lines = [f"Staging flexbar project {project} for {config_id}\n"]
+
+        def _materialize_and_backlink(src_abs, dst_abs):
+            # Ensure destination is a real file (hardlink preferred, copy fallback).
+            if os.path.lexists(dst_abs) and os.path.islink(dst_abs):
+                os.unlink(dst_abs)
+
+            if not os.path.exists(dst_abs):
+                try:
+                    os.link(src_abs, dst_abs)
+                    log_lines.append(f"Hardlinked {dst_abs} <- {src_abs}\n")
+                except Exception:
+                    shutil.copy2(src_abs, dst_abs)
+                    log_lines.append(f"Copied {src_abs} -> {dst_abs}\n")
+            else:
+                log_lines.append(f"Kept existing destination {dst_abs}\n")
+
+            # Ensure flexbar path is a symlink back to destination.
+            if os.path.lexists(src_abs):
+                try:
+                    if os.path.islink(src_abs):
+                        _cur = os.path.realpath(src_abs)
+                        if os.path.realpath(dst_abs) == _cur:
+                            return
+                    os.unlink(src_abs)
+                except Exception:
+                    pass
+            os.symlink(os.path.abspath(dst_abs), src_abs)
+            log_lines.append(f"Linked {src_abs} -> {dst_abs}\n")
+
+        for row in rows:
+            name    = row['Sample_Name']
+            run     = row['Run']
+            lane    = row['Lane']
+            group   = str(row['Group'])
+            pos     = row['Position']
+            barcode = row['index']
+            stem    = f"{run}-L{lane}-G{group}-{pos}-{barcode}"
+            src_r1  = os.path.abspath(f"output/{config_id}/flexbar/flexbarOut_barcode_{name}.fastq.gz")
+            dst_r1  = os.path.abspath(f"{proj_dir}/{stem}-R1.fastq.gz")
+            if os.path.exists(src_r1) or os.path.islink(src_r1):
+                _materialize_and_backlink(src_r1, dst_r1)
+            if NUM_READS > 1:
+                src_r2 = os.path.abspath(f"output/{config_id}/flexbar/flexbarOut_barcode_{name}_R2.fastq.gz")
+                dst_r2 = os.path.abspath(f"{proj_dir}/{stem}-R2.fastq.gz")
+                if os.path.exists(src_r2) or os.path.islink(src_r2):
+                    _materialize_and_backlink(src_r2, dst_r2)
+        with open(log[0], 'w') as lf:
+            lf.writelines(log_lines)
+        with open(output.project_done, 'w') as f:
+            f.write("flexbar project staged\n")
+        with open(output.names_done, 'w') as f:
+            f.write("flexbar canonical names done\n")
 
 rule generate_samplesheets:
     input:
@@ -1733,7 +2134,7 @@ rule bcl_project_done:
         # If any project on this lane selected RC orientation, prefer the RC lane-level
         # reports so Demultiplex_Stats and related summaries reflect corrected counts.
         # Skip old Sample_Project subdirectories — those are moved by their own bcl_project_done.
-        all_lane_projects = sorted([p for cid, p in _CONFIG_PROJECT_PAIRS_RAW if cid == config_id])
+        all_lane_projects = sorted([p for cid, p in CONFIG_PROJECT_PAIRS if cid == config_id])
         if new_project == (all_lane_projects[0] if all_lane_projects else new_project):
             accessory_base = ".output"
             try:
@@ -1773,7 +2174,8 @@ rule bcl_project_done:
         if not any(kw in check_name for kw in _INDEX_READ_KEYWORDS):
             proj_dir = f"output/{config_id}/{new_project}"
             removed = 0
-            for pattern in ["**/*_I1_001.fastq.gz", "**/*_I2_001.fastq.gz"]:
+            for pattern in ["**/*_I1_001.fastq.gz", "**/*_I2_001.fastq.gz",
+                             "**/*-I1.fastq.gz", "**/*-I2.fastq.gz"]:
                 for f in glob.glob(os.path.join(proj_dir, pattern), recursive=True):
                     os.remove(f)
                     removed += 1
@@ -1798,7 +2200,12 @@ rule calculate_md5sums:
         (
         cd output/{wildcards.config_id}/{wildcards.project}
         find . -name '*.fastq.gz' -type f -print0 | xargs -0 -P 8 md5sum | sort -k2 > md5sums.txt
-        echo "Generated md5sums.txt with $(wc -l < md5sums.txt) entries for {wildcards.project}"
+        count=$(wc -l < md5sums.txt)
+        echo "Generated md5sums.txt with $count entries for {wildcards.project}"
+        if [ "$count" -eq 0 ]; then
+            echo "ERROR: md5sums.txt is empty, no .fastq.gz files found" >&2
+            exit 1
+        fi
         ) > {log} 2>&1
         """
 
@@ -2223,11 +2630,31 @@ rule project_link:
         serial_operation=1
     params:
         work_dir = os.getcwd(),
-        order_id = lambda wildcards: PROJECT_ORDER_ID.get(
-            (PROJECT_RENAME_MAP_INV.get((wildcards.config_id, wildcards.project), wildcards.project), int(m.group(1)))
-            if (m := re.match(r'lane(\d+)', wildcards.config_id))
-            else (PROJECT_RENAME_MAP_INV.get((wildcards.config_id, wildcards.project), wildcards.project), 0), ""),
-        group = lambda wildcards: get_project_group(PROJECT_RENAME_MAP_INV.get((wildcards.config_id, wildcards.project), wildcards.project), wildcards.config_id)
+        order_id = lambda wildcards: (
+            # Prefer (lane, group)-keyed lookup so duplicate project names on the same lane
+            # each resolve to their own order_id rather than the last-written shared entry.
+            ORDER_ID_LOOKUP.get(
+                (int(lane_m.group(1)), int(grp_m.group(1))),
+                PROJECT_ORDER_ID.get(
+                    (PROJECT_RENAME_MAP_INV.get((wildcards.config_id, wildcards.project), wildcards.project),
+                     int(lane_m.group(1))), "")
+            )
+            if (lane_m := re.match(r'lane(\d+)', wildcards.config_id))
+            and (grp_m := re.search(r'_G(\d+)$', wildcards.project))
+            else PROJECT_ORDER_ID.get(
+                (PROJECT_RENAME_MAP_INV.get((wildcards.config_id, wildcards.project), wildcards.project),
+                 int(re.match(r'lane(\d+)', wildcards.config_id).group(1))
+                 if re.match(r'lane(\d+)', wildcards.config_id) else 0), "")
+        ),
+        group = lambda wildcards: (
+            # Extract group directly from the renamed project folder name (_G{n} suffix)
+            # to avoid the reverse-lookup bug where duplicate project names on the same
+            # lane always resolve to the first group in PROJECT_LOOKUP.
+            m.group(1) if (m := re.search(r'_G(\d+)$', wildcards.project))
+            else get_project_group(
+                PROJECT_RENAME_MAP_INV.get((wildcards.config_id, wildcards.project), wildcards.project),
+                wildcards.config_id)
+        )
     run:
         import traceback
         import subprocess

@@ -1315,13 +1315,31 @@ def get_order_id_configs(sample_sheets_dict):
                     if not project or project.lower() == 'nan':
                         continue
 
-                    # Get order_id for this project+lane
-                    order_id = PROJECT_ORDER_ID.get((project, config_lane), "")
+                    # Use per-group order_id lookup so duplicate project names on the
+                    # same lane each map to their own order (not just the last-written one).
+                    proj_rows = df[df['Sample_Project'] == project]
+                    groups_seen = set()
+                    for _, row in proj_rows.iterrows():
+                        try:
+                            g = int(float(row.get('Group', '')))
+                            groups_seen.add(g)
+                        except Exception:
+                            pass
 
-                    if order_id:
-                        if order_id not in order_id_to_projects:
-                            order_id_to_projects[order_id] = set()
-                        order_id_to_projects[order_id].add(project)
+                    if groups_seen:
+                        for g in groups_seen:
+                            order_id = ORDER_ID_LOOKUP.get((config_lane, g),
+                                PROJECT_ORDER_ID.get((project, config_lane), ""))
+                            if order_id:
+                                if order_id not in order_id_to_projects:
+                                    order_id_to_projects[order_id] = set()
+                                order_id_to_projects[order_id].add(project)
+                    else:
+                        order_id = PROJECT_ORDER_ID.get((project, config_lane), "")
+                        if order_id:
+                            if order_id not in order_id_to_projects:
+                                order_id_to_projects[order_id] = set()
+                            order_id_to_projects[order_id].add(project)
             except Exception as e:
                 print(f"Error reading map file {map_path}: {e}")
     
@@ -1393,64 +1411,64 @@ def get_project_plot_targets(project, lane_filter=None, order_id=None):
     targets = []
     
     for config_id in CONFIG_IDS:
-        map_path = f"results/renaming_map_{config_id}.csv"
-        if os.path.exists(map_path):
-            try:
-                df = pd.read_csv(map_path)
-                df['Sample_Project'] = df['Sample_Project'].astype(str)
-                # Resolve renamed project name -> original name for CSV lookup
-                orig_project = PROJECT_RENAME_MAP_INV.get((config_id, project), project)
-                project_samples = df[df['Sample_Project'] == orig_project]
+        try:
+            df = _fastp_rows_for_config(config_id)
+            if df is None:
+                continue
+            df['Sample_Project'] = df['Sample_Project'].astype(str)
+            # Resolve renamed project name -> original name for CSV lookup
+            orig_project = PROJECT_RENAME_MAP_INV.get((config_id, project), project)
+            project_samples = df[df['Sample_Project'] == orig_project]
 
-                for idx, row in project_samples.iterrows():
+            for idx, row in project_samples.iterrows():
+                try:
+                    lane_val = int(float(row.get('Lane', 0)))
+                except Exception:
+                    continue
+                if lane_filter is not None and lane_val != lane_filter:
+                    continue
+
+                # Filter by Order ID if specified
+                if order_id is not None:
                     try:
-                        lane_val = int(float(row.get('Lane', 0)))
+                        group_val = int(float(row.get('Group', 0)))
+                        sample_order_id = ORDER_ID_LOOKUP.get((lane_val, group_val))
+                        if sample_order_id != order_id:
+                            continue
                     except Exception:
                         continue
-                    if lane_filter is not None and lane_val != lane_filter:
-                        continue
-                    
-                    # Filter by Order ID if specified
-                    if order_id is not None:
-                        try:
-                            group_val = int(float(row.get('Group', 0)))
-                            sample_order_id = ORDER_ID_LOOKUP.get((lane_val, group_val))
-                            if sample_order_id != order_id:
-                                continue
-                        except Exception:
-                            continue
-                    
-                    sample_name = str(row.get('Sample_Name', '')).strip()
-                    run = str(row.get('Run', '')).strip()
-                    try:
-                        group = str(int(float(row.get('Group', 0))))
-                    except:
-                        group = str(row.get('Group', '')).strip()
-                    if group.lower() == 'nan' or not group:
-                        group = "Undetermined"
-                    
-                    index1 = str(row.get('index', '')).strip()
-                    if index1.lower() == 'nan':
-                        index1 = ""
-                    index2 = str(row.get('index2', '')).strip()
-                    if index2.lower() == 'nan':
-                        index2 = ""
-                    
-                    barcode = f"{index1}-{index2}" if index2 else index1
-                    position = str(row.get('Position', f"P{idx+1:03d}")).strip()
-                    
-                    if is_parse_or_10x(orig_project):
-                        if not sample_name or sample_name.lower() == 'nan':
-                            continue
-                        path = f"{orig_project}/{sample_name}"
-                    else:
-                        stem = f"{run}-L{lane_val}-G{group}-{position}-{barcode}"
-                        path = f"{orig_project}/{stem}"
 
-                    targets.append(f"results/fastp_plots/{config_id}/{path}-mean_phred.png")
-                    targets.append(f"results/fastp_plots/{config_id}/{path}-base_comp.png")
-            except Exception as e:
-                print(f"Error reading map file {map_path}: {e}")
+                sample_name = str(row.get('Sample_Name', '')).strip()
+                run = str(row.get('Run', '')).strip()
+                try:
+                    group = str(int(float(row.get('Group', 0))))
+                except:
+                    group = str(row.get('Group', '')).strip()
+                if group.lower() == 'nan' or not group:
+                    group = "Undetermined"
+
+                index1 = str(row.get('index', '')).strip()
+                if index1.lower() == 'nan':
+                    index1 = ""
+                index2 = str(row.get('index2', '')).strip()
+                if index2.lower() == 'nan':
+                    index2 = ""
+
+                barcode = f"{index1}-{index2}" if index2 else index1
+                position = str(row.get('Position', f"P{idx+1:03d}")).strip()
+
+                if is_parse_or_10x(orig_project):
+                    if not sample_name or sample_name.lower() == 'nan':
+                        continue
+                    path = f"{orig_project}/{sample_name}"
+                else:
+                    stem = f"{run}-L{lane_val}-G{group}-{position}-{barcode}"
+                    path = f"{orig_project}/{stem}"
+
+                targets.append(f"results/fastp_plots/{config_id}/{path}-mean_phred.png")
+                targets.append(f"results/fastp_plots/{config_id}/{path}-base_comp.png")
+        except Exception as e:
+            print(f"Error building plot targets for {project} in {config_id}: {e}")
     return targets
 
 def read_sample_sheet(config_id):
@@ -1476,57 +1494,72 @@ def read_sample_sheet(config_id):
     except:
         return None
 
-def get_fastp_targets(wildcards):
-    config_id = wildcards.config_id
-    
-    # Use renaming map to define targets
+def _fastp_row_path(row, idx):
+    project = str(row.get('Sample_Project', '')).strip()
+    sample_name = str(row.get('Sample_Name', '')).strip()
+
+    run = str(row.get('Run', '')).strip()
+    lane = int(row.get('Lane', 0))
+    try:
+        group = str(int(float(row.get('Group', 0))))
+    except:
+        group = str(row.get('Group', '')).strip()
+    if group.lower() == 'nan' or not group:
+        group = "Undetermined"
+
+    index1 = str(row.get('index', '')).strip()
+    if index1.lower() == 'nan':
+        index1 = ""
+    index2 = str(row.get('index2', '')).strip()
+    if index2.lower() == 'nan':
+        index2 = ""
+
+    if index2:
+        barcode = f"{index1}-{index2}"
+    else:
+        barcode = index1
+
+    position = str(row.get('Position', f"P{idx+1:03d}")).strip()
+
+    if is_parse_or_10x(project):
+        if not sample_name or sample_name.lower() == 'nan':
+            return None
+        return f"{project}/{sample_name}" if project and project.lower() != 'nan' else sample_name
+
+    stem = f"{run}-L{lane}-G{group}-{position}-{barcode}"
+    return f"{project}/{stem}" if project and project.lower() != 'nan' else stem
+
+def _fastp_rows_for_config(config_id):
+    frames = []
     map_path = f"results/renaming_map_{config_id}.csv"
     if os.path.exists(map_path):
         try:
-            df = pd.read_csv(map_path)
-            targets = []
-            for idx, row in df.iterrows():
-                project = str(row.get('Sample_Project', '')).strip()
-                sample_name = str(row.get('Sample_Name', '')).strip()
-                
-                run = str(row.get('Run', '')).strip()
-                lane = int(row.get('Lane', 0))
-                try:
-                    group = str(int(float(row.get('Group', 0))))
-                except:
-                    group = str(row.get('Group', '')).strip()
-                if group.lower() == 'nan' or not group:
-                    group = "Undetermined"
-                
-                index1 = str(row.get('index', '')).strip()
-                if index1.lower() == 'nan':
-                    index1 = ""
-                index2 = str(row.get('index2', '')).strip()
-                if index2.lower() == 'nan':
-                    index2 = ""
-                
-                if index2:
-                    barcode = f"{index1}-{index2}"
-                else:
-                    barcode = index1
-                    
-                position = str(row.get('Position', f"P{idx+1:03d}")).strip()
-                
-                # Construct filename path based on convention
-                if is_parse_or_10x(project):
-                    if not sample_name or sample_name.lower() == 'nan':
-                        continue
-                    path = f"{project}/{sample_name}" if project and project.lower() != 'nan' else sample_name
-                else:
-                    stem = f"{run}-L{lane}-G{group}-{position}-{barcode}"
-                    path = f"{project}/{stem}" if project and project.lower() != 'nan' else stem
-                    
-                targets.append(f"results/fastp/{config_id}/{path}.json")
-            return targets
+            frames.append(pd.read_csv(map_path))
         except Exception as e:
             print(f"Error reading map file {map_path}: {e}")
-            return []
-            
+
+    flex_rows = globals().get('FLEXBAR_CONFIG_RENAMING_MAP', {}).get(config_id, [])
+    if flex_rows:
+        frames.append(pd.DataFrame(flex_rows))
+
+    if not frames:
+        return None
+    return pd.concat(frames, ignore_index=True)
+
+def get_fastp_targets(wildcards):
+    config_id = wildcards.config_id
+    df = _fastp_rows_for_config(config_id)
+    if df is not None:
+        try:
+            targets = []
+            for idx, row in df.iterrows():
+                path = _fastp_row_path(row, idx)
+                if path:
+                    targets.append(f"results/fastp/{config_id}/{path}.json")
+            return list(dict.fromkeys(targets))
+        except Exception as e:
+            print(f"Error building fastp targets for {config_id}: {e}")
+
     # Fallback to SampleSheet (old naming) - though we prefer map
     df = read_sample_sheet(config_id)
     if df is None:
@@ -1534,80 +1567,55 @@ def get_fastp_targets(wildcards):
     
     targets = []
     for idx, row in df.iterrows():
-        project = str(row.get('Sample_Project', '')).strip()
-        sample = str(row.get('Sample_Name', row.get('Sample_ID', ''))).strip()
-        
-        if not sample or sample.lower() == 'nan':
-            continue
-
-        if project and project.lower() != 'nan':
-            path = f"{project}/{sample}"
-        else:
-            path = sample
-        targets.append(f"results/fastp/{config_id}/{path}.json")
+        path = _fastp_row_path(row, idx)
+        if path:
+            targets.append(f"results/fastp/{config_id}/{path}.json")
     return targets
 
 def get_fastp_sample_input(wildcards):
     config_id = wildcards.config_id
     sample_path = wildcards.sample_path
 
-    # Try to use renaming map first
+    # Try to use renaming map first, then injected flexbar rows.
     map_path = f"results/renaming_map_{config_id}.csv"
-    if not os.path.exists(map_path):
-        raise ValueError(f"Renaming map not found: {map_path}")
-
-    # Retry on EmptyDataError — the map may be briefly empty if generate_lane_samplesheets
-    # is rewriting it concurrently for another config_id.
     import time as _time
     df = None
-    for _attempt in range(5):
-        try:
-            df = pd.read_csv(map_path)
-            break
-        except pd.errors.EmptyDataError:
-            print(f"Renaming map {map_path} is empty (attempt {_attempt + 1}/5), retrying in 2s...")
-            _time.sleep(2)
+    if os.path.exists(map_path):
+        for _attempt in range(5):
+            try:
+                df = pd.read_csv(map_path)
+                break
+            except pd.errors.EmptyDataError:
+                print(f"Renaming map {map_path} is empty (attempt {_attempt + 1}/5), retrying in 2s...")
+                _time.sleep(2)
+
     if df is None:
-        raise RuntimeError(f"Renaming map {map_path} still empty after 5 attempts")
+        flex_rows = globals().get('FLEXBAR_CONFIG_RENAMING_MAP', {}).get(config_id, [])
+        if flex_rows:
+            df = pd.DataFrame(flex_rows)
+    else:
+        flex_rows = globals().get('FLEXBAR_CONFIG_RENAMING_MAP', {}).get(config_id, [])
+        if flex_rows:
+            df = pd.concat([df, pd.DataFrame(flex_rows)], ignore_index=True)
+
+    if df is None:
+        raise ValueError(f"Renaming map not found and no flexbar rows available: {config_id}")
 
     try:
         for idx, row in df.iterrows():
-            project = str(row.get('Sample_Project', '')).strip()
-            sample_name = str(row.get('Sample_Name', '')).strip()
-            
-            run = str(row.get('Run', '')).strip()
-            lane = int(row.get('Lane', 0))
-            try:
-                group = str(int(float(row.get('Group', 0))))
-            except:
-                group = str(row.get('Group', '')).strip()
-            if group.lower() == 'nan' or not group:
-                group = "Undetermined"
-            
-            index1 = str(row.get('index', '')).strip()
-            if index1.lower() == 'nan':
-                index1 = ""
-            index2 = str(row.get('index2', '')).strip()
-            if index2.lower() == 'nan':
-                index2 = ""
-            
-            if index2:
-                barcode = f"{index1}-{index2}"
-            else:
-                barcode = index1
-                
-            position = str(row.get('Position', f"P{idx+1:03d}")).strip()
-            
-            # Construct sample_path consistently with get_fastp_targets
-            if is_parse_or_10x(project):
-                if not sample_name or sample_name.lower() == 'nan':
-                    continue
-                path = f"{project}/{sample_name}" if project and project.lower() != 'nan' else sample_name
-            else:
-                stem = f"{run}-L{lane}-G{group}-{position}-{barcode}"
-                path = f"{project}/{stem}" if project and project.lower() != 'nan' else stem
+            path = _fastp_row_path(row, idx)
+            if not path:
+                continue
             
             if path == sample_path:
+                project = str(row.get('Sample_Project', '')).strip()
+                sample_name = str(row.get('Sample_Name', '')).strip()
+                run = str(row.get('Run', '')).strip()
+                lane = int(row.get('Lane', 0))
+                try:
+                    group = str(int(float(row.get('Group', 0))))
+                except:
+                    group = str(row.get('Group', '')).strip()
                 prefix = f"output/{config_id}"
                 if project and project.lower() != 'nan':
                     output_project = PROJECT_RENAME_MAP.get((config_id, project), project)
@@ -1622,6 +1630,7 @@ def get_fastp_sample_input(wildcards):
                     else:
                         return [r1]
                 else:
+                    stem = path.split('/', 1)[1] if '/' in path else path
                     r1 = f"{prefix}/{stem}-R1.fastq.gz"
                     if NUM_READS > 1:
                         r2 = f"{prefix}/{stem}-R2.fastq.gz"
@@ -1636,75 +1645,18 @@ def get_fastp_sample_input(wildcards):
 
 def get_fastp_plots_targets(wildcards):
     config_id = wildcards.config_id
-    
-    # Use renaming map to define targets
-    map_path = f"results/renaming_map_{config_id}.csv"
-    if os.path.exists(map_path):
-        try:
-            df = pd.read_csv(map_path)
-            targets = []
-            for idx, row in df.iterrows():
-                project = str(row.get('Sample_Project', '')).strip()
-                sample_name = str(row.get('Sample_Name', '')).strip()
-                
-                run = str(row.get('Run', '')).strip()
-                lane = int(row.get('Lane', 0))
-                try:
-                    group = str(int(float(row.get('Group', 0))))
-                except:
-                    group = str(row.get('Group', '')).strip()
-
-                if group.lower() == 'nan' or not group:
-                    group = "Undetermined"
-                
-                index1 = str(row.get('index', '')).strip()
-                if index1.lower() == 'nan':
-                    index1 = ""
-                index2 = str(row.get('index2', '')).strip()
-                if index2.lower() == 'nan':
-                    index2 = ""
-                
-                if index2:
-                    barcode = f"{index1}-{index2}"
-                else:
-                    barcode = index1
-                    
-                position = str(row.get('Position', f"P{idx+1:03d}")).strip()
-                
-                # Construct path based on convention
-                if is_parse_or_10x(project):
-                    if not sample_name or sample_name.lower() == 'nan':
-                        continue
-                    path = f"{project}/{sample_name}" if project and project.lower() != 'nan' else sample_name
-                else:
-                    stem = f"{run}-L{lane}-G{group}-{position}-{barcode}"
-                    path = f"{project}/{stem}" if project and project.lower() != 'nan' else stem
-                    
-                targets.append(f"results/fastp_plots/{config_id}/{path}-mean_phred.png")
-                targets.append(f"results/fastp_plots/{config_id}/{path}-base_comp.png")
-            return targets
-        except Exception as e:
-            print(f"Error reading map file {map_path}: {e}")
-            return []
-
-    df = read_sample_sheet(config_id)
+    df = _fastp_rows_for_config(config_id)
+    if df is None:
+        df = read_sample_sheet(config_id)
     if df is None:
         return []
     
     targets = []
     for idx, row in df.iterrows():
-        project = str(row.get('Sample_Project', '')).strip()
-        sample = str(row.get('Sample_Name', row.get('Sample_ID', ''))).strip()
-        
-        if not sample or sample.lower() == 'nan':
-            continue
-
-        if project and project.lower() != 'nan':
-            path = f"{project}/{sample}"
-        else:
-            path = sample
-        targets.append(f"results/fastp_plots/{config_id}/{path}-mean_phred.png")
-        targets.append(f"results/fastp_plots/{config_id}/{path}-base_comp.png")
+        path = _fastp_row_path(row, idx)
+        if path:
+            targets.append(f"results/fastp_plots/{config_id}/{path}-mean_phred.png")
+            targets.append(f"results/fastp_plots/{config_id}/{path}-base_comp.png")
     return targets
 
 def get_project_fastp_targets(wildcards):
@@ -1712,52 +1664,23 @@ def get_project_fastp_targets(wildcards):
     targets = []
     
     for config_id in CONFIG_IDS:
-        map_path = f"results/renaming_map_{config_id}.csv"
-        if os.path.exists(map_path):
-            try:
-                df = pd.read_csv(map_path)
-                # Ensure string type for comparison
-                df['Sample_Project'] = df['Sample_Project'].astype(str)
-                
-                # Filter for this project
-                project_samples = df[df['Sample_Project'] == project]
-                
-                for idx, row in project_samples.iterrows():
-                    sample_name = str(row.get('Sample_Name', '')).strip()
-                    run = str(row.get('Run', '')).strip()
-                    lane = int(row.get('Lane', 0))
-                    try:
-                        group = str(int(float(row.get('Group', 0))))
-                    except:
-                        group = str(row.get('Group', '')).strip()
-                    if group.lower() == 'nan' or not group:
-                        group = "Undetermined"
-                    
-                    index1 = str(row.get('index', '')).strip()
-                    if index1.lower() == 'nan':
-                        index1 = ""
-                    index2 = str(row.get('index2', '')).strip()
-                    if index2.lower() == 'nan':
-                        index2 = ""
-                    
-                    if index2:
-                        barcode = f"{index1}-{index2}"
-                    else:
-                        barcode = index1
-                        
-                    position = str(row.get('Position', f"P{idx+1:03d}")).strip()
-                    
-                    if is_parse_or_10x(project):
-                        if not sample_name or sample_name.lower() == 'nan':
-                            continue
-                        path = f"{project}/{sample_name}"
-                    else:
-                        stem = f"{run}-L{lane}-G{group}-{position}-{barcode}"
-                        path = f"{project}/{stem}"
-                    
+        try:
+            df = _fastp_rows_for_config(config_id)
+            if df is None:
+                continue
+            df['Sample_Project'] = df['Sample_Project'].astype(str)
+
+            # Filter for this project, allowing flexbar projects to resolve via
+            # their original project names in the injected rows.
+            orig_project = PROJECT_RENAME_MAP_INV.get((config_id, project), project)
+            project_samples = df[df['Sample_Project'] == orig_project]
+
+            for idx, row in project_samples.iterrows():
+                path = _fastp_row_path(row, idx)
+                if path:
                     targets.append(f"results/fastp/{config_id}/{path}.json")
-            except Exception as e:
-                print(f"Error reading map file {map_path}: {e}")
+        except Exception as e:
+            print(f"Error building fastp targets for {project} in {config_id}: {e}")
     return targets
 
 def get_project_demux_stats(wildcards):

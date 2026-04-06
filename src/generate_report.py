@@ -104,6 +104,20 @@ def is_parse_or_10x(project_name):
         p = ""
     return ("10x" in p) or ("parse" in p) or ("bd" in p)
 
+def rc_index2(barcode):
+    """Return a reverse-complement fallback for barcode matching."""
+    if not barcode or barcode == "Unknown":
+        return barcode
+
+    def _rc(seq):
+        table = str.maketrans("ACGTacgt", "TGCAtgca")
+        return seq.translate(table)[::-1]
+
+    parts = str(barcode).split("-")
+    if len(parts) == 2:
+        return f"{parts[0]}-{_rc(parts[1])}"
+    return _rc(str(barcode))
+
 def compose_plots_base64(image_paths, total_width=900, quality=35, background_color=(255, 255, 255)):
     """
     Compose up to three PNG plot images side-by-side into a single JPEG and return base64.
@@ -161,6 +175,42 @@ def compose_plots_base64(image_paths, total_width=900, quality=35, background_co
     except Exception as e:
         print(f"Error composing plots {image_paths}: {e}")
         return None
+
+def parse_flexbar_written_reads(log_path):
+    """Parse flexbarOut.log and return per-barcode written read counts.
+
+    Returns:
+        dict: {barcode_name: {'r1': int|None, 'r2': int|None}}
+    """
+    counts = {}
+    if not log_path or not os.path.exists(log_path):
+        return counts
+
+    try:
+        with open(log_path) as fh:
+            text = fh.read()
+
+        for m in re.finditer(
+            r'Read file:\s+(\S+)\s+written reads\s+(\d+)\s+short reads\s+(\d+)',
+            text,
+        ):
+            fname = os.path.basename(m.group(1))
+            written = int(m.group(2))
+            name_match = re.match(r'flexbarOut_barcode_(.+?)(?:_R2)?\.fastq\.gz$', fname)
+            if not name_match:
+                continue
+            name = name_match.group(1)
+            is_r2 = fname.endswith('_R2.fastq.gz')
+            if name not in counts:
+                counts[name] = {'r1': None, 'r2': None}
+            if is_r2:
+                counts[name]['r2'] = written
+            else:
+                counts[name]['r1'] = written
+    except Exception as e:
+        print(f"Warning: could not parse flexbar counts from {log_path}: {e}")
+
+    return counts
 
 def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_dir, report_dir, fastq_links_str, lane_filter=None, append_mode=False, links_yaml=None, order_id=None, library_name=None, plots_total_width=900, plots_quality=35, orig_project_name=None, project_name_map=None):
     os.makedirs(report_dir, exist_ok=True)
@@ -432,16 +482,24 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 </div>
 """
     
-    # Find all samples from fastp JSONs
+    # Find all samples from fastp JSONs.
     # Structure: results/fastp/{config_id}/{project}/{stem}.json
-    # We need to iterate over config_ids (lanes)
-    
-    # We can glob: results/fastp/*/{project}/*.json
-    # Use orig_project_name for file lookups if provided (fastp runs before rename)
+    # Some flexbar projects keep fastp outputs under the original project name,
+    # while the report is rendered for the renamed folder name. Search both.
+    fastp_lookup_names = []
     fastp_lookup_name = orig_project_name or project
-    json_pattern = os.path.join(fastp_base_dir, "*", fastp_lookup_name, "*.json")
-    print(f"Searching for JSONs with pattern: {json_pattern}")
-    json_files = glob.glob(json_pattern)
+    for candidate in (project, orig_project_name):
+        if candidate and candidate not in fastp_lookup_names:
+            fastp_lookup_names.append(candidate)
+
+    json_files = []
+    for fastp_lookup_name in fastp_lookup_names:
+        json_pattern = os.path.join(fastp_base_dir, "*", fastp_lookup_name, "*.json")
+        print(f"Searching for JSONs with pattern: {json_pattern}")
+        json_files.extend(glob.glob(json_pattern))
+
+    # Deduplicate while preserving order.
+    json_files = list(dict.fromkeys(json_files))
     print(f"Found {len(json_files)} JSON files.")
     
     # Load renaming maps to get barcode info for 10x/Parse/BD projects
@@ -465,6 +523,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
     
     samples = {} # stem -> { config_id: { info... } }
     demux_stats_cache = {}  # config_id -> {(orig_project, index): num_reads}
+    flexbar_counts_cache = {}  # config_id -> {barcode_name: {'r1': int|None, 'r2': int|None}}
 
     for json_file in json_files:
         # Extract config_id (lane)
@@ -665,6 +724,29 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                         if key in r2_basename or r2_basename in key:
                             r2_md5 = md5_lookup[key]
                             break
+
+            # Fallback: for flexbar-staged FASTQs, derive paired reads from flexbarOut.log
+            # by matching the staged FASTQ back to its flexbar output file.
+            if paired_reads == "N/A":
+                if config_id not in flexbar_counts_cache:
+                    flexbar_log = os.path.join(output_base_dir, config_id, "flexbar", "flexbarOut.log")
+                    flexbar_counts_cache[config_id] = parse_flexbar_written_reads(flexbar_log)
+
+                _flex_counts = flexbar_counts_cache.get(config_id, {})
+                try:
+                    flexbar_dir = os.path.join(output_base_dir, config_id, "flexbar")
+                    for barcode_name, rec in _flex_counts.items():
+                        candidate_r1 = os.path.join(flexbar_dir, f"flexbarOut_barcode_{barcode_name}.fastq.gz")
+                        if os.path.exists(candidate_r1) and os.path.samefile(candidate_r1, r1_path):
+                            r1_written = rec.get('r1')
+                            r2_written = rec.get('r2')
+                            if isinstance(r1_written, int) and isinstance(r2_written, int):
+                                paired_reads = min(r1_written, r2_written)
+                            elif isinstance(r1_written, int):
+                                paired_reads = r1_written
+                            break
+                except Exception:
+                    pass
 
             # Skip index read md5 calculation (too slow for large files)
             
