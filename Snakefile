@@ -2174,8 +2174,7 @@ rule bcl_project_done:
         if not any(kw in check_name for kw in _INDEX_READ_KEYWORDS):
             proj_dir = f"output/{config_id}/{new_project}"
             removed = 0
-            for pattern in ["**/*_I1_001.fastq.gz", "**/*_I2_001.fastq.gz",
-                             "**/*-I1.fastq.gz", "**/*-I2.fastq.gz"]:
+            for pattern in ["**/*-I1.fastq.gz", "**/*-I2.fastq.gz"]:
                 for f in glob.glob(os.path.join(proj_dir, pattern), recursive=True):
                     os.remove(f)
                     removed += 1
