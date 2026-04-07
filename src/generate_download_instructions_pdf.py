@@ -55,7 +55,7 @@ def generate_download_instructions_pdf(output_path):
     elements.append(Paragraph("You can mount the server as a local folder. For large transfers, use <b>rsync</b> from the mount to your destination to ensure integrity.", body_style))
     
     elements.append(Paragraph("<b>Windows & macOS:</b>", body_style))
-    elements.append(Paragraph("• <b>Windows:</b> Right-click 'This PC' → 'Map network drive' → Enter https://precision.biochem.uci.edu/public.php/webdav/.<br/>• <b>macOS:</b> Finder → Command+K → Enter https://precision.biochem.uci.edu/public.php/webdav/ → Enter the Share token as username and leave the password blank.", body_style))
+    elements.append(Paragraph("• <b>Windows:</b> Right-click 'This PC' → 'Map network drive' → Select a drive letter (e.g., Z:) → Paste https://precision.biochem.uci.edu/public.php/webdav/ → <b>Check "Connect using different credentials"</b> → Click Finish → Enter the Share token as the username and leave the password blank.<br/>• <b>macOS:</b> Finder → Command+K → Enter https://precision.biochem.uci.edu/public.php/webdav/ → Enter the Share token as username and leave the password blank.", body_style))
     elements.append(Paragraph("<b>Note:</b> The share token is the trailing string in the project link (the part after <code>/s/</code>). For example, in https://precision.biochem.uci.edu/s/eXampLeToKEN the share token is <b>eXampLeToKEN</b>.", body_style))
     
     elements.append(Paragraph("<b>Linux (HPC/Command Line):</b>", body_style))
