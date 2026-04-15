@@ -279,8 +279,6 @@ def main():
                 results["all_errors"].append(error_msg)
         return results
 
-    import shutil as _shutil
-
     results = _run_validation()
 
     any_fixed = False
@@ -305,11 +303,12 @@ def main():
             results = _run_validation()
             args.samplesheets = original_samplesheets
 
-    # If no fix was applied, copy the original to output_sheet so the output always exists
+    # If no fix was applied, still normalize and write output_sheet so per-row
+    # BarcodeMismatchesIndex values are explicit for rows that use index2.
     if args.output_sheet and not any_fixed:
         for sheet_path in args.samplesheets:
             if sheet_path != args.output_sheet:
-                _shutil.copy2(sheet_path, args.output_sheet)
+                fix_sheet_conflicts(sheet_path, {}, args.output_sheet)
 
     # Output results
     if args.json:

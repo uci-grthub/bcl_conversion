@@ -37,9 +37,14 @@ def _add_per_sample_barcode_mismatches(fieldnames, rows):
     if 'BarcodeMismatchesIndex2' not in fn:
         fn.append('BarcodeMismatchesIndex2')
     for r in rows:
-        r.setdefault('BarcodeMismatchesIndex1', '1')
+        if not str(r.get('BarcodeMismatchesIndex1', '')).strip():
+            r['BarcodeMismatchesIndex1'] = '1'
         has_i5 = bool(r.get('index2', '').strip())
-        r.setdefault('BarcodeMismatchesIndex2', '1' if has_i5 else '')
+        if has_i5:
+            if not str(r.get('BarcodeMismatchesIndex2', '')).strip():
+                r['BarcodeMismatchesIndex2'] = '1'
+        else:
+            r['BarcodeMismatchesIndex2'] = ''
     return fn
 
 
