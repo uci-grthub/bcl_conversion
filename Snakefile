@@ -135,7 +135,45 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
         if is_miseq_format:
             # MiSeq: simple format, assume single lane
             print("Detected MiSeq metadata format")
-            # No need to parse Summary sheet, will be handled in generate_miseq_samplesheets
+            # Infer order IDs from the first tab's Lab ID column for report naming.
+            # Example values can include project labels (e.g., PaegB) and order IDs
+            # (e.g., 0326I-54); keep only order-ID-like entries.
+            try:
+                first_tab = xl.sheet_names[0]
+                df_first = pd.read_excel(METADATA_FILE, sheet_name=first_tab, header=None)
+                header_row = None
+                lab_id_col = None
+
+                for i, row in df_first.iterrows():
+                    vals = [str(v).strip() for v in row.tolist() if str(v).strip() and str(v).strip().lower() != 'nan']
+                    if not vals:
+                        continue
+                    for j, v in enumerate(row.tolist()):
+                        if str(v).strip().lower() == 'lab id':
+                            header_row = i
+                            lab_id_col = j
+                            break
+                    if lab_id_col is not None:
+                        break
+
+                if lab_id_col is not None:
+                    seen_order_ids = set()
+                    for v in df_first.iloc[header_row + 1:, lab_id_col].tolist():
+                        s = str(v).strip()
+                        if not s or s.lower() == 'nan':
+                            continue
+                        # Match forms like 0326I-54 and normalize i->I.
+                        m = re.match(r'^\d+[iI]-\d+$', s)
+                        if not m:
+                            continue
+                        oid = s.replace('i', 'I')
+                        if oid in seen_order_ids:
+                            continue
+                        seen_order_ids.add(oid)
+                        # Store as synthetic keys; fallback logic uses values only.
+                        PROJECT_ORDER_ID[(f"__MISEQ_ORDERID_{oid}", 0)] = oid
+            except Exception as _e:
+                print(f"Note: Could not infer MiSeq order IDs from Lab ID column: {_e}")
         else:
             # NovaSeqX: complex format with Summary sheet
             df = pd.read_excel(METADATA_FILE, sheet_name="Summary", header=2)
@@ -326,9 +364,14 @@ PROJECTS = get_all_projects(SAMPLE_SHEETS_DICT)
 
 ORDER_ID_CONFIGS = get_order_id_configs(SAMPLE_SHEETS_DICT)
 
-# If no order_id found in metadata, use a single default order_id
+# If order_id was not propagated into sample sheets, fall back to IDs inferred
+# from metadata parsing (Summary / Barcode List) before using a generic default.
 if not ORDER_ID_CONFIGS or all(not v for v in ORDER_ID_CONFIGS.values()):
-    ORDER_ID_CONFIGS = {"default": PROJECTS}
+    inferred_order_ids = sorted({oid for oid in PROJECT_ORDER_ID.values() if oid and str(oid).strip()})
+    if inferred_order_ids:
+        ORDER_ID_CONFIGS = {oid: list(PROJECTS) for oid in inferred_order_ids}
+    else:
+        ORDER_ID_CONFIGS = {"default": PROJECTS}
 
 # Ensure all order_ids from PROJECT_ORDER_ID are included in ORDER_ID_CONFIGS
 # even if they don't have samples yet (they might be added later or have been filtered)

@@ -181,10 +181,14 @@ def fix_sheet_conflicts(sheet_path, conflict_rows, output_path=None):
     fieldnames = list(reader.fieldnames)
     rows = list(reader)
 
+    has_any_i5 = any(bool(row.get("index2", "").strip()) for row in rows)
+
     if "BarcodeMismatchesIndex1" not in fieldnames:
         fieldnames.append("BarcodeMismatchesIndex1")
-    if "BarcodeMismatchesIndex2" not in fieldnames:
+    if has_any_i5 and "BarcodeMismatchesIndex2" not in fieldnames:
         fieldnames.append("BarcodeMismatchesIndex2")
+    if not has_any_i5 and "BarcodeMismatchesIndex2" in fieldnames:
+        fieldnames.remove("BarcodeMismatchesIndex2")
 
     # DRAGEN requires every row to have a value for BMI columns when the column exists.
     # Fill defaults first (1 for all rows with that index), then override conflicts with 0.
@@ -192,11 +196,16 @@ def fix_sheet_conflicts(sheet_path, conflict_rows, output_path=None):
         has_i5 = bool(row.get("index2", "").strip())
         if not row.get("BarcodeMismatchesIndex1", "").strip():
             row["BarcodeMismatchesIndex1"] = "1"
-        if has_i5:
-            if not row.get("BarcodeMismatchesIndex2", "").strip():
+        if has_any_i5:
+            if has_i5:
+                if not row.get("BarcodeMismatchesIndex2", "").strip():
+                    row["BarcodeMismatchesIndex2"] = "1"
+            else:
+                # When any sample uses index2, DRAGEN expects this column to be set
+                # for all rows in the data section.
                 row["BarcodeMismatchesIndex2"] = "1"
         else:
-            row["BarcodeMismatchesIndex2"] = ""
+            row.pop("BarcodeMismatchesIndex2", None)
 
     fixed_samples = []
     for row_idx, row in enumerate(rows):

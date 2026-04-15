@@ -32,19 +32,27 @@ def _add_per_sample_barcode_mismatches(fieldnames, rows):
     does not try to apply an i5 mismatch setting for samples without i5.
     """
     fn = list(fieldnames)
+    has_any_i5 = any(bool(r.get('index2', '').strip()) for r in rows)
     if 'BarcodeMismatchesIndex1' not in fn:
         fn.append('BarcodeMismatchesIndex1')
-    if 'BarcodeMismatchesIndex2' not in fn:
+    if has_any_i5 and 'BarcodeMismatchesIndex2' not in fn:
         fn.append('BarcodeMismatchesIndex2')
+    if not has_any_i5 and 'BarcodeMismatchesIndex2' in fn:
+        fn.remove('BarcodeMismatchesIndex2')
     for r in rows:
         if not str(r.get('BarcodeMismatchesIndex1', '')).strip():
             r['BarcodeMismatchesIndex1'] = '1'
         has_i5 = bool(r.get('index2', '').strip())
-        if has_i5:
-            if not str(r.get('BarcodeMismatchesIndex2', '')).strip():
+        if has_any_i5:
+            if has_i5:
+                if not str(r.get('BarcodeMismatchesIndex2', '')).strip():
+                    r['BarcodeMismatchesIndex2'] = '1'
+            else:
+                # When index2 demux is active anywhere in the sheet, DRAGEN requires
+                # a per-row value for this column.
                 r['BarcodeMismatchesIndex2'] = '1'
         else:
-            r['BarcodeMismatchesIndex2'] = ''
+            r.pop('BarcodeMismatchesIndex2', None)
     return fn
 
 
