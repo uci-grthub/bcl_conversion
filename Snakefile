@@ -135,14 +135,15 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
         if is_miseq_format:
             # MiSeq: simple format, assume single lane
             print("Detected MiSeq metadata format")
-            # Infer order IDs from the first tab's Lab ID column for report naming.
-            # Example values can include project labels (e.g., PaegB) and order IDs
-            # (e.g., 0326I-54); keep only order-ID-like entries.
+            # Infer order IDs and project->order mappings from the first tab.
+            # Lab ID commonly contains both project labels (e.g., PaegB) and
+            # order IDs (e.g., 0326I-54) in MiSeq sheets.
             try:
                 first_tab = xl.sheet_names[0]
                 df_first = pd.read_excel(METADATA_FILE, sheet_name=first_tab, header=None)
                 header_row = None
                 lab_id_col = None
+                project_col = None
 
                 for i, row in df_first.iterrows():
                     vals = [str(v).strip() for v in row.tolist() if str(v).strip() and str(v).strip().lower() != 'nan']
@@ -157,21 +158,63 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
                         break
 
                 if lab_id_col is not None:
-                    seen_order_ids = set()
+                    # Detect project column in the same header row when present.
+                    for j, v in enumerate(df_first.iloc[header_row].tolist()):
+                        h = str(v).strip().lower()
+                        if h in {
+                            'project', 'project name', 'sample_project',
+                            'sample project', 'sample name', 'sample_name'
+                        }:
+                            project_col = j
+                            break
+
+                    def _uniq_keep_order(items):
+                        seen = set()
+                        out = []
+                        for x in items:
+                            if x in seen:
+                                continue
+                            seen.add(x)
+                            out.append(x)
+                        return out
+
+                    order_ids = []
+                    project_candidates = []
+
                     for v in df_first.iloc[header_row + 1:, lab_id_col].tolist():
                         s = str(v).strip()
                         if not s or s.lower() == 'nan':
                             continue
-                        # Match forms like 0326I-54 and normalize i->I.
                         m = re.match(r'^\d+[iI]-\d+$', s)
-                        if not m:
-                            continue
-                        oid = s.replace('i', 'I')
-                        if oid in seen_order_ids:
-                            continue
-                        seen_order_ids.add(oid)
-                        # Store as synthetic keys; fallback logic uses values only.
+                        if m:
+                            order_ids.append(s.replace('i', 'I'))
+                        else:
+                            project_candidates.append(s.replace(' ', '_'))
+
+                    if project_col is not None:
+                        for v in df_first.iloc[header_row + 1:, project_col].tolist():
+                            s = str(v).strip()
+                            if not s or s.lower() == 'nan':
+                                continue
+                            project_candidates.append(s.replace(' ', '_'))
+
+                    order_ids = _uniq_keep_order(order_ids)
+                    project_candidates = _uniq_keep_order(project_candidates)
+
+                    for oid in order_ids:
+                        # Keep synthetic keys so report-order fallback still sees IDs.
                         PROJECT_ORDER_ID[(f"__MISEQ_ORDERID_{oid}", 0)] = oid
+
+                    # Lane is fixed to lane1 for MiSeq in this workflow.
+                    if len(order_ids) == 1:
+                        oid = order_ids[0]
+                        for proj in project_candidates:
+                            PROJECT_ORDER_ID[(proj, 1)] = oid
+                        if project_candidates:
+                            ORDER_ID_LOOKUP[(1, 1)] = oid
+                    elif len(order_ids) > 1 and len(order_ids) == len(project_candidates):
+                        for proj, oid in zip(project_candidates, order_ids):
+                            PROJECT_ORDER_ID[(proj, 1)] = oid
             except Exception as _e:
                 print(f"Note: Could not infer MiSeq order IDs from Lab ID column: {_e}")
         else:
@@ -777,6 +820,24 @@ rule report_order_id:
         with open(log_file, 'a') as f:
             f.write(f"\nConsolidated {len(all_md5s)} md5 entries into {md5_file}\n")
 
+        # Always generate Download Instructions PDF so rule outputs are complete,
+        # even when project discovery returns an empty set.
+        pdf_file = os.path.join(report_dir, "Download_Instructions.pdf")
+        pdf_cmd = ["python3", "src/generate_download_instructions_pdf.py", pdf_file]
+        pdf_result = subprocess.run(pdf_cmd, capture_output=True, text=True)
+        with open(log_file, 'a') as f:
+            f.write("\n=== Download Instructions PDF generation ===\n")
+            f.write(pdf_result.stdout)
+            if pdf_result.stderr:
+                f.write(f"PDF STDERR: {pdf_result.stderr}\n")
+        if pdf_result.returncode != 0:
+            raise RuntimeError(f"PDF generation failed for order {order_id}")
+
+        # Ensure HTML output exists if no per-project report was generated.
+        if not os.path.exists(output.html):
+            with open(output.html, 'w') as f:
+                f.write(f"<html><body><h1>Order {order_id}</h1><p>No project report entries were generated.</p></body></html>\n")
+
 rule flexbar_project_link:
     """Create a Nextcloud share for the flexbar output directory and record the link."""
     input:
@@ -805,6 +866,15 @@ rule flexbar_project_link:
         fastq_dir = f"output/{config_id}/flexbar"
         log_file  = output.link_log
         yaml_file = output.yaml_file
+
+        if not str(order_id).strip():
+            msg = (
+                f"Missing order_id for flexbar project link generation "
+                f"(config_id={config_id}, project={project}). "
+                "Check metadata order-id mapping for this config."
+            )
+            Path(log_file).write_text(msg + "\n")
+            raise RuntimeError(msg)
 
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
         yaml_data = {project: {config_id: {}}}
@@ -909,8 +979,7 @@ rule flexbar_project_link:
                         f.write(f"WebDAV URL: {NEXTCLOUD_URL}/public.php/dav/\nWebDAV Token: {share_token}\n")
                         if share_owner:         f.write(f"NC_OWNER: {share_owner}\n")
                         if share_internal_path: f.write(f"NC_INTERNAL_PATH: {share_internal_path}\n")
-                        order_key = order_id if order_id else "default"
-                        yaml_data[project][config_id][order_key] = {"link": share_url, "group": "flexbar"}
+                        yaml_data[project][config_id][order_id] = {"link": share_url, "group": "flexbar"}
                     else:
                         f.write(f"Status: FAILED\nReason: {last_error}\nRetries: {retry_count}/{max_retries}\n")
                     if executed_cmds:
@@ -2715,6 +2784,15 @@ rule project_link:
         log_file = output.log
         yaml_file = output.yaml_file
 
+        if not str(order_id).strip():
+            msg = (
+                f"Missing order_id for project link generation "
+                f"(config_id={config_id}, project={project}, group={group}). "
+                "Check metadata order-id mapping for this project/lane."
+            )
+            Path(log_file).write_text(msg + "\n")
+            raise RuntimeError(msg)
+
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
         yaml_data = {project: {config_id: {}}}
@@ -2879,8 +2957,7 @@ rule project_link:
                         except Exception:
                             pass
                         # Populate individual project yaml
-                        order_key = order_id if order_id else "default"
-                        yaml_data[project][config_id][order_key] = {"link": share_url, "group": group}
+                        yaml_data[project][config_id][order_id] = {"link": share_url, "group": group}
                     else:
                         f.write(f"Status: FAILED\n")
                         f.write(f"Reason: {last_error}\n")

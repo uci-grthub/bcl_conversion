@@ -332,10 +332,18 @@ def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name)
         # Read with proper header
         df_info = pd.read_excel(metadata_file, sheet_name='Sample Information + User Info', header=header_row)
         
-        # Get project name (Lab ID or Sample Name)
+        # Get project name (the project label in the first Lab ID row) and the
+        # order ID used for the config/sample-sheet filename.
         project_name = None
+        order_id = None
         if 'Lab ID' in df_info.columns:
-            project_name = df_info['Lab ID'].dropna().iloc[0] if not df_info['Lab ID'].dropna().empty else None
+            lab_ids = [str(v).strip() for v in df_info['Lab ID'].dropna().tolist() if str(v).strip() and str(v).strip().lower() != 'nan']
+            if lab_ids:
+                project_name = lab_ids[0]
+                for lab_id in lab_ids:
+                    if re.match(r'^\d+[iI]-\d+$', lab_id):
+                        order_id = lab_id.replace('i', 'I')
+                        break
         if not project_name and 'Sample Name' in df_info.columns:
             project_name = df_info['Sample Name'].dropna().iloc[0] if not df_info['Sample Name'].dropna().empty else None
         
@@ -436,7 +444,7 @@ def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name)
     df_samples['OverrideCycles'] = override_cycles
     
     # Generate sample sheet file
-    config_id = "lane1_default"
+    config_id = "lane1"
     outfile = os.path.join(out_dir, f"SampleSheet_{config_id}.csv")
     
     os.makedirs(out_dir, exist_ok=True)
