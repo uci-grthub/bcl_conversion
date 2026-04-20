@@ -390,10 +390,15 @@ if not CONFIG_IDS and detected_lanes:
 _preferred_bcl_order = [str(x) for x in config.get("bcl_convert_order", [])]
 _preferred_bcl_order = [cid for cid in _preferred_bcl_order if cid in CONFIG_IDS]
 BCL_CONVERT_ORDER = _preferred_bcl_order + [cid for cid in CONFIG_IDS if cid not in _preferred_bcl_order]
-BCL_CONVERT_PREV = {
-    cid: (BCL_CONVERT_ORDER[i - 1] if i > 0 else None)
-    for i, cid in enumerate(BCL_CONVERT_ORDER)
-}
+# Only chain sequential dependencies when the user explicitly provided an order.
+# An empty bcl_convert_order means "run all lanes in parallel".
+if _preferred_bcl_order:
+    BCL_CONVERT_PREV = {
+        cid: (BCL_CONVERT_ORDER[i - 1] if i > 0 else None)
+        for i, cid in enumerate(BCL_CONVERT_ORDER)
+    }
+else:
+    BCL_CONVERT_PREV = {}
 
 def get_prev_bcl_done(wildcards):
     prev_cid = BCL_CONVERT_PREV.get(wildcards.config_id)
