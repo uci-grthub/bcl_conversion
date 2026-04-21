@@ -601,8 +601,14 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
             read2_len = summary.get('read2_mean_length', 0)
             
             is_paired = read2_len > 0
+            # For flexbar projects, fastp only sees R1 so read2_mean_length is 0.
+            # Detect pairing by checking whether the seqtk-generated R2 file exists.
+            if not is_paired and not is_parse_or_10x(fastp_lookup_name):
+                candidate_r2 = os.path.join(output_base_dir, config_id, project, f"{stem}-R2.fastq.gz")
+                if os.path.exists(candidate_r2):
+                    is_paired = True
             paired_reads = None
-            
+
             # Extract Barcode from stem or sample_name
             # For 10x/Parse/BD: need to look up barcode from renaming map
             # For default: extract from stem format {run}-L{lane}-G{group}-{position}-{barcode}
