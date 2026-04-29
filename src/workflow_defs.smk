@@ -941,10 +941,27 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         # Target: Project,Lane,Sample_ID,Sample_Name,index,index2,Sample_Project
         
         ss_data = pd.DataFrame()
-        
+
         ss_data['Lane'] = lane_df['Lane']
-        ss_data['Project'] = lane_df['Project']
-        ss_data['Sample_Project'] = lane_df['Project']
+        # Sanitize project names for DRAGEN: only allow alphanumeric, hyphen, underscore.
+        # Replace other characters with underscore and prevent ambiguous names like 'Undetermined'.
+        def _sanitize_project_name(v):
+            try:
+                if pd.isna(v):
+                    return ''
+                s = str(v).strip()
+                # Replace any character not in A-Z a-z 0-9 - _ with '_'
+                s = re.sub(r'[^a-zA-Z0-9\-_]', '_', s)
+                if s == '':
+                    return ''
+                if s.lower() == 'undetermined':
+                    return 'Project_Undetermined'
+                return s
+            except Exception:
+                return str(v)
+
+        ss_data['Project'] = lane_df['Project'].apply(_sanitize_project_name)
+        ss_data['Sample_Project'] = ss_data['Project']
         
         if 'Sample_Name' in lane_df.columns:
             # Fill missing sample names with a default

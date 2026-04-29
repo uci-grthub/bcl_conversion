@@ -30,3 +30,6 @@ src/flexbar/*.fastq
 src/flexbar/flexbarOut.log
 src/flexbar/xR074-L1-G8-flexbar-barcodes.tsv.fa
 .codetree/
+scripts/parse-upload-1.2.1.sh
+scripts/parse-upload-1.2.1.py
+*.log

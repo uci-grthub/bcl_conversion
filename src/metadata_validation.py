@@ -430,6 +430,8 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
     summary_projects = set()
     non_summary_projects = set()
     non_summary_project_sheets = {}
+    summary_proj_orig = {}
+    non_summary_proj_orig = {}
 
     for sheet, df in sheet_dfs.items():
         proj_col = None
@@ -450,30 +452,37 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
             proj = _clean_project_name(raw_proj)
             if not proj:
                 continue
+            raw_str = str(raw_proj).strip() if not pd.isna(raw_proj) else ''
             if is_summary_tab:
                 summary_projects.add(proj)
+                if proj not in summary_proj_orig:
+                    summary_proj_orig[proj] = raw_str
             else:
                 non_summary_projects.add(proj)
                 non_summary_project_sheets.setdefault(proj, set()).add(sheet)
+                if proj not in non_summary_proj_orig:
+                    non_summary_proj_orig[proj] = raw_str
 
     missing_in_tabs = sorted(summary_projects - non_summary_projects)
     for proj in missing_in_tabs:
+        orig = summary_proj_orig.get(proj, proj)
         issues.append({
             'sheet': 'Summary',
             'row': '',
             'col': 'Project',
-            'message': f"Project listed in Summary but missing from non-Summary tabs: {proj}"
+            'message': f"Project listed in Summary but missing from non-Summary tabs: {orig}"
         })
 
     missing_in_summary = sorted(non_summary_projects - summary_projects)
     for proj in missing_in_summary:
+        orig = non_summary_proj_orig.get(proj, proj)
         sheets = sorted(non_summary_project_sheets.get(proj, set()))
         sheet_list = ', '.join(sheets) if sheets else 'unknown sheet'
         issues.append({
             'sheet': 'Summary',
             'row': '',
             'col': 'Project',
-            'message': f"Project present in non-Summary tabs but missing from Summary: {proj} (tabs: {sheet_list})"
+            'message': f"Project present in non-Summary tabs but missing from Summary: {orig} (tabs: {sheet_list})"
         })
 
     # Validate masking against index lengths after all sheets are processed
@@ -787,6 +796,13 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
 
             if issues:
                 issues_df = pd.DataFrame(issues)
+                try:
+                    issues_df['_lane_sort'] = pd.to_numeric(issues_df['lane'], errors='coerce')
+                    issues_df['_group_sort'] = issues_df['group'].astype(str)
+                    issues_df.sort_values(['_lane_sort', '_group_sort'], inplace=True, na_position='last')
+                    issues_df.drop(columns=['_lane_sort', '_group_sort'], inplace=True)
+                except Exception:
+                    pass
             else:
                 issues_df = pd.DataFrame([{'sheet': 'OK', 'row': '', 'col': '', 'message': 'No issues detected'}])
             issues_df.to_excel(writer, sheet_name='RECOMMENDED_CHANGES', index=False)
