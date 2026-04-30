@@ -403,6 +403,8 @@ def get_prev_bcl_done(wildcards):
     prev_cid = BCL_CONVERT_PREV.get(wildcards.config_id)
     if not prev_cid:
         return []
+    if os.path.exists(f".output/{wildcards.config_id}/.done"):
+        return []
     return [maybe_ancient(f".output/{prev_cid}/.done")]
 
 FASTP_THREADS = config.get("fastp_threads", 4)
@@ -2092,7 +2094,7 @@ rule bcl_convert:
         run_info_path = "src/RunInfo_nn.xml",
         tiles = TILES,
         scratch_dir = SCRATCH_DIR,
-        keep_undetermined_configs = config.get("keep_undetermined_configs", [])
+        keep_undetermined_configs = " ".join(config.get("keep_undetermined_configs", []))
     shell:
         """
         (
