@@ -56,6 +56,7 @@ DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20260115_LH00626_
 TILES = config.get("tiles", "1_1101")
 FLEXBAR_BIN = config.get("flexbar_bin", "")
 USE_ANCIENT = config.get("use_ancient", True)
+KEEP_UNDETERMINED_CONFIGS = " ".join(config.get("keep_undetermined_configs", []))
 
 def maybe_ancient(path):
     return ancient(path) if USE_ANCIENT else path
@@ -1873,10 +1874,18 @@ rule generate_samplesheets:
                     old_hash = old_hashes.get(config_id)
                     
                     if new_hash != old_hash:
-                        # Content changed, update done marker
+                        # Content changed, update done marker and invalidate stale validated sheet
                         os.makedirs(os.path.dirname(done_marker), exist_ok=True)
                         open(done_marker, 'w').close()
                         print(f"Updated done marker for {config_id} (content changed)")
+                        for stale in [
+                            f"results/SampleSheet_{config_id}_validated.csv",
+                            f"logs/barcode_hamming_validation_{config_id}.done",
+                            f"logs/barcode_hamming_validation_{config_id}.txt",
+                        ]:
+                            if os.path.exists(stale):
+                                os.remove(stale)
+                                print(f"Removed stale validation artifact: {stale}")
                     else:
                         # Content unchanged, only touch if done marker doesn't exist
                         if not os.path.exists(done_marker):
@@ -2094,7 +2103,7 @@ rule bcl_convert:
         run_info_path = "src/RunInfo_nn.xml",
         tiles = TILES,
         scratch_dir = SCRATCH_DIR,
-        keep_undetermined_configs = " ".join(config.get("keep_undetermined_configs", []))
+        keep_undetermined_configs = KEEP_UNDETERMINED_CONFIGS
     shell:
         """
         (
@@ -2167,6 +2176,7 @@ rule bcl_convert:
 
         # Keep Undetermined reads if config is in keep_undetermined_configs or flexbar file exists.
         keep_undetermined=false
+        echo "DEBUG keep_undetermined_configs='{params.keep_undetermined_configs}' config_id='{wildcards.config_id}'"
         for cfg in {params.keep_undetermined_configs}; do
             if [ "$cfg" = "{wildcards.config_id}" ]; then
                 keep_undetermined=true
