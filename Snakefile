@@ -39,7 +39,6 @@ if os.path.exists(_PROJECT_CONFIG):
         _project_config = _yaml.safe_load(_f) or {}
     # Merge: project-specific config overrides default config
     config.update(_project_config)
-
 # All config values read AFTER merge - project-specific config takes priority
 
 # Fail fast if required config values are missing or empty
@@ -131,7 +130,7 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
         xl = pd.ExcelFile(METADATA_FILE)
         is_miseq_format = 'Barcode Entries' in xl.sheet_names and 'Summary' not in xl.sheet_names
         IS_MISEQ_FORMAT = is_miseq_format
-        
+
         if is_miseq_format:
             # MiSeq: simple format, assume single lane
             print("Detected MiSeq metadata format")
@@ -2092,7 +2091,8 @@ rule bcl_convert:
         lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', ''),
         run_info_path = "src/RunInfo_nn.xml",
         tiles = TILES,
-        scratch_dir = SCRATCH_DIR
+        scratch_dir = SCRATCH_DIR,
+        keep_undetermined_configs = config.get("keep_undetermined_configs", [])
     shell:
         """
         (
@@ -2163,16 +2163,26 @@ rule bcl_convert:
             echo "Scratch data removed after successful sync."
         fi
 
-        # Keep Undetermined reads when inline_demux will process this lane.
-        # MurnJ-style samples are excluded from the DRAGEN sheet (no physical index),
-        # so "flexbar" no longer appears in the sheet — check the barcode FASTA instead.
+        # Keep Undetermined reads if config is in keep_undetermined_configs or flexbar file exists.
+        keep_undetermined=false
+        for cfg in {params.keep_undetermined_configs}; do
+            if [ "$cfg" = "{wildcards.config_id}" ]; then
+                keep_undetermined=true
+                break
+            fi
+        done
+        
         if [ -f "metadata/flexbar_barcodes_{wildcards.config_id}.txt" ]; then
-            echo "Inline demux lane detected (metadata/flexbar_barcodes_{wildcards.config_id}.txt exists); preserving Undetermined reads."
+            echo "Inline demux lane detected; preserving Undetermined reads."
+            keep_undetermined=true
+        fi
+        
+        if [ "$keep_undetermined" = "true" ]; then
+            echo "Keeping Undetermined reads for {wildcards.config_id}."
         else
             find "$final_out" -name "Undetermined*" -delete
             echo "Undetermined reads deleted"
         fi
-
         # Rename FASTQ files
         src/run_rename.sh {wildcards.config_id} "$final_out" {input.renaming_map}
 

@@ -21,6 +21,12 @@ external_drive_path: "/mnt/jbod_raid/nextshare/bcl_convert/NovaSeqX"
 # Set to "" or omit to write directly to output/ (slower if on network/JBOD storage).
 scratch_dir: ""
 
+# Which configs (lanes) should keep Undetermined reads? Others will have them deleted.
+# Default is empty list (delete all Undetermined reads).
+# Example: keep_undetermined_configs: ["lane1", "lane3"]
+# Note: Undetermined reads are automatically kept if flexbar_barcodes_{config_id}.txt exists.
+keep_undetermined_configs: []
+
 # Order IDs whose projects should be excluded from rule all (e.g. skip processing for a specific order).
 # Also excludes the order-level reports and emails for those order IDs.
 # Example: exclude_order_ids: ["0326I-13", "0326I-14"]
