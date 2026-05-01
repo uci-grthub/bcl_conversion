@@ -1139,6 +1139,28 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 lane_df = lane_df[~flexbar_mask].reset_index(drop=True)
                 override_cycles_list = [oc for oc, fb in zip(override_cycles_list, flexbar_mask.values) if not fb]
 
+        # fqtk samples are demultiplexed post-hoc from Undetermined reads using fqtk
+        # (i7-only barcode matching via I1 reads).  Remove them from the DRAGEN sheet
+        # and write metadata/fqtk_barcodes_{config_id}.tsv so the Snakefile can detect
+        # the config and build FQTK_CONFIGS / FQTK_CONFIG_RENAMING_MAP at DAG time.
+        if 'Sample_Project' in ss_data.columns:
+            fqtk_mask = ss_data['Sample_Project'].str.contains('fqtk', case=False, na=False)
+            if fqtk_mask.any():
+                fqtk_tsv_path = os.path.join("metadata", f"fqtk_barcodes_{config_id}.tsv")
+                os.makedirs("metadata", exist_ok=True)
+                with open(fqtk_tsv_path, 'w') as tf:
+                    tf.write("sample_id\tbarcode\n")
+                    for _, row in ss_data[fqtk_mask].iterrows():
+                        name = str(row.get('Sample_Name', '')).strip()
+                        i1 = str(row.get('index', '') or '').strip()
+                        i1 = '' if i1.lower() in ('nan', '') else i1
+                        if name and i1:
+                            tf.write(f"{name}\t{i1}\n")
+                print(f"Generated {fqtk_tsv_path}")
+                ss_data = ss_data[~fqtk_mask].reset_index(drop=True)
+                lane_df = lane_df[~fqtk_mask].reset_index(drop=True)
+                override_cycles_list = [oc for oc, fq in zip(override_cycles_list, fqtk_mask.values) if not fq]
+
         # Reorder columns
         cols = ['Lane', 'Sample_ID', 'Sample_Name', 'index', 'index2', 'Sample_Project', 'OverrideCycles']
         # Add missing cols if any
@@ -1522,6 +1544,7 @@ def read_sample_sheet(config_id):
 def _fastp_row_path(row, idx):
     project = str(row.get('Sample_Project', '')).strip()
     sample_name = str(row.get('Sample_Name', '')).strip()
+    output_project = PROJECT_RENAME_MAP.get((str(row.get('Run', '')).strip(), project), project)
 
     run = str(row.get('Run', '')).strip()
     lane = int(row.get('Lane', 0))
@@ -1549,10 +1572,10 @@ def _fastp_row_path(row, idx):
     if is_parse_or_10x(project):
         if not sample_name or sample_name.lower() == 'nan':
             return None
-        return f"{project}/{sample_name}" if project and project.lower() != 'nan' else sample_name
+        return f"{output_project}/{sample_name}" if output_project and output_project.lower() != 'nan' else sample_name
 
     stem = f"{run}-L{lane}-G{group}-{position}-{barcode}"
-    return f"{project}/{stem}" if project and project.lower() != 'nan' else stem
+    return f"{output_project}/{stem}" if output_project and output_project.lower() != 'nan' else stem
 
 def _fastp_rows_for_config(config_id):
     frames = []
@@ -1566,6 +1589,10 @@ def _fastp_rows_for_config(config_id):
     flex_rows = globals().get('FLEXBAR_CONFIG_RENAMING_MAP', {}).get(config_id, [])
     if flex_rows:
         frames.append(pd.DataFrame(flex_rows))
+
+    fqtk_rows = globals().get('FQTK_CONFIG_RENAMING_MAP', {}).get(config_id, [])
+    if fqtk_rows:
+        frames.append(pd.DataFrame(fqtk_rows))
 
     if not frames:
         return None
@@ -1623,8 +1650,13 @@ def get_fastp_sample_input(wildcards):
         if flex_rows:
             df = pd.concat([df, pd.DataFrame(flex_rows)], ignore_index=True)
 
+    fqtk_rows = globals().get('FQTK_CONFIG_RENAMING_MAP', {}).get(config_id, [])
+    if fqtk_rows:
+        fqtk_df = pd.DataFrame(fqtk_rows)
+        df = pd.concat([df, fqtk_df], ignore_index=True) if df is not None else fqtk_df
+
     if df is None:
-        raise ValueError(f"Renaming map not found and no flexbar rows available: {config_id}")
+        raise ValueError(f"Renaming map not found and no flexbar/fqtk rows available: {config_id}")
 
     try:
         for idx, row in df.iterrows():

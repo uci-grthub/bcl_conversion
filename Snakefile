@@ -326,6 +326,8 @@ VALIDATE_CONFIG_ID_PATTERN = "[^/]+" if IS_MISEQ_FORMAT else r"lane\d+"
 ruleorder: validate_barcode_hamming_distances_rc > validate_barcode_hamming_distances
 ruleorder: flexbar_stage_project > bcl_project_done
 ruleorder: flexbar_stage_project > normalize_project_fastq_names
+ruleorder: fqtk_stage_project > bcl_project_done
+ruleorder: fqtk_stage_project > normalize_project_fastq_names
 
 # Build project directory rename map: (config_id, old_project) -> new_folder_name
 # Format: {LabID}_{OrderID}_{library_name}_L{lane}_G{group}
@@ -446,6 +448,14 @@ for config in LANE_CONFIGS:
     barcode_path = os.path.join("metadata", f"flexbar_barcodes_{config['id']}.txt")
     if os.path.exists(barcode_path):
         FLEXBAR_CONFIGS.append(config['id'])
+
+FQTK_CONFIGS = []
+for config in LANE_CONFIGS:
+    if config['id'] not in CONFIG_IDS:
+        continue
+    fqtk_tsv = os.path.join("metadata", f"fqtk_barcodes_{config['id']}.tsv")
+    if os.path.exists(fqtk_tsv):
+        FQTK_CONFIGS.append(config['id'])
 
 # _CONFIG_PROJECT_PAIRS_RAW keeps the *original* Sample_Project names from the
 # renaming-map CSVs.  These are the names under which fastp JSONs and BCL
@@ -600,6 +610,81 @@ FLEXBAR_ORDER_REPORTS = [f"Reports/order_{oid}/index.html" for oid in FLEXBAR_AC
 ORDER_ID_REPORTS = [f"Reports/order_{oid}/index.html" for oid in ACTIVE_ORDER_IDS]
 ORDER_ID_MD5S = [f"Reports/order_{oid}/md5sums.txt" for oid in ACTIVE_ORDER_IDS]
 
+# Build fqtk order ID map: config_id -> order_id
+# fqtk projects appear in PROJECT_LOOKUP for their lane but not in any BCL Convert samplesheet.
+FQTK_ORDER_ID_MAP = {}    # config_id -> order_id
+FQTK_ORDER_ID_PROJECT = {}  # config_id -> original project name from metadata
+for _qconfig in FQTK_CONFIGS:
+    _qlane = int(_qconfig.replace('lane', ''))
+    _qbcl_projs = _bcl_raw_projects_by_config.get(_qconfig, set())
+    for (_ql, _), _qproj in PROJECT_LOOKUP.items():
+        if _ql == _qlane and _qproj not in _qbcl_projs:
+            _qoid = PROJECT_ORDER_ID.get((_qproj, _qlane), '')
+            if _qoid and _qoid not in EXCLUDE_ORDER_IDS:
+                FQTK_ORDER_ID_MAP[_qconfig] = _qoid
+                FQTK_ORDER_ID_PROJECT[_qconfig] = _qproj
+
+# Build fqtk renaming map: config_id -> list of row dicts (one per barcode/sample).
+# The TSV has a header row (sample_id\tbarcode) followed by data rows.
+FQTK_CONFIG_RENAMING_MAP = {}
+for _qconfig, _qorder_id in FQTK_ORDER_ID_MAP.items():
+    _qlane = int(_qconfig.replace('lane', ''))
+    _qtsv_path = f"metadata/fqtk_barcodes_{_qconfig}.tsv"
+    if not os.path.exists(_qtsv_path):
+        continue
+    _qproj = FQTK_ORDER_ID_PROJECT.get(_qconfig)
+    if not _qproj:
+        continue
+    _qgroup = None
+    for (_ql, _qg), _qp in PROJECT_LOOKUP.items():
+        if _ql == _qlane and _qp == _qproj:
+            _qgroup = _qg
+            break
+    if _qgroup is None:
+        continue
+    _qrows = []
+    _qdata_idx = 0
+    with open(_qtsv_path) as _qtf:
+        for _qi, _qtline in enumerate(_qtf):
+            if _qi == 0:
+                continue  # skip header
+            _qparts = _qtline.strip().split('\t')
+            if len(_qparts) >= 2 and _qparts[0].strip() and _qparts[1].strip():
+                _qrows.append({
+                    'Sample_Project': _qproj,
+                    'Sample_Name': _qparts[0].strip(),
+                    'Run': LIBRARY,
+                    'Lane': _qlane,
+                    'Group': _qgroup,
+                    'index': _qparts[1].strip(),
+                    'index2': '',
+                    'Position': f'P{_qdata_idx+1:03d}',
+                })
+                _qdata_idx += 1
+    if _qrows:
+        FQTK_CONFIG_RENAMING_MAP[_qconfig] = _qrows
+
+# Inject fqtk projects into CONFIG_PROJECT_PAIRS, ORDER_ID_CONFIGS, ACTIVE_ORDER_IDS
+for _qconfig, _qrows in FQTK_CONFIG_RENAMING_MAP.items():
+    _qorig_proj = _qrows[0]['Sample_Project']
+    _qrenamed_proj = PROJECT_RENAME_MAP.get((_qconfig, _qorig_proj), _qorig_proj)
+    _qpair = (_qconfig, _qrenamed_proj)
+    if _qpair not in CONFIG_PROJECT_PAIRS:
+        CONFIG_PROJECT_PAIRS.append(_qpair)
+    _projects_in_pairs.add(_qrenamed_proj)
+    _qorder_id = FQTK_ORDER_ID_MAP[_qconfig]
+    if _qorder_id not in ORDER_ID_CONFIGS:
+        ORDER_ID_CONFIGS[_qorder_id] = set()
+    elif not isinstance(ORDER_ID_CONFIGS.get(_qorder_id), set):
+        ORDER_ID_CONFIGS[_qorder_id] = set(ORDER_ID_CONFIGS.get(_qorder_id, []))
+    ORDER_ID_CONFIGS[_qorder_id].add(_qrenamed_proj)
+    if _qorder_id not in ACTIVE_ORDER_IDS:
+        ACTIVE_ORDER_IDS.append(_qorder_id)
+
+# Rebuild order-level targets to include newly added fqtk orders
+ORDER_ID_REPORTS = [f"Reports/order_{oid}/index.html" for oid in ACTIVE_ORDER_IDS]
+ORDER_ID_MD5S = [f"Reports/order_{oid}/md5sums.txt" for oid in ACTIVE_ORDER_IDS]
+
 # print("CONFIG_PROJECT_PAIRS:", CONFIG_PROJECT_PAIRS)
 
 rule all:
@@ -620,6 +705,7 @@ rule all:
         expand("logs/verify_project_link_{config_id}---{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         ([VALIDATION_XLSX] if VALIDATION_XLSX else []),
         expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
+        expand("results/fqtk_{config_id}.done", config_id=FQTK_CONFIGS),
         # "logs/rsync_to_external_drive.done",
         # "results/check_index_rc_swap.txt"
     benchmark:
@@ -748,10 +834,10 @@ rule report_order_id:
                 )
             project_name_map[_proj] = _orig
 
-        # Flexbar projects are injected into CONFIG_PROJECT_PAIRS after the main
+        # Flexbar/fqtk projects are injected into CONFIG_PROJECT_PAIRS after the main
         # rename map is built, so they are not present in _CONFIG_PROJECT_PAIRS_RAW.
-        # Add an explicit renamed->original mapping here so generate_report.py can
-        # find the fastp JSONs under the original flexbar project directory.
+        # Add explicit renamed->original mappings here so generate_report.py can
+        # find the fastp JSONs under the original project directory.
         for _fconfig in FLEXBAR_CONFIGS:
             _forig = FLEXBAR_ORDER_ID_PROJECT.get(_fconfig)
             if not _forig:
@@ -759,6 +845,13 @@ rule report_order_id:
             _frenamed = PROJECT_RENAME_MAP.get((_fconfig, _forig), _forig)
             if _frenamed in projects:
                 project_name_map[_frenamed] = _forig
+        for _qconfig in FQTK_CONFIGS:
+            _qorig = FQTK_ORDER_ID_PROJECT.get(_qconfig)
+            if not _qorig:
+                continue
+            _qrenamed = PROJECT_RENAME_MAP.get((_qconfig, _qorig), _qorig)
+            if _qrenamed in projects:
+                project_name_map[_qrenamed] = _qorig
         project_name_map_json = _json.dumps(project_name_map)
 
         # Open log file
@@ -1293,7 +1386,8 @@ rule compile_read_counts:
             project=[p for c, p in CONFIG_PROJECT_PAIRS],
         ),
         maps = expand("results/renaming_map_{config_id}.csv", config_id=CONFIG_IDS),
-        flexbar_done = expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS)
+        flexbar_done = expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
+        fqtk_done    = expand("results/fqtk_{config_id}.done", config_id=FQTK_CONFIGS)
     output:
         csv = f"results/{LIBRARY}-count.csv"
     log:
@@ -1455,6 +1549,52 @@ rule compile_read_counts:
                             lane_group_counts[lane_group_key][label] = [0, 0, "flexbar", 0]
                         lane_group_counts[lane_group_key][label][3] += reads
                         current_barcode = None
+
+        # Parse fqtk demux-metrics.txt and add per-sample read counts as a "fqtk" group
+        for config_id in FQTK_CONFIGS:
+            lane_num = None
+            try:
+                m = _re.match(r'lane(\d+)', config_id)
+                if m:
+                    lane_num = int(m.group(1))
+            except Exception:
+                pass
+            if lane_num is None:
+                continue
+
+            fqtk_metrics = os.path.join("output", config_id, "fqtk", "demux-metrics.txt")
+            if not os.path.exists(fqtk_metrics):
+                print(f"Skipping missing fqtk metrics: {fqtk_metrics}")
+                continue
+
+            lane_group_key = (lane_num, "fqtk")
+            lane_group_counts.setdefault(lane_group_key, {})
+
+            try:
+                with open(fqtk_metrics) as _fh:
+                    header_line = None
+                    for _line in _fh:
+                        _line = _line.rstrip('\n')
+                        if not _line or _line.startswith('#'):
+                            continue
+                        parts = _line.split('\t')
+                        if header_line is None:
+                            header_line = parts
+                            continue
+                        row_dict = dict(zip(header_line, parts))
+                        sample = row_dict.get('barcode_name', row_dict.get('sample_id', ''))
+                        if not sample or sample.lower() in ('unmatched', 'undetermined', ''):
+                            continue
+                        try:
+                            reads = int(row_dict.get('templates', row_dict.get('reads', 0)))
+                        except (ValueError, TypeError):
+                            reads = 0
+                        label = sample
+                        if label not in lane_group_counts[lane_group_key]:
+                            lane_group_counts[lane_group_key][label] = [0, 0, "fqtk", 0]
+                        lane_group_counts[lane_group_key][label][3] += reads
+            except Exception as _e:
+                print(f"Warning: could not parse fqtk metrics {fqtk_metrics}: {_e}")
 
         lane_group_pairs_sorted = sorted(lane_group_counts.keys())
 
@@ -1736,6 +1876,187 @@ rule flexbar_stage_project:
             f.write("flexbar project staged\n")
         with open(output.names_done, 'w') as f:
             f.write("flexbar canonical names done\n")
+
+
+def _make_fqtk_stage_constraints():
+    if not FQTK_CONFIG_RENAMING_MAP:
+        return "NOMATCH", "NOMATCH"
+    cfg = "|".join(re.escape(fc) for fc in FQTK_CONFIG_RENAMING_MAP)
+    projs = "|".join(
+        re.escape(PROJECT_RENAME_MAP.get((fc, FQTK_ORDER_ID_PROJECT[fc]), FQTK_ORDER_ID_PROJECT[fc]))
+        for fc in FQTK_CONFIG_RENAMING_MAP
+        if fc in FQTK_ORDER_ID_PROJECT
+    )
+    return cfg, projs or "NOMATCH"
+_FQTK_STAGE_CONFIG_CONSTRAINT, _FQTK_STAGE_PROJECT_CONSTRAINT = _make_fqtk_stage_constraints()
+
+
+rule fqtk_per_config:
+    """Demultiplex SMK/fqtk samples from a lane's Undetermined reads using fqtk.
+
+    Reads Undetermined R1/I1/R2 from .output/{config_id}/, probes I1 length to
+    determine the read structure, and runs fqtk demux with the barcode TSV from
+    metadata/fqtk_barcodes_{config_id}.tsv.  Outputs to output/{config_id}/fqtk/.
+    """
+    input:
+        bcl_done    = ".output/{config_id}/.done",
+        barcode_tsv = "metadata/fqtk_barcodes_{config_id}.tsv"
+    output:
+        touch("results/fqtk_{config_id}.done")
+    log:
+        "logs/fqtk_{config_id}.log"
+    benchmark:
+        "benchmarks/fqtk_per_config_{config_id}.bench"
+    params:
+        outdir  = "output/{config_id}/fqtk",
+        lane    = lambda wildcards: wildcards.config_id.replace('lane', ''),
+        lane_pad = lambda wildcards: f"{int(wildcards.config_id.replace('lane', '')):03d}",
+        r1      = lambda wildcards: f".output/{wildcards.config_id}/Undetermined_S0_L{int(wildcards.config_id.replace('lane', '')):03d}_R1_001.fastq.gz",
+        i1      = lambda wildcards: f".output/{wildcards.config_id}/Undetermined_S0_L{int(wildcards.config_id.replace('lane', '')):03d}_I1_001.fastq.gz",
+        r2      = lambda wildcards: f".output/{wildcards.config_id}/Undetermined_S0_L{int(wildcards.config_id.replace('lane', '')):03d}_R2_001.fastq.gz",
+    shell:
+        """
+        (
+        mkdir -p {params.outdir}
+
+        R1="{params.r1}"
+        I1="{params.i1}"
+        R2="{params.r2}"
+
+        for f in "$R1" "$I1" "$R2"; do
+            if [ ! -f "$f" ]; then
+                echo "ERROR: expected Undetermined file not found: $f"
+                echo "  Ensure Pass-1 BCL Convert ran with CreateFastqForIndexReads=1."
+                exit 1
+            fi
+        done
+
+        # Probe I1 read length to build the correct read structure.
+        I1_LEN=$(set +o pipefail; zcat "$I1" | awk 'NR==2{{print length($0); exit}}')
+        if [ "$I1_LEN" -ge 10 ]; then
+            I1_READ_STRUCT="8B$(( I1_LEN - 8 ))S"
+        else
+            I1_READ_STRUCT="8B"
+        fi
+        echo "I1 read length: ${{I1_LEN}}bp -> read structure: $I1_READ_STRUCT"
+
+        conda run -n bcl_convert fqtk demux \
+            --inputs "$R1" "$I1" "$R2" \
+            --read-structures "151T" "$I1_READ_STRUCT" "151T" \
+            --sample-metadata {input.barcode_tsv} \
+            --output {params.outdir} \
+            --max-mismatches 1 \
+            --min-mismatch-delta 2
+
+        echo "fqtk demux complete"
+        cat "{params.outdir}/demux-metrics.txt" 2>/dev/null || true
+
+        # Remove unmatched reads — not needed downstream and can be large.
+        rm -f "{params.outdir}"/unmatched.*.fq.gz
+
+        curr_dir=$PWD
+        cd {params.outdir}
+        md5sum *.fq.gz > md5sum.txt 2>/dev/null || true
+        du -h *.fq.gz > size.txt 2>/dev/null || true
+        cd "$curr_dir"
+        ) > {log} 2>&1
+
+        touch {output}
+        """
+
+
+rule fqtk_stage_project:
+    """Stage fqtk-demuxed files into per-project directory with canonical names.
+
+    BD/10x projects get DRAGEN-style names: {sample}_S{n}_L{lane:03d}_R1_001.fastq.gz
+    Other projects get stem-based names: {stem}-R1.fastq.gz (same as flexbar).
+    Writes .project_done and .fastq_names_done sentinels.
+    """
+    input:
+        done = "results/fqtk_{config_id}.done"
+    output:
+        project_done = "output/{config_id}/{project}/.project_done",
+        names_done   = "output/{config_id}/{project}/.fastq_names_done"
+    log:
+        "logs/fqtk_stage_project_{config_id}_{project}.log"
+    wildcard_constraints:
+        config_id = _FQTK_STAGE_CONFIG_CONSTRAINT,
+        project   = _FQTK_STAGE_PROJECT_CONSTRAINT
+    run:
+        import os
+        import shutil
+        config_id = wildcards.config_id
+        project   = wildcards.project
+        rows      = FQTK_CONFIG_RENAMING_MAP.get(config_id, [])
+        proj_dir  = f"output/{config_id}/{project}"
+        os.makedirs(proj_dir, exist_ok=True)
+        log_lines = [f"Staging fqtk project {project} for {config_id}\n"]
+
+        def _materialize_and_backlink(src_abs, dst_abs):
+            if os.path.lexists(dst_abs) and os.path.islink(dst_abs):
+                os.unlink(dst_abs)
+            if not os.path.exists(dst_abs):
+                try:
+                    os.link(src_abs, dst_abs)
+                    log_lines.append(f"Hardlinked {dst_abs} <- {src_abs}\n")
+                except Exception:
+                    shutil.copy2(src_abs, dst_abs)
+                    log_lines.append(f"Copied {src_abs} -> {dst_abs}\n")
+            else:
+                log_lines.append(f"Kept existing destination {dst_abs}\n")
+            if os.path.lexists(src_abs):
+                try:
+                    if os.path.islink(src_abs):
+                        if os.path.realpath(src_abs) == os.path.realpath(dst_abs):
+                            return
+                    os.unlink(src_abs)
+                except Exception:
+                    pass
+            os.symlink(os.path.abspath(dst_abs), src_abs)
+            log_lines.append(f"Linked {src_abs} -> {dst_abs}\n")
+
+        # Resolve original project name (before rename) to check is_parse_or_10x
+        project_orig = rows[0].get('Sample_Project', project) if rows else project
+
+        # Compute global S-number offset: count BCL Convert rows for this config
+        # so fqtk samples continue the numbering (e.g. BCL=84 rows → fqtk gets S85, S86)
+        import pandas as _pd
+        _map_path = f"results/renaming_map_{config_id}.csv"
+        _s_num_offset = 0
+        if os.path.exists(_map_path):
+            try:
+                _s_num_offset = len(_pd.read_csv(_map_path))
+            except Exception:
+                pass
+
+        for _fqtk_i, row in enumerate(rows):
+            name    = row['Sample_Name']
+            run     = row['Run']
+            lane    = int(row['Lane'])
+            group   = str(row['Group'])
+            pos     = row['Position']
+            barcode = row['index']
+            s_num   = _s_num_offset + _fqtk_i + 1
+            src_r1  = os.path.abspath(f"output/{config_id}/fqtk/{name}.R1.fq.gz")
+            src_r2  = os.path.abspath(f"output/{config_id}/fqtk/{name}.R2.fq.gz")
+            if is_parse_or_10x(project_orig):
+                dst_r1 = os.path.abspath(f"{proj_dir}/{name}_S{s_num}_L{lane:03d}_R1_001.fastq.gz")
+                dst_r2 = os.path.abspath(f"{proj_dir}/{name}_S{s_num}_L{lane:03d}_R2_001.fastq.gz")
+            else:
+                stem   = f"{run}-L{lane}-G{group}-{pos}-{barcode}"
+                dst_r1 = os.path.abspath(f"{proj_dir}/{stem}-R1.fastq.gz")
+                dst_r2 = os.path.abspath(f"{proj_dir}/{stem}-R2.fastq.gz")
+            if os.path.exists(src_r1) or os.path.islink(src_r1):
+                _materialize_and_backlink(src_r1, dst_r1)
+            if os.path.exists(src_r2) or os.path.islink(src_r2):
+                _materialize_and_backlink(src_r2, dst_r2)
+        with open(log[0], 'w') as lf:
+            lf.writelines(log_lines)
+        with open(output.project_done, 'w') as f:
+            f.write("fqtk project staged\n")
+        with open(output.names_done, 'w') as f:
+            f.write("fqtk canonical names done\n")
+
 
 rule generate_samplesheets:
     input:
