@@ -21,7 +21,7 @@ external_drive_path: "/mnt/jbod_raid/nextshare/bcl_convert/NovaSeqX"
 # Set to "" or omit to write directly to output/ (slower if on network/JBOD storage).
 scratch_dir: ""
 
-use_ancient: false  # Whether to use ancient files for bcl-convert outputs if available (default: true). Set to false to always re-run bcl-convert.
+use_ancient: true  # Whether to use ancient files for bcl-convert outputs if available (default: true). Set to false to always re-run bcl-convert.
 
 # Which configs (lanes) should keep Undetermined reads? Others will have them deleted.
 # Default is empty list (delete all Undetermined reads).

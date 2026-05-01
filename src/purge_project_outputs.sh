@@ -3,14 +3,13 @@
 # when indexes in the renaming map need to change.
 #
 # Usage (by config_id):
-#   src/purge_project_outputs.sh <config_id> [project] [--delete] [--delete-fastqs]
+#   src/purge_project_outputs.sh <config_id> [project] [--delete]
 #
 # Usage (by lane/group from metadata):
-#   src/purge_project_outputs.sh --lane <N> [--group <G>] [--delete] [--delete-fastqs]
+#   src/purge_project_outputs.sh --lane <N> [--group <G>] [--delete]
 #
 # By default runs in dry-run mode (lists files that would be deleted).
 # Pass --delete to actually remove them.
-# Pass --delete-fastqs to also remove output/{config_id}/{project}/ (the fastq dirs).
 #
 # Files removed:
 #   output/{config_id}/{project}/md5sums.txt
@@ -20,10 +19,11 @@
 #   logs/fastp_plots_sample/{config_id}/{project}/
 #   logs/project_link_{config_id}---{project}.log
 #   benchmarks/ entries for the above rules
-#   output/{config_id}/.done              (forces bcl-convert re-run)
-#   results/renaming_map_{config_id}.csv  (forces regeneration)
-#   results/SampleSheet_{config_id}.csv   (forces regeneration)
-#   .snakemake/iocache/latest.pkl         (clears stale IOCache)
+#   .output/{config_id}/.done                     (forces bcl-convert re-run)
+#   results/renaming_map_{config_id}.csv          (forces regeneration)
+#   results/SampleSheet_{config_id}.csv           (forces regeneration)
+#   results/SampleSheet_{config_id}_validated.csv (forces re-validation)
+#   .snakemake/iocache/latest.pkl                 (clears stale IOCache)
 
 set -euo pipefail
 
@@ -32,7 +32,6 @@ GROUP=""
 CONFIG_ID=""
 PROJECT=""
 DELETE=false
-DELETE_FASTQS=false
 
 # Parse all flags
 ARGS=("$@")
@@ -44,7 +43,6 @@ while [[ $i -lt ${#ARGS[@]} ]]; do
         --lane)         i=$((i+1)); LANE="${ARGS[$i]}" ;;
         --group)        i=$((i+1)); GROUP="${ARGS[$i]}" ;;
         --delete)       DELETE=true ;;
-        --delete-fastqs) DELETE=true; DELETE_FASTQS=true ;;
         *) POSITIONAL+=("$arg") ;;
     esac
     i=$((i+1))
@@ -71,7 +69,7 @@ import sys, os, glob, csv
 lane = sys.argv[1]
 group = sys.argv[2] if len(sys.argv) > 2 else ""
 
-pattern = f"results/renaming_map_lane{lane}_*.csv"
+pattern = f"results/renaming_map_lane{lane}*.csv"
 maps = glob.glob(pattern)
 if not maps:
     print(f"ERROR: no renaming maps found matching {pattern}", file=sys.stderr)
@@ -105,8 +103,8 @@ PYEOF
 elif [[ -n "$CONFIG_ID" ]]; then
     PAIRS+=("${CONFIG_ID}"$'\t'"${PROJECT}")
 else
-    echo "Usage: $0 <config_id> [project] [--delete] [--delete-fastqs]"
-    echo "       $0 --lane <N> [--group <G>] [--delete] [--delete-fastqs]"
+    echo "Usage: $0 <config_id> [project] [--delete]"
+    echo "       $0 --lane <N> [--group <G>] [--delete]"
     exit 1
 fi
 
@@ -149,13 +147,7 @@ for pair in "${PAIRS[@]}"; do
     fi
 
     for proj in "${PROJECTS[@]}"; do
-        # output fastq dir (opt-in)
-        if $DELETE_FASTQS; then
-            [[ -d "output/$CONFIG_ID/$proj" ]] && TO_DELETE+=("output/$CONFIG_ID/$proj")
-        else
-            # md5sums only (fastqs preserved)
-            collect_path "output/$CONFIG_ID/$proj/md5sums.txt"
-        fi
+        collect_path "output/$CONFIG_ID/$proj/md5sums.txt"
 
         # fastp results
         [[ -d "results/fastp/$CONFIG_ID/$proj" ]] && TO_DELETE+=("results/fastp/$CONFIG_ID/$proj")
@@ -186,9 +178,10 @@ for pair in "${PAIRS[@]}"; do
         [[ "$seen" == "$CONFIG_ID" ]] && already_seen=true && break
     done
     if ! $already_seen; then
-        collect_path "output/${CONFIG_ID}/.done"
+        collect_path ".output/${CONFIG_ID}/.done"
         collect_path "results/renaming_map_${CONFIG_ID}.csv"
         collect_path "results/SampleSheet_${CONFIG_ID}.csv"
+        collect_path "results/SampleSheet_${CONFIG_ID}_validated.csv"
         SEEN_CONFIGS+=("$CONFIG_ID")
     fi
 done
@@ -219,5 +212,5 @@ if $DELETE; then
     echo "Done."
 else
     echo ""
-    echo "Dry run — pass --delete to remove these files, or --delete-fastqs to also remove output fastq dirs."
+    echo "Dry run — pass --delete to remove these files."
 fi

@@ -2539,7 +2539,7 @@ rule bcl_convert_rc:
         candidates = "logs/rc_candidates_{config_id}.json",
         data_dir = DATA_DIR,
         run_info = "src/RunInfo_nn.xml",
-        orig_done = ".output/{config_id}/.done"
+        orig_done = maybe_ancient(".output/{config_id}/.done")
     output:
         output_dir = directory(".output_rc/{config_id}"),
         done_file = touch(".output_rc/{config_id}/.done")
