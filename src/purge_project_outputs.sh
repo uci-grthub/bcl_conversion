@@ -13,17 +13,23 @@
 #
 # Files removed:
 #   output/{config_id}/{project}/md5sums.txt
+#   output/{config_id}/{project}/.project_done
+#   output/{config_id}/{project}/.fastq_names_done
 #   results/fastp/{config_id}/{project}/
 #   results/fastp_plots/{config_id}/{project}/
 #   logs/fastp_sample/{config_id}/{project}/
 #   logs/fastp_plots_sample/{config_id}/{project}/
 #   logs/project_link_{config_id}---{project}.log
+#   logs/nextcloud_scan_{config_id}---{project}.done
 #   benchmarks/ entries for the above rules
-#   .output/{config_id}/.done                     (forces bcl-convert re-run)
-#   results/renaming_map_{config_id}.csv          (forces regeneration)
-#   results/SampleSheet_{config_id}.csv           (forces regeneration)
-#   results/SampleSheet_{config_id}_validated.csv (forces re-validation)
-#   .snakemake/iocache/latest.pkl                 (clears stale IOCache)
+#   .output/{config_id}/.done                          (forces bcl-convert re-run)
+#   .output_rc/{config_id}/.done                       (forces bcl-convert-rc re-run)
+#   results/fastp_plots_{config_id}.done               (lane-level fastp sentinel)
+#   results/fastp_plots_summary_lane{N}.done           (lane-level summary sentinel)
+#   results/renaming_map_{config_id}.csv               (forces regeneration)
+#   results/SampleSheet_{config_id}.csv                (forces regeneration)
+#   results/SampleSheet_{config_id}_validated.csv      (forces re-validation)
+#   .snakemake/iocache/latest.pkl                      (clears stale IOCache)
 
 set -euo pipefail
 
@@ -161,6 +167,10 @@ for pair in "${PAIRS[@]}"; do
 
         # per-project bcl_convert validation sentinel
         collect_path "output/$CONFIG_ID/$proj/.project_done"
+        collect_path "output/$CONFIG_ID/$proj/.fastq_names_done"
+
+        # nextcloud scan sentinel
+        collect_path "logs/nextcloud_scan_${CONFIG_ID}---${proj}.done"
 
         # project_link log
         collect_path "logs/project_link_${CONFIG_ID}---${proj}.log"
@@ -179,6 +189,10 @@ for pair in "${PAIRS[@]}"; do
     done
     if ! $already_seen; then
         collect_path ".output/${CONFIG_ID}/.done"
+        collect_path ".output_rc/${CONFIG_ID}/.done"
+        collect_path "results/fastp_plots_${CONFIG_ID}.done"
+        lane_num=$(echo "$CONFIG_ID" | sed 's/lane\([0-9]*\).*/\1/')
+        [[ -n "$lane_num" ]] && collect_path "results/fastp_plots_summary_lane${lane_num}.done"
         collect_path "results/renaming_map_${CONFIG_ID}.csv"
         collect_path "results/SampleSheet_${CONFIG_ID}.csv"
         collect_path "results/SampleSheet_${CONFIG_ID}_validated.csv"
