@@ -581,6 +581,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
     # Sheets like "Barcode List" appear multiple times per lane (multiple groups) and
     # must be excluded so we don't incorrectly override their multi-group assignments.
     sheet_tab_group_lookup = {}
+    flexbar_groups = set()  # (lane, group) pairs whose demux is handled by flexbar, not bcl-convert
     try:
         xl = pd.ExcelFile(metadata_file)
         if 'Summary' in xl.sheet_names:
@@ -596,6 +597,10 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                         tab_norm = tab.replace('_', ' ').strip().lower()
                         if tab_norm and tab_norm != 'nan':
                             tab_counts.setdefault((l, tab_norm), set()).add(g)
+                            # "Flexbar, attachment" tab means flexbar handles demux post-bcl-convert;
+                            # exclude these groups from bcl-convert sample sheets entirely.
+                            if 'flexbar' in tab_norm:
+                                flexbar_groups.add((l, g))
                     except:
                         pass
                 # Only include tabs that map to exactly one group per lane
@@ -755,7 +760,21 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         return {}
         
     df = all_samples
-    
+
+    # Remove flexbar-handled groups: their reads land in Undetermined and are
+    # demuxed by flexbar_per_config, so they must not appear in bcl-convert sheets.
+    if flexbar_groups and 'Lane' in df.columns and 'Group' in df.columns:
+        def _is_flexbar_row(row):
+            try:
+                return (int(float(row['Lane'])), int(float(row['Group']))) in flexbar_groups
+            except:
+                return False
+        flexbar_mask = df.apply(_is_flexbar_row, axis=1)
+        if flexbar_mask.any():
+            print(f"Excluding {flexbar_mask.sum()} flexbar-handled samples from bcl-convert sheets: "
+                  f"{sorted(flexbar_groups)}")
+            df = df[~flexbar_mask].reset_index(drop=True)
+
     # Assign Masking to samples based on Lane and Group
     def get_sample_masking(row):
         try:
@@ -1512,8 +1531,8 @@ def get_project_plot_targets(project, lane_filter=None, order_id=None):
                     stem = f"{run}-L{lane_val}-G{group}-{position}-{barcode}"
                     path = f"{orig_project}/{stem}"
 
-                targets.append(f"results/fastp_plots/{config_id}/{path}-mean_phred.png")
-                targets.append(f"results/fastp_plots/{config_id}/{path}-base_comp.png")
+                targets.append(f"results/{config_id}/{path}-mean_phred.png")
+                targets.append(f"results/{config_id}/{path}-base_comp.png")
         except Exception as e:
             print(f"Error building plot targets for {project} in {config_id}: {e}")
     return targets
@@ -1607,7 +1626,7 @@ def get_fastp_targets(wildcards):
             for idx, row in df.iterrows():
                 path = _fastp_row_path(row, idx)
                 if path:
-                    targets.append(f"results/fastp/{config_id}/{path}.json")
+                    targets.append(f"results/{config_id}/{path}.fastp.json")
             return list(dict.fromkeys(targets))
         except Exception as e:
             print(f"Error building fastp targets for {config_id}: {e}")
@@ -1712,8 +1731,8 @@ def get_fastp_plots_targets(wildcards):
     for idx, row in df.iterrows():
         path = _fastp_row_path(row, idx)
         if path:
-            targets.append(f"results/fastp_plots/{config_id}/{path}-mean_phred.png")
-            targets.append(f"results/fastp_plots/{config_id}/{path}-base_comp.png")
+            targets.append(f"results/{config_id}/{path}-mean_phred.png")
+            targets.append(f"results/{config_id}/{path}-base_comp.png")
     return targets
 
 def get_project_fastp_targets(wildcards):
@@ -1735,7 +1754,7 @@ def get_project_fastp_targets(wildcards):
             for idx, row in project_samples.iterrows():
                 path = _fastp_row_path(row, idx)
                 if path:
-                    targets.append(f"results/fastp/{config_id}/{path}.json")
+                    targets.append(f"results/{config_id}/{path}.fastp.json")
         except Exception as e:
             print(f"Error building fastp targets for {project} in {config_id}: {e}")
     return targets

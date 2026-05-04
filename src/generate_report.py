@@ -589,7 +589,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 """
     
     # Find all samples from fastp JSONs.
-    # Structure: results/fastp/{config_id}/{project}/{stem}.json
+    # Structure: results/{config_id}/{project}/{stem}.fastp.json
     # Some flexbar projects keep fastp outputs under the original project name,
     # while the report is rendered for the renamed folder name. Search both.
     fastp_lookup_names = []
@@ -600,7 +600,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 
     json_files = []
     for fastp_lookup_name in fastp_lookup_names:
-        json_pattern = os.path.join(fastp_base_dir, "*", fastp_lookup_name, "*.json")
+        json_pattern = os.path.join(fastp_base_dir, "*", fastp_lookup_name, "*.fastp.json")
         print(f"Searching for JSONs with pattern: {json_pattern}")
         json_files.extend(glob.glob(json_pattern))
 
@@ -634,16 +634,13 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 
     for json_file in json_files:
         # Extract config_id (lane)
-        # path: .../results/fastp/{config_id}/{project}/{stem}.json
+        # path: .../results/{config_id}/{project}/{stem}.fastp.json
         parts = json_file.split(os.sep)
-        # Assuming standard structure
         try:
-            # Find 'fastp' in path to locate config_id
-            # It should be the parent of the parent of the file
-            # .../fastp/lane1_.../project/file.json
-            # So config_id is parts[-3] if file is parts[-1]
             config_id = parts[-3]
             stem = os.path.splitext(os.path.basename(json_file))[0]
+            if stem.endswith('.fastp'):
+                stem = stem[:-6]
         except:
             print(f"Could not parse path: {json_file}")
             continue

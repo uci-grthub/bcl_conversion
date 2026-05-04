@@ -696,7 +696,7 @@ rule all:
         ORDER_ID_MD5S,
         expand("results/fastp_plots_summary_lane{lane}.done", lane=detected_lanes),
         expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
-        expand("results/read_counts_{project}.csv", project=PROJECTS),
+        expand("results/{config_id}/{project}/read_counts_{project}.csv", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         # expand("logs/project_link_{config_id}_{project}.log", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         expand("logs/project_links_{config_id}---{project}.yaml", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         f"results/{LIBRARY}-count.csv",
@@ -748,8 +748,8 @@ rule report_order_id:
     params:
         order_id = "{order_id}",
         output_base = "output",
-        fastp_plots_base = "results/fastp_plots",
-        fastp_base = "results/fastp",
+        fastp_plots_base = "results",
+        fastp_base = "results",
         report_dir = "Reports/order_{order_id}"
     run:
         import subprocess
@@ -1133,8 +1133,8 @@ rule fastp_sample:
             lambda orig: f"output/{wildcards.config_id}/{PROJECT_RENAME_MAP.get((wildcards.config_id, orig), orig)}/.fastq_names_done"
         )(wildcards.sample_path.split('/')[0])
     output:
-        json = "results/fastp/{config_id}/{sample_path}.json",
-        html = "results/fastp/{config_id}/{sample_path}.html"
+        json = "results/{config_id}/{sample_path}.fastp.json",
+        html = "results/{config_id}/{sample_path}.fastp.html"
     log:
         "logs/fastp_sample/{config_id}/{sample_path}.log"
     benchmark:
@@ -1246,10 +1246,10 @@ rule fastp_per_config:
 
 rule fastp_plots_sample:
     input:
-        json = "results/fastp/{config_id}/{sample_path}.json"
+        json = "results/{config_id}/{sample_path}.fastp.json"
     output:
-        mean = "results/fastp_plots/{config_id}/{sample_path}-mean_phred.png",
-        base = "results/fastp_plots/{config_id}/{sample_path}-base_comp.png"
+        mean = "results/{config_id}/{sample_path}-mean_phred.png",
+        base = "results/{config_id}/{sample_path}-base_comp.png"
     log:
         "logs/fastp_plots_sample/{config_id}/{sample_path}.log"
     benchmark:
@@ -1283,97 +1283,62 @@ rule fastp_plots_per_config:
     wildcard_constraints:
         config_id = "lane.*"
 
-def get_project_done_sentinels(wildcards):
-    target_projects = {wildcards.project}
-    for (config_id, old_project), new_project in PROJECT_RENAME_MAP.items():
-        if old_project == wildcards.project:
-            target_projects.add(new_project)
-        elif new_project == wildcards.project:
-            target_projects.add(old_project)
-
-    return [
-        f"output/{config_id}/{project}/.project_done"
-        for config_id, project in CONFIG_PROJECT_PAIRS
-        if project in target_projects
-    ]
-
-
-def get_project_bcl_done_sentinels(wildcards):
-    target_projects = {wildcards.project}
-    for (config_id, old_project), new_project in PROJECT_RENAME_MAP.items():
-        if old_project == wildcards.project:
-            target_projects.add(new_project)
-        elif new_project == wildcards.project:
-            target_projects.add(old_project)
-
-    return [
-        f".output/{config_id}/.done"
-        for config_id, project in CONFIG_PROJECT_PAIRS
-        if project in target_projects
-    ]
 
 rule summarize_project_reads:
     input:
-        project_done = get_project_done_sentinels,
-        bcl_done = get_project_bcl_done_sentinels
+        project_done = "output/{config_id}/{project}/.project_done",
+        bcl_done = ".output/{config_id}/.done"
     output:
-        "results/read_counts_{project}.csv"
+        "results/{config_id}/{project}/read_counts_{project}.csv"
     log:
-        "logs/summarize_project_reads_{project}.log"
+        "logs/summarize_project_reads_{config_id}_{project}.log"
     benchmark:
-        "benchmarks/summarize_project_reads_{project}.bench"
+        "benchmarks/summarize_project_reads_{config_id}_{project}.bench"
     run:
         import sys
         sys.stderr = sys.stdout = open(log[0], 'w')
         import pandas as pd
         import os
 
+        # The demux stats may use the pre-rename project name
         target_projects = {wildcards.project}
-        for (config_id, old_project), new_project in PROJECT_RENAME_MAP.items():
-            if old_project == wildcards.project:
-                target_projects.add(new_project)
-            elif new_project == wildcards.project:
-                target_projects.add(old_project)
+        for (cid, old_project), new_project in PROJECT_RENAME_MAP.items():
+            if cid == wildcards.config_id:
+                if old_project == wildcards.project:
+                    target_projects.add(new_project)
+                elif new_project == wildcards.project:
+                    target_projects.add(old_project)
 
+        demux_path = f"output/{wildcards.config_id}/Reports/Demultiplex_Stats.csv"
         data = []
-        for done_marker in input.bcl_done:
-            parts = str(done_marker).split('/')
-            if len(parts) < 3:
-                print(f"Skipping unexpected done marker path: {done_marker}")
-                continue
 
-            config_id = parts[1]
-            demux_path = f"output/{config_id}/Reports/Demultiplex_Stats.csv"
-
-            if not os.path.exists(demux_path):
-                print(f"Skipping missing {demux_path}")
-                continue
-
+        if not os.path.exists(demux_path):
+            print(f"Skipping missing {demux_path}")
+        else:
             try:
                 demux_df = pd.read_csv(demux_path)
             except Exception as e:
                 print(f"Error reading {demux_path}: {e}")
-                continue
+                demux_df = pd.DataFrame()
 
-            if 'Sample_Project' not in demux_df.columns:
+            if 'Sample_Project' in demux_df.columns:
+                matches = demux_df[demux_df['Sample_Project'].astype(str).isin(target_projects)]
+                for _, row in matches.iterrows():
+                    sample_name = str(row.get('SampleID', row.get('Sample_ID', ''))).strip()
+                    read_pairs = int(row.get('# Reads', 0))
+                    data.append({
+                        'Config': wildcards.config_id,
+                        'Project': wildcards.project,
+                        'Sample': sample_name,
+                        'Total_Reads': read_pairs,
+                        'Passed_Reads': read_pairs,
+                    })
+            else:
                 print(f"Missing Sample_Project column in {demux_path}")
-                continue
-
-            matches = demux_df[demux_df['Sample_Project'].astype(str).isin(target_projects)]
-            for _, row in matches.iterrows():
-                sample_name = str(row.get('SampleID', row.get('Sample_ID', ''))).strip()
-                read_pairs = int(row.get('# Reads', 0))
-                data.append({
-                    'Config': config_id,
-                    'Project': wildcards.project,
-                    'Sample': sample_name,
-                    'Total_Reads': read_pairs,
-                    'Passed_Reads': read_pairs,
-                })
 
         df = pd.DataFrame(data)
         if not df.empty:
-            df = df.sort_values(['Config', 'Sample'])
+            df = df.sort_values(['Sample'])
         df.to_csv(output[0], index=False)
 
 rule compile_read_counts:
@@ -2498,7 +2463,8 @@ rule bcl_convert:
         # Keep Undetermined reads if config is in keep_undetermined_configs or flexbar file exists.
         keep_undetermined=false
         echo "DEBUG keep_undetermined_configs='{params.keep_undetermined_configs}' config_id='{wildcards.config_id}'"
-        for cfg in {params.keep_undetermined_configs}; do
+        _keep_configs="{params.keep_undetermined_configs}"
+        for cfg in $_keep_configs; do
             if [ "$cfg" = "{wildcards.config_id}" ]; then
                 keep_undetermined=true
                 break
