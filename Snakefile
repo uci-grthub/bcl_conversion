@@ -1891,10 +1891,10 @@ _FLEXBAR_STAGE_CONFIG_CONSTRAINT, _FLEXBAR_STAGE_PROJECT_CONSTRAINT = _make_flex
 rule flexbar_stage_project:
     """Stage flexbar-demuxed files into per-project directory with canonical names.
 
-    Creates real files at {stem}-R1/2.fastq.gz in the renamed project directory,
-    then points flexbarOut_barcode_{name}.fastq.gz back to those files via symlink.
-    Writes .project_done / .fastq_names_done sentinels so downstream rules
-    (calculate_md5sums, fastp_sample, project_link) treat this like a normal project.
+    Moves flexbarOut_barcode_{name}.fastq.gz files into the renamed project directory
+    as {stem}-R1/2.fastq.gz. Writes .project_done / .fastq_names_done sentinels so
+    downstream rules (calculate_md5sums, fastp_sample, project_link) treat this like
+    a normal project.
     """
     input:
         done = "results/flexbar_{config_id}.done"
