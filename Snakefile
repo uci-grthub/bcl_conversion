@@ -1173,6 +1173,7 @@ rule normalize_project_fastq_names:
         project = ".+"
     run:
         import os
+        import shutil
 
         config_id = wildcards.config_id
         new_project = wildcards.project
@@ -1187,6 +1188,60 @@ rule normalize_project_fastq_names:
         lowered = check_name.lower()
         if any(token in lowered for token in ["10x", "parse", "bd"]):
             return
+
+        def _materialize_and_backlink(src_abs, dst_abs):
+            if os.path.lexists(dst_abs) and os.path.islink(dst_abs):
+                os.unlink(dst_abs)
+            if not os.path.exists(dst_abs):
+                try:
+                    os.link(src_abs, dst_abs)
+                except Exception:
+                    shutil.copy2(src_abs, dst_abs)
+            if os.path.lexists(src_abs):
+                try:
+                    if os.path.islink(src_abs) and os.path.realpath(src_abs) == os.path.realpath(dst_abs):
+                        return
+                    os.unlink(src_abs)
+                except Exception:
+                    pass
+            os.symlink(os.path.abspath(dst_abs), src_abs)
+
+        flex_rows = globals().get('FLEXBAR_CONFIG_RENAMING_MAP', {}).get(config_id, [])
+        for idx, row in enumerate(flex_rows):
+            sample_name = str(row.get("Sample_Name", "")).strip()
+            if not sample_name or sample_name.lower() == "nan":
+                continue
+
+            run_name = str(row.get("Run", "")).strip()
+            lane = int(row.get("Lane", 0))
+            try:
+                group = str(int(float(row.get("Group", 0))))
+            except Exception:
+                group = str(row.get("Group", "")).strip()
+            if not group or group.lower() == "nan":
+                group = "Undetermined"
+
+            index1 = str(row.get("index", "")).strip()
+            if index1.lower() == "nan":
+                index1 = ""
+            index2 = str(row.get("index2", "")).strip()
+            if index2.lower() == "nan":
+                index2 = ""
+
+            barcode = f"{index1}-{index2}" if index2 else index1
+            position = str(row.get("Position", f"P{idx + 1:03d}")).strip()
+            stem = f"{run_name}-L{lane}-G{group}-{position}-{barcode}"
+
+            src_r1 = os.path.abspath(f"output/{config_id}/flexbar/flexbarOut_barcode_{sample_name}.fastq.gz")
+            dst_r1 = os.path.abspath(f"{project_dir}/{stem}-R1.fastq.gz")
+            if os.path.exists(src_r1) or os.path.islink(src_r1):
+                _materialize_and_backlink(src_r1, dst_r1)
+
+            if NUM_READS > 1:
+                src_r2 = os.path.abspath(f"output/{config_id}/flexbar/flexbarOut_barcode_{sample_name}_R2.fastq.gz")
+                dst_r2 = os.path.abspath(f"{project_dir}/{stem}-R2.fastq.gz")
+                if os.path.exists(src_r2) or os.path.islink(src_r2):
+                    _materialize_and_backlink(src_r2, dst_r2)
 
         df = pd.read_csv(input.renaming_map)
         project_rows = df[df["Sample_Project"].astype(str).str.strip() == old_project]
@@ -1675,12 +1730,14 @@ rule flexbar_per_config:
         fi
 
         # Build processed FASTA from raw tab-delimited barcodes.
-        awk '
-        {{
-            name = $1
-            barcode = $2
+        awk -F'\t' '
+        NF >= 3 {{
+            name = tolower($1)
+            barcode = $3
             gsub(/\r/, "", name)
             gsub(/\r/, "", barcode)
+            gsub(/ /, "_", name)
+            gsub(/[^a-z0-9_]/, "", name)
             gsub(/A/, "X", barcode)
             gsub(/T/, "A", barcode)
             gsub(/X/, "T", barcode)
@@ -1709,29 +1766,26 @@ rule flexbar_per_config:
             --umi-tags \
             --target {params.outdir}/flexbarOut -n {threads}
 
+        # Prepare headers and create each R2 with seqkit's internal threading.
         for r1_out in {params.outdir}/flexbarOut_barcode_*.fastq.gz; do
             [ -e "$r1_out" ] || continue
-
             base_name=$(basename "$r1_out" .fastq.gz)
-            # Example base_name: flexbarOut_barcode_L-0-1
-
             # Skip R2 conversion for unassigned reads
             if [[ "$base_name" == *"unassigned"* ]]; then
                 echo "Skipping R2 conversion for unassigned: $base_name"
                 continue
             fi
 
-            echo "Processing R2 for $base_name..."
-
+            echo "Preparing headers for $base_name"
             zcat "$r1_out" | grep " 1:N" | sed 's/^@//' | cut -d ' ' -f1 | sed 's/_[ATGCN]*$//' > "{params.outdir}/${{base_name}}_headers.txt"
 
             if [ -s "{params.outdir}/${{base_name}}_headers.txt" ]; then
-                seqtk subseq {params.r2} "{params.outdir}/${{base_name}}_headers.txt" | gzip > "{params.outdir}/${{base_name}}_R2.fastq.gz"
+                seqkit grep -j {threads} -f "{params.outdir}/${{base_name}}_headers.txt" "{params.r2}" -o "{params.outdir}/${{base_name}}_R2.fastq.gz"
             else
                 echo "No reads found for $base_name"
             fi
 
-            rm "{params.outdir}/${{base_name}}_headers.txt"
+            rm -f "{params.outdir}/${{base_name}}_headers.txt"
         done
 
         curr_dir=$PWD
@@ -2931,15 +2985,11 @@ rule pick_orientation:
         with open(input.candidates) as f:
             suspects = json_mod.load(f)
 
-        # Keep Undetermined FASTQs for lanes that include flexbar projects.
-        samplesheet_path = f"results/SampleSheet_{wildcards.config_id}.csv"
-        preserve_undetermined = False
-        if os_mod.path.exists(samplesheet_path):
-            try:
-                with open(samplesheet_path, 'r', encoding='utf-8', errors='ignore') as _ssf:
-                    preserve_undetermined = "flexbar" in _ssf.read().lower()
-            except Exception:
-                preserve_undetermined = False
+        # Keep Undetermined FASTQs for lanes configured for flexbar demux.
+        # Match bcl_convert behavior to avoid deleting inputs needed by flexbar_per_config.
+        preserve_undetermined = os_mod.path.isfile(
+            f"metadata/flexbar_barcodes_{wildcards.config_id}.txt"
+        )
 
         # Build fix_type lookup: project -> label (rc_i7 / rc_i5 / rc_both)
         fix_type_map = {}
