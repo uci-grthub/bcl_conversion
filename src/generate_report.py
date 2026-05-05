@@ -191,7 +191,7 @@ def parse_flexbar_written_reads(log_path):
             text = fh.read()
 
         for m in re.finditer(
-            r'Read file:\s+(\S+)\s+written reads\s+(\d+)\s+short reads\s+(\d+)',
+            r'Read file:\s+(\S+)\n\s+written reads\s+(\d+)',
             text,
         ):
             fname = os.path.basename(m.group(1))
@@ -631,6 +631,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
     demux_stats_cache = {}  # config_id -> {(orig_project, index): num_reads}
     fqtk_counts_cache = {}   # config_id -> {sample_name: num_reads}
     flexbar_counts_cache = {}  # config_id -> {barcode_name: {'r1': int|None, 'r2': int|None}}
+    flexbar_label_cache = {}   # config_id -> {barcode_label: sample_name}
 
     for json_file in json_files:
         # Extract config_id (lane)
@@ -855,27 +856,35 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                             break
 
             # Fallback: for flexbar-staged FASTQs, derive paired reads from flexbarOut.log
-            # by matching the staged FASTQ back to its flexbar output file.
+            # by looking up the barcode label in the flexbar barcodes file to get sample_name.
             if paired_reads == "N/A":
                 if config_id not in flexbar_counts_cache:
                     flexbar_log = os.path.join(output_base_dir, config_id, "flexbar", "flexbarOut.log")
                     flexbar_counts_cache[config_id] = parse_flexbar_written_reads(flexbar_log)
 
                 _flex_counts = flexbar_counts_cache.get(config_id, {})
-                try:
-                    flexbar_dir = os.path.join(output_base_dir, config_id, "flexbar")
-                    for barcode_name, rec in _flex_counts.items():
-                        candidate_r1 = os.path.join(flexbar_dir, f"flexbarOut_barcode_{barcode_name}.fastq.gz")
-                        if os.path.exists(candidate_r1) and os.path.samefile(candidate_r1, r1_path):
-                            r1_written = rec.get('r1')
-                            r2_written = rec.get('r2')
-                            if isinstance(r1_written, int) and isinstance(r2_written, int):
-                                paired_reads = min(r1_written, r2_written)
-                            elif isinstance(r1_written, int):
-                                paired_reads = r1_written
-                            break
-                except Exception:
-                    pass
+                if _flex_counts:
+                    if config_id not in flexbar_label_cache:
+                        _label_map = {}
+                        _bc_file = os.path.join("metadata", f"flexbar_barcodes_{config_id}.txt")
+                        if os.path.exists(_bc_file):
+                            with open(_bc_file) as _bfh:
+                                for _bline in _bfh:
+                                    _bp = _bline.strip().split('\t')
+                                    if len(_bp) >= 2 and _bp[0].strip() and _bp[1].strip():
+                                        _label_map[_bp[1].strip()] = _bp[0].strip()
+                        flexbar_label_cache[config_id] = _label_map
+
+                    _label_map = flexbar_label_cache.get(config_id, {})
+                    _sample_name = _label_map.get(barcode)
+                    if _sample_name and _sample_name in _flex_counts:
+                        rec = _flex_counts[_sample_name]
+                        r1_written = rec.get('r1')
+                        r2_written = rec.get('r2')
+                        if isinstance(r1_written, int) and isinstance(r2_written, int):
+                            paired_reads = min(r1_written, r2_written)
+                        elif isinstance(r1_written, int):
+                            paired_reads = r1_written
 
             # Skip index read md5 calculation (too slow for large files)
             

@@ -599,7 +599,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                             tab_counts.setdefault((l, tab_norm), set()).add(g)
                             # "Flexbar, attachment" tab means flexbar handles demux post-bcl-convert;
                             # exclude these groups from bcl-convert sample sheets entirely.
-                            if 'flexbar' in tab_norm:
+                            if 'flexbar' in tab_norm or 'pareseq' in tab_norm:
                                 flexbar_groups.add((l, g))
                     except:
                         pass
@@ -674,13 +674,19 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 # Override local group with global group from Summary sheet if available.
                 # Application-specific sheets (e.g., BD Rhapsody_WTA) use local group
                 # numbering that may not match the global group from the Summary sheet.
+                # Only apply when the lane's rows agree on a single group (or have none):
+                # sheets like Barcode List carry multi-group data with correct global
+                # numbering and must not be collapsed to the Summary's single-group entry.
                 tab_norm = str(sheet).replace('_', ' ').strip().lower()
                 for lane_val in sheet_samples['Lane'].unique():
                     try:
                         l = int(float(lane_val))
                         if (l, tab_norm) in sheet_tab_group_lookup:
                             global_grp = sheet_tab_group_lookup[(l, tab_norm)]
-                            sheet_samples.loc[sheet_samples['Lane'] == lane_val, 'Group'] = global_grp
+                            lane_mask = sheet_samples['Lane'] == lane_val
+                            lane_groups = sheet_samples.loc[lane_mask, 'Group'].dropna().unique()
+                            if len(lane_groups) <= 1:
+                                sheet_samples.loc[lane_mask, 'Group'] = global_grp
                     except:
                         pass
 
@@ -1140,7 +1146,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             return str(seq).translate(comp)[::-1]
 
         if 'Sample_Project' in ss_data.columns:
-            flexbar_mask = ss_data['Sample_Project'].str.contains('flexbar', case=False, na=False)
+            flexbar_mask = ss_data['Sample_Project'].str.contains('flexbar|pareseq', case=False, na=False, regex=True)
             if flexbar_mask.any():
                 # Write barcode FASTA (R1-direction) before removing flexbar rows from ss_data.
                 # FLEXBAR_CONFIGS in Snakefile detects this file to trigger inline_demux rules.
