@@ -526,7 +526,7 @@ if EXCLUDE_ORDER_IDS:
     CONFIG_PROJECT_PAIRS = [(c, p) for c, p in CONFIG_PROJECT_PAIRS if p not in _exclude_projects]
     PROJECTS = [p for p in PROJECTS if p not in _exclude_projects]
 
-PROJECT_LINK_LOGS = [f"logs/project_link_{config_id}---{project}.log" for config_id, project in CONFIG_PROJECT_PAIRS]
+PROJECT_LINK_LOGS = [f"logs/{config_id}/project_link_{config_id}---{project}.log" for config_id, project in CONFIG_PROJECT_PAIRS]
 
 # Build flexbar order ID map: config_id -> order_id
 # Flexbar projects appear in PROJECT_LOOKUP for a flexbar lane but not in any BCL convert samplesheet.
@@ -699,12 +699,12 @@ rule all:
         expand("results/{config_id}/fastp_plots_summary_lane{lane}.done", config_id=CONFIG_IDS, lane=detected_lanes),
         expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
         expand("results/{config_id}/{project}/read_counts_{project}.csv", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
-        # expand("logs/project_link_{config_id}_{project}.log", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
-        expand("logs/project_links_{config_id}---{project}.yaml", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
+        # expand("logs/{config_id}/project_link_{config_id}_{project}.log", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
+        expand("logs/{config_id}/project_links_{config_id}---{project}.yaml", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         f"results/{LIBRARY}-count.csv",
         f"Reports/{LIBRARY}_read_counts_email.done",
         expand("Reports/order_{order_id}/email_sent.done", order_id=ACTIVE_ORDER_IDS + FLEXBAR_ACTIVE_ORDER_IDS),
-        expand("logs/verify_project_link_{config_id}---{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
+        expand("logs/{config_id}/verify_project_link_{config_id}---{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         ([VALIDATION_XLSX] if VALIDATION_XLSX else []),
         expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
         expand("results/fqtk_{config_id}.done", config_id=FQTK_CONFIGS),
@@ -731,7 +731,7 @@ rule report_order_id:
             )
         ],
         links_yamls = lambda wildcards: [
-            f"logs/project_links_{c}---{p}.yaml"
+            f"logs/{c}/project_links_{c}---{p}.yaml"
             for c, p in CONFIG_PROJECT_PAIRS
             if p in ORDER_ID_CONFIGS.get(wildcards.order_id, [])
             and (
@@ -744,7 +744,7 @@ rule report_order_id:
         md5 = "Reports/order_{order_id}/md5sums.txt",
         pdf = "Reports/order_{order_id}/Download_Instructions.pdf"
     log:
-        "logs/report_order_{order_id}.log"
+        "logs/{config_id}/report_order_{order_id}.log"
     benchmark:
         "benchmarks/report_order_id_{order_id}.bench"
     params:
@@ -945,8 +945,8 @@ rule flexbar_project_link:
     input:
         done = "results/flexbar_{config_id}.done"
     output:
-        link_log  = "logs/flexbar_project_link_{config_id}.log",
-        yaml_file = "logs/flexbar_project_links_{config_id}.yaml"
+        link_log  = "logs/{config_id}/flexbar_project_link_{config_id}.log",
+        yaml_file = "logs/{config_id}/flexbar_project_links_{config_id}.yaml"
     benchmark:
         "benchmarks/flexbar_project_link_{config_id}.bench"
     wildcard_constraints:
@@ -1208,7 +1208,7 @@ rule fastp_sample:
         json = "results/{config_id}/{sample_path}.fastp.json",
         html = "results/{config_id}/{sample_path}.fastp.html"
     log:
-        "logs/fastp_sample/{config_id}/{sample_path}.log"
+        "logs/{config_id}/fastp_sample/{config_id}/{sample_path}.log"
     benchmark:
         "benchmarks/fastp_sample_{config_id}_{sample_path}.bench"
     wildcard_constraints:
@@ -1365,7 +1365,7 @@ rule fastp_per_config:
     output:
         touch("results/fastp_{config_id}.done")
     log:
-        "logs/fastp_per_config_{config_id}.log"
+        "logs/{config_id}/fastp_per_config_{config_id}.log"
     benchmark:
         "benchmarks/fastp_per_config_{config_id}.bench"
     wildcard_constraints:
@@ -1378,7 +1378,7 @@ rule fastp_plots_sample:
         mean = "results/{config_id}/{sample_path}-mean_phred.png",
         base = "results/{config_id}/{sample_path}-base_comp.png"
     log:
-        "logs/fastp_plots_sample/{config_id}/{sample_path}.log"
+        "logs/{config_id}/fastp_plots_sample/{config_id}/{sample_path}.log"
     benchmark:
         "benchmarks/fastp_plots_sample_{config_id}_{sample_path}.bench"
     wildcard_constraints:
@@ -1404,7 +1404,7 @@ rule fastp_plots_per_config:
     output:
         touch("results/{config_id}/fastp_plots_{config_id}.done")
     log:
-        "logs/fastp_plots_per_config_{config_id}.log"
+        "logs/{config_id}/fastp_plots_per_config_{config_id}.log"
     benchmark:
         "benchmarks/fastp_plots_per_config_{config_id}.bench"
     wildcard_constraints:
@@ -1418,7 +1418,7 @@ rule summarize_project_reads:
     output:
         "results/{config_id}/{project}/read_counts_{project}.csv"
     log:
-        "logs/summarize_project_reads_{config_id}_{project}.log"
+        "logs/{config_id}/summarize_project_reads_{config_id}_{project}.log"
     benchmark:
         "benchmarks/summarize_project_reads_{config_id}_{project}.bench"
     run:
@@ -1767,7 +1767,7 @@ rule flexbar_per_config:
     output:
         touch("results/flexbar_{config_id}.done")
     log:
-        "logs/flexbar_{config_id}.log"
+        "logs/{config_id}/flexbar_{config_id}.log"
     benchmark:
         "benchmarks/flexbar_per_config_{config_id}.bench"
     params:
@@ -1902,7 +1902,7 @@ rule flexbar_stage_project:
         project_done = "output/{config_id}/{project}/.project_done",
         names_done   = "output/{config_id}/{project}/.fastq_names_done"
     log:
-        "logs/flexbar_stage_project_{config_id}_{project}.log"
+        "logs/{config_id}/flexbar_stage_project_{config_id}_{project}.log"
     wildcard_constraints:
         config_id = _FLEXBAR_STAGE_CONFIG_CONSTRAINT,
         project   = _FLEXBAR_STAGE_PROJECT_CONSTRAINT
@@ -1978,7 +1978,7 @@ rule fqtk_per_config:
     output:
         touch("results/fqtk_{config_id}.done")
     log:
-        "logs/fqtk_{config_id}.log"
+        "logs/{config_id}/fqtk_{config_id}.log"
     benchmark:
         "benchmarks/fqtk_per_config_{config_id}.bench"
     params:
@@ -2052,7 +2052,7 @@ rule fqtk_stage_project:
         project_done = "output/{config_id}/{project}/.project_done",
         names_done   = "output/{config_id}/{project}/.fastq_names_done"
     log:
-        "logs/fqtk_stage_project_{config_id}_{project}.log"
+        "logs/{config_id}/fqtk_stage_project_{config_id}_{project}.log"
     wildcard_constraints:
         config_id = _FQTK_STAGE_CONFIG_CONSTRAINT,
         project   = _FQTK_STAGE_PROJECT_CONSTRAINT
@@ -2138,9 +2138,9 @@ rule generate_samplesheets:
         run_info = "src/RunInfo_nn.xml"
     output:
         expand("results/SampleSheet_{config_id}.csv", config_id=CONFIG_IDS),
-        expand("logs/generate_samplesheets_{config_id}.done", config_id=CONFIG_IDS)
+        expand("logs/{config_id}/generate_samplesheets_{config_id}.done", config_id=CONFIG_IDS)
     log:
-        "logs/generate_samplesheets.log"
+        "logs/{config_id}/generate_samplesheets.log"
     benchmark:
         "benchmarks/generate_samplesheets.bench"
     params:
@@ -2177,7 +2177,7 @@ rule generate_samplesheets:
         for config in lane_configs:
             config_id = config['id']
             samplesheet_path = f"results/SampleSheet_{config_id}.csv"
-            done_marker = f"logs/generate_samplesheets_{config_id}.done"
+            done_marker = f"logs/{config_id}/generate_samplesheets_{config_id}.done"
             
             needs_generation = False
             
@@ -2205,7 +2205,7 @@ rule generate_samplesheets:
             print(f"All sample sheets up to date, ensuring done markers exist...")
             for config in lane_configs:
                 config_id = config['id']
-                done_marker = f"logs/generate_samplesheets_{config_id}.done"
+                done_marker = f"logs/{config_id}/generate_samplesheets_{config_id}.done"
                 if not os.path.exists(done_marker):
                     os.makedirs(os.path.dirname(done_marker), exist_ok=True)
                     open(done_marker, 'w').close()
@@ -2218,7 +2218,7 @@ rule generate_samplesheets:
             for config in configs_to_generate:
                 config_id = config['id']
                 samplesheet_path = f"results/SampleSheet_{config_id}.csv"
-                done_marker = f"logs/generate_samplesheets_{config_id}.done"
+                done_marker = f"logs/{config_id}/generate_samplesheets_{config_id}.done"
                 
                 os.makedirs(os.path.dirname(samplesheet_path), exist_ok=True)
                 open(samplesheet_path, 'w').close()
@@ -2255,7 +2255,7 @@ rule generate_samplesheets:
             for config in lane_configs:
                 config_id = config['id']
                 samplesheet_path = f"results/SampleSheet_{config_id}.csv"
-                done_marker = f"logs/generate_samplesheets_{config_id}.done"
+                done_marker = f"logs/{config_id}/generate_samplesheets_{config_id}.done"
                 
                 # Ensure sample sheet exists
                 if not os.path.exists(samplesheet_path):
@@ -2275,8 +2275,8 @@ rule generate_samplesheets:
                         print(f"Updated done marker for {config_id} (content changed)")
                         for stale in [
                             f"results/SampleSheet_{config_id}_validated.csv",
-                            f"logs/barcode_hamming_validation_{config_id}.done",
-                            f"logs/barcode_hamming_validation_{config_id}.txt",
+                            f"logs/{config_id}/barcode_hamming_validation_{config_id}.done",
+                            f"logs/{config_id}/barcode_hamming_validation_{config_id}.txt",
                         ]:
                             if os.path.exists(stale):
                                 os.remove(stale)
@@ -2304,7 +2304,7 @@ rule generate_samplesheets:
             for config in configs_to_generate:
                 config_id = config['id']
                 samplesheet_path = f"results/SampleSheet_{config_id}.csv"
-                done_marker = f"logs/generate_samplesheets_{config_id}.done"
+                done_marker = f"logs/{config_id}/generate_samplesheets_{config_id}.done"
                 
                 os.makedirs(os.path.dirname(samplesheet_path), exist_ok=True)
                 open(samplesheet_path, 'w').close()
@@ -2321,7 +2321,7 @@ rule generate_renaming_map:
     output:
         map = "results/renaming_map_{config_id}.csv"
     log:
-        "logs/generate_renaming_map_{config_id}.log"
+        "logs/{config_id}/generate_renaming_map_{config_id}.log"
     benchmark:
         "benchmarks/generate_renaming_map_{config_id}.bench"
     params:
@@ -2437,11 +2437,11 @@ rule validate_barcode_hamming_distances:
     input:
         samplesheet = "results/SampleSheet_{config_id}.csv"
     output:
-        report = "logs/barcode_hamming_validation_{config_id}.txt",
-        marker = touch("logs/barcode_hamming_validation_{config_id}.done"),
+        report = "logs/{config_id}/barcode_hamming_validation_{config_id}.txt",
+        marker = touch("logs/{config_id}/barcode_hamming_validation_{config_id}.done"),
         fixed_sheet = "results/SampleSheet_{config_id}_validated.csv"
     log:
-        "logs/barcode_hamming_validation_{config_id}.log"
+        "logs/{config_id}/barcode_hamming_validation_{config_id}.log"
     benchmark:
         "benchmarks/barcode_hamming_validation_{config_id}.bench"
     wildcard_constraints:
@@ -2478,13 +2478,13 @@ rule bcl_convert:
         sample_sheet=lambda wildcards: f"results/SampleSheet_{wildcards.config_id}_validated.csv",
         renaming_map = "results/renaming_map_{config_id}.csv",
         data_dir=DATA_DIR,
-        _sheet_done=lambda wildcards: f"logs/generate_samplesheets_{wildcards.config_id}.done",
+        _sheet_done=lambda wildcards: f"logs/{wildcards.config_id}/generate_samplesheets_{wildcards.config_id}.done",
         run_info = "src/RunInfo_nn.xml",
         prev_done = get_prev_bcl_done
     output:
         done_file = touch(".output/{config_id}/.done")
     log:
-        "logs/bcl_convert_{config_id}.log"
+        "logs/{config_id}/bcl_convert_{config_id}.log"
     benchmark:
         "benchmarks/bcl_convert_{config_id}.bench"
     wildcard_constraints:
@@ -2618,7 +2618,7 @@ rule bcl_project_done:
     """
     input:
         done = maybe_ancient(".output/{config_id}/.done"),
-        decision = "logs/orientation_decision_{config_id}.json"
+        decision = "logs/{config_id}/orientation_decision_{config_id}.json"
     output:
         sentinel = touch("output/{config_id}/{project}/.project_done")
     wildcard_constraints:
@@ -2722,7 +2722,7 @@ rule calculate_md5sums:
     output:
         md5 = "output/{config_id}/{project}/md5sums.txt"
     log:
-        "logs/calculate_md5sums_{config_id}_{project}.log"
+        "logs/{config_id}/calculate_md5sums_{config_id}_{project}.log"
     benchmark:
         "benchmarks/calculate_md5sums_{config_id}_{project}.bench"
     wildcard_constraints:
@@ -2768,7 +2768,7 @@ rule analyze_undetermined:
     output:
         csv = "results/undetermined_indices/{config_id}.csv"
     log:
-        "logs/analyze_undetermined_{config_id}.log"
+        "logs/{config_id}/analyze_undetermined_{config_id}.log"
     benchmark:
         "benchmarks/analyze_undetermined_{config_id}.bench"
     params:
@@ -2807,9 +2807,9 @@ rule detect_rc_candidates:
         undetermined = "results/undetermined_indices/{config_id}.csv",
         samplesheet = "results/SampleSheet_{config_id}.csv"
     output:
-        candidates = "logs/rc_candidates_{config_id}.json"
+        candidates = "logs/{config_id}/rc_candidates_{config_id}.json"
     log:
-        "logs/detect_rc_candidates_{config_id}.log"
+        "logs/{config_id}/detect_rc_candidates_{config_id}.log"
     wildcard_constraints:
         config_id = "[^/]+"
     params:
@@ -2853,11 +2853,11 @@ rule generate_rc_samplesheet:
     """
     input:
         samplesheet = "results/SampleSheet_{config_id}.csv",
-        candidates = "logs/rc_candidates_{config_id}.json"
+        candidates = "logs/{config_id}/rc_candidates_{config_id}.json"
     output:
         rc_samplesheet = "results/SampleSheet_{config_id}_rc.csv"
     log:
-        "logs/generate_rc_samplesheet_{config_id}.log"
+        "logs/{config_id}/generate_rc_samplesheet_{config_id}.log"
     wildcard_constraints:
         config_id = "[^/]+"
     run:
@@ -2888,11 +2888,11 @@ rule validate_barcode_hamming_distances_rc:
     input:
         samplesheet = "results/SampleSheet_{config_id}_rc.csv"
     output:
-        report = "logs/barcode_hamming_validation_rc_{config_id}.txt",
-        marker = touch("logs/barcode_hamming_validation_rc_{config_id}.done"),
+        report = "logs/{config_id}/barcode_hamming_validation_rc_{config_id}.txt",
+        marker = touch("logs/{config_id}/barcode_hamming_validation_rc_{config_id}.done"),
         fixed_sheet = "results/SampleSheet_{config_id}_rc_validated.csv"
     log:
-        "logs/barcode_hamming_validation_rc_{config_id}.log"
+        "logs/{config_id}/barcode_hamming_validation_rc_{config_id}.log"
     benchmark:
         "benchmarks/barcode_hamming_validation_rc_{config_id}.bench"
     wildcard_constraints:
@@ -2932,7 +2932,7 @@ rule bcl_convert_rc:
     input:
         rc_samplesheet = "results/SampleSheet_{config_id}_rc_validated.csv",
         renaming_map = "results/renaming_map_{config_id}.csv",
-        candidates = "logs/rc_candidates_{config_id}.json",
+        candidates = "logs/{config_id}/rc_candidates_{config_id}.json",
         data_dir = DATA_DIR,
         run_info = "src/RunInfo_nn.xml",
         orig_done = maybe_ancient(".output/{config_id}/.done")
@@ -2940,7 +2940,7 @@ rule bcl_convert_rc:
         output_dir = directory(".output_rc/{config_id}"),
         done_file = touch(".output_rc/{config_id}/.done")
     log:
-        "logs/bcl_convert_rc_{config_id}.log"
+        "logs/{config_id}/bcl_convert_rc_{config_id}.log"
     benchmark:
         "benchmarks/bcl_convert_rc_{config_id}.bench"
     wildcard_constraints:
@@ -3006,11 +3006,11 @@ rule pick_orientation:
     input:
         done_orig = maybe_ancient(".output/{config_id}/.done"),
         done_rc = ".output_rc/{config_id}/.done",
-        candidates = "logs/rc_candidates_{config_id}.json"
+        candidates = "logs/{config_id}/rc_candidates_{config_id}.json"
     output:
-        decision = "logs/orientation_decision_{config_id}.json"
+        decision = "logs/{config_id}/orientation_decision_{config_id}.json"
     log:
-        "logs/pick_orientation_{config_id}.log"
+        "logs/{config_id}/pick_orientation_{config_id}.log"
     wildcard_constraints:
         config_id = "[^/]+"
     run:
@@ -3118,7 +3118,7 @@ rule update_validation_workbook:
     are known, so the RC_ORIENTATION sheet reflects which projects ran through RC.
     """
     input:
-        decisions = expand("logs/orientation_decision_{config_id}.json", config_id=CONFIG_IDS),
+        decisions = expand("logs/{config_id}/orientation_decision_{config_id}.json", config_id=CONFIG_IDS),
         metadata = maybe_ancient(metadata)
     output:
         xlsx = VALIDATION_XLSX
@@ -3148,8 +3148,8 @@ rule project_link:
     input:
         done = "output/{config_id}/{project}/.project_done"
     output:
-        log = "logs/project_link_{config_id}---{project}.log",
-        yaml_file = "logs/project_links_{config_id}---{project}.yaml"
+        log = "logs/{config_id}/project_link_{config_id}---{project}.log",
+        yaml_file = "logs/{config_id}/project_links_{config_id}---{project}.yaml"
     benchmark:
         "benchmarks/project_link_{config_id}---{project}.bench"
     wildcard_constraints:
@@ -3406,11 +3406,11 @@ rule project_link:
 
 rule rescan_nextcloud:
     input:
-        "logs/project_link_{config_id}---{project}.log"
+        "logs/{config_id}/project_link_{config_id}---{project}.log"
     output:
-        touch("logs/nextcloud_scan_{config_id}---{project}.done")
+        touch("logs/{config_id}/nextcloud_scan_{config_id}---{project}.done")
     log:
-        "logs/rescan_nextcloud_{config_id}_{project}.log"
+        "logs/{config_id}/rescan_nextcloud_{config_id}_{project}.log"
     benchmark:
         "benchmarks/rescan_nextcloud_{config_id}_{project}.bench"
     wildcard_constraints:
@@ -3456,12 +3456,12 @@ rule rescan_nextcloud:
 
 rule verify_project_links:
     input:
-        project_link_log = "logs/project_link_{config_id}---{project}.log",
-        scan_done = "logs/nextcloud_scan_{config_id}---{project}.done"
+        project_link_log = "logs/{config_id}/project_link_{config_id}---{project}.log",
+        scan_done = "logs/{config_id}/nextcloud_scan_{config_id}---{project}.done"
     output:
-        report = "logs/verify_project_link_{config_id}---{project}.txt"
+        report = "logs/{config_id}/verify_project_link_{config_id}---{project}.txt"
     log:
-        "logs/verify_project_link_{config_id}---{project}.log"
+        "logs/{config_id}/verify_project_link_{config_id}---{project}.log"
     benchmark:
         "benchmarks/verify_project_link_{config_id}---{project}.bench"
     wildcard_constraints:
@@ -3603,7 +3603,7 @@ rule debug_project_link_files:
             print(f"{done_path}: {'EXISTS' if os.path.exists(done_path) else 'MISSING'}")
         print("\n=== DIAGNOSTIC: Expected .log files ===")
         for config_id, project in CONFIG_PROJECT_PAIRS:
-            log_path = f"logs/project_link_{config_id}_{project}.log"
+            log_path = f"logs/{config_id}/project_link_{config_id}_{project}.log"
             print(f"{log_path}: {'EXISTS' if os.path.exists(log_path) else 'MISSING'}")
         print("\n=== DIAGNOSTIC: All files in logs/ matching project_link_*.log ===")
         for fname in sorted(os.listdir('logs')):

@@ -533,7 +533,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
     try:
         _base = os.path.splitext(os.path.basename(metadata_file))[0]
         out_xlsx = os.path.join('metadata', f"metadata_validation_{_base}.xlsx")
-        _dec_files = glob.glob('logs/orientation_decision_*.json')
+        _dec_files = glob.glob('logs/*/orientation_decision_*.json')
         _needs_regen = (
             not os.path.exists(out_xlsx)
             or os.path.getmtime(metadata_file) > os.path.getmtime(out_xlsx)
