@@ -696,7 +696,7 @@ rule all:
         expand("output/{config_id}/{project}/md5sums.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         ORDER_ID_REPORTS,
         ORDER_ID_MD5S,
-        expand("results/fastp_plots_summary_lane{lane}.done", lane=detected_lanes),
+        expand("results/{config_id}/fastp_plots_summary_lane{lane}.done", config_id=CONFIG_IDS, lane=detected_lanes),
         expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
         expand("results/{config_id}/{project}/read_counts_{project}.csv", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         # expand("logs/project_link_{config_id}_{project}.log", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
@@ -1751,7 +1751,7 @@ rule fastp_plots_lane:
     input:
         get_fastp_plots_lane_inputs
     output:
-        touch("results/fastp_plots_summary_lane{lane}.done")
+        touch("results/{config_id}/fastp_plots_summary_lane{lane}.done")
     log:
         "logs/fastp_plots_lane{lane}.log"
     wildcard_constraints:

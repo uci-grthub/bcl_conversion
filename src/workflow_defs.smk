@@ -568,7 +568,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 try:
                     lane = int(float(row.get('Lane', pd.NA)))
                     group = int(float(row.get('Group', pd.NA)))
-                    project = str(row.get('Project name', '')).strip()
+                    project = str(row.get('Project name', '')).strip().replace(' ', '_')
                     if project and project.lower() != 'nan':
                         barcode_list_lookup[(lane, group)] = project
                 except:
@@ -693,10 +693,10 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 # Project
                 if 'Project name' in df.columns:
                     df['Project name'] = df['Project name'].ffill()
-                    sheet_samples['Project'] = df['Project name']
+                    sheet_samples['Project'] = df['Project name'].astype(str).str.strip().str.replace(' ', '_', regex=False)
                 elif 'Sample_Project' in df.columns:
                     df['Sample_Project'] = df['Sample_Project'].ffill()
-                    sheet_samples['Project'] = df['Sample_Project']
+                    sheet_samples['Project'] = df['Sample_Project'].astype(str).str.strip().str.replace(' ', '_', regex=False)
                 else:
                     sheet_samples['Project'] = pd.NA
                 

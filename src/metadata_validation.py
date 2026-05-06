@@ -40,6 +40,15 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
             pass
         return str(val).strip()
 
+    def _norm_project_name(val):
+        """Normalize a project name: replace spaces and underscores with a single underscore."""
+        if pd.isna(val):
+            return ''
+        s = str(val).strip()
+        if not s or s.lower() in ('nan', 'none'):
+            return ''
+        return re.sub(r'[\s_]+', '_', s).strip('_')
+
     if not metadata_file or not os.path.exists(metadata_file):
         issues.append({'sheet': '', 'row': '', 'col': '', 'message': f'Metadata file not found: {metadata_file}'})
         os.makedirs('metadata', exist_ok=True)
@@ -247,13 +256,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
             proj_variants = ['Project name', 'Project Name', 'Project', 'Sample_Project']
             present = [c for c in proj_variants if c in df.columns]
             if present:
-                def _norm_proj_val(v):
-                    if pd.isna(v):
-                        return ''
-                    s = str(v).strip()
-                    s = s.replace('_', ' ')
-                    s = ' '.join(s.split())
-                    return s
+                _norm_proj_val = _norm_project_name
 
                 # create normalized versions and detect per-row inconsistencies
                 norm_cols = {}
@@ -417,15 +420,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
         # Masking validation runs after all sheets are processed
 
     # Validate project-name parity between Summary and non-Summary tabs
-    def _clean_project_name(val):
-        if pd.isna(val):
-            return ''
-        s = str(val).strip()
-        if not s or s.lower() in ('nan', 'none'):
-            return ''
-        s = s.replace('_', ' ')
-        s = ' '.join(s.split())
-        return s
+    _clean_project_name = _norm_project_name
 
     summary_projects = set()
     non_summary_projects = set()
@@ -465,7 +460,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
 
     missing_in_tabs = sorted(summary_projects - non_summary_projects)
     for proj in missing_in_tabs:
-        orig = summary_proj_orig.get(proj, proj)
+        orig = summary_proj_orig.get(proj, proj).replace(' ', '_')
         issues.append({
             'sheet': 'Summary',
             'row': '',
@@ -475,7 +470,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
 
     missing_in_summary = sorted(non_summary_projects - summary_projects)
     for proj in missing_in_summary:
-        orig = non_summary_proj_orig.get(proj, proj)
+        orig = non_summary_proj_orig.get(proj, proj).replace(' ', '_')
         sheets = sorted(non_summary_project_sheets.get(proj, set()))
         sheet_list = ', '.join(sheets) if sheets else 'unknown sheet'
         issues.append({
