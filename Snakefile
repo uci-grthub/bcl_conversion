@@ -691,7 +691,7 @@ ORDER_ID_MD5S = [f"Reports/order_{oid}/md5sums.txt" for oid in ACTIVE_ORDER_IDS]
 
 rule all:
     input:
-        expand("results/fastp_plots_{config_id}.done", config_id=CONFIG_IDS),
+        expand("results/{config_id}/fastp_plots_{config_id}.done", config_id=CONFIG_IDS),
         expand(".output/{config_id}/.done", config_id=CONFIG_IDS),
         expand("output/{config_id}/{project}/md5sums.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         ORDER_ID_REPORTS,
@@ -1402,7 +1402,7 @@ rule fastp_plots_per_config:
     input:
         get_fastp_plots_targets
     output:
-        touch("results/fastp_plots_{config_id}.done")
+        touch("results/{config_id}/fastp_plots_{config_id}.done")
     log:
         "logs/fastp_plots_per_config_{config_id}.log"
     benchmark:

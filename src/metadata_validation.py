@@ -485,6 +485,94 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
             'message': f"Project present in non-Summary tabs but missing from Summary: {orig} (tabs: {sheet_list})"
         })
 
+    # Validate 'Sample sheet tab' column in Summary against actual lane/group sheet placements.
+    # Build two maps:
+    #   _lane_group_to_sheets : (lane, group) -> set of sheet names that contain it
+    #   _sheet_to_lane_groups : sheet name    -> set of (lane, group) pairs it contains
+    # Prefer the right-side duplicate Lane column (renamed "Lane.1" by pandas) because it
+    # holds the project-metadata lane matching the Summary, not the BCL sample-sheet lane.
+    _lane_group_to_sheets = {}
+    _sheet_to_lane_groups = {}
+    for _sheet, _df in sheet_dfs.items():
+        try:
+            if isinstance(_sheet, str) and 'summary' in _sheet.lower():
+                continue
+            _lc = 'Lane.1' if 'Lane.1' in _df.columns else ('Lane' if 'Lane' in _df.columns else None)
+            _gc = next((c for c in ('Group', 'Gr', 'group') if c in _df.columns), None)
+            if not _lc or not _gc:
+                continue
+            _sheet_to_lane_groups[_sheet] = set()
+            for (_lv, _gv), _ in _df.groupby([_lc, _gc]):
+                _lk = _norm_key(_lv)
+                _gk = _norm_key(_gv)
+                if _lk and _gk:
+                    _lane_group_to_sheets.setdefault((_lk, _gk), set()).add(_sheet)
+                    _sheet_to_lane_groups[_sheet].add((_lk, _gk))
+        except Exception:
+            continue
+
+    def _norm_sheet_ref(s):
+        return re.sub(r'[\s_]+', '', str(s)).lower()
+
+    for _sheet, _df in sheet_dfs.items():
+        try:
+            if not (isinstance(_sheet, str) and 'summary' in _sheet.lower()):
+                continue
+            _tab_col = next((c for c in _df.columns if str(c).strip().lower() == 'sample sheet tab'), None)
+            if _tab_col is None:
+                continue
+            _lc = 'Lane' if 'Lane' in _df.columns else None
+            _gc = next((c for c in ('Group', 'Gr', 'group') if c in _df.columns), None)
+            if not _lc or not _gc:
+                continue
+            for _pos, (_ridx, _row) in enumerate(_df.iterrows()):
+                _tab_val = _row.get(_tab_col)
+                if pd.isna(_tab_val) or str(_tab_val).strip() == '':
+                    continue
+                _tab_str = str(_tab_val).strip()
+                # Skip multi-value or annotation-style cells
+                if ',' in _tab_str or 'attachment' in _tab_str.lower():
+                    continue
+                _lk = _norm_key(_row.get(_lc))
+                _gk = _norm_key(_row.get(_gc))
+                if _lk is None or _gk is None:
+                    continue
+                # Resolve the named tab to an actual sheet (space/underscore-insensitive)
+                _named_sheet = next(
+                    (s for s in _sheet_to_lane_groups if _norm_sheet_ref(s) == _norm_sheet_ref(_tab_str)),
+                    None
+                )
+                if _named_sheet is None:
+                    continue  # named tab not found — covered by project-parity check
+                # Check whether this lane/group is present in the named tab
+                if (_lk, _gk) not in _sheet_to_lane_groups[_named_sheet]:
+                    _actual = _lane_group_to_sheets.get((_lk, _gk), set())
+                    if _actual:
+                        _msg = (
+                            f"'Sample sheet tab' lists '{_tab_str}' but lane {_lk} group {_gk} "
+                            f"data is in: {', '.join(sorted(_actual))}"
+                        )
+                    else:
+                        _tab_coverage = ', '.join(
+                            f"lane {l} group {g}"
+                            for l, g in sorted(_sheet_to_lane_groups[_named_sheet])
+                        ) or 'no lane/group data'
+                        _msg = (
+                            f"'Sample sheet tab' lists '{_tab_str}' but lane {_lk} group {_gk} "
+                            f"is not in that tab (tab covers: {_tab_coverage})"
+                        )
+                    issues.append({
+                        'sheet': _sheet,
+                        'row': int(_ridx),
+                        'col': str(_tab_col),
+                        'message': _msg,
+                        'lane': _lk,
+                        'group': _gk,
+                        'excel_row': int(_ridx) + 2
+                    })
+        except Exception:
+            continue
+
     # Validate masking against index lengths after all sheets are processed
     def _mask_len_map(masking_str):
         parts = re.split(r'[;,]', str(masking_str))
