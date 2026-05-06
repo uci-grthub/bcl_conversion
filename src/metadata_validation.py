@@ -944,7 +944,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
 
             rc_rows = []
             try:
-                for dec_file in sorted(_glob.glob('logs/orientation_decision_*.json')):
+                for dec_file in sorted(_glob.glob('logs/*/orientation_decision_*.json')):
                     config_id = os.path.basename(dec_file).replace('orientation_decision_', '').replace('.json', '')
                     with open(dec_file) as _df:
                         dec = _json.load(_df)
