@@ -1804,7 +1804,7 @@ rule flexbar_per_config:
         # Build processed FASTA from raw tab-delimited barcodes.
         awk -F'\t' '
         NF >= 3 {{
-            name = tolower($1)
+            name = $1
             barcode = $3
             gsub(/\r/, "", name)
             gsub(/\r/, "", barcode)
