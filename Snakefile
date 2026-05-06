@@ -1809,7 +1809,7 @@ rule flexbar_per_config:
             gsub(/\r/, "", name)
             gsub(/\r/, "", barcode)
             gsub(/ /, "_", name)
-            gsub(/[^a-z0-9_]/, "", name)
+            gsub(/[^a-zA-Z0-9_]/, "", name)
             gsub(/A/, "X", barcode)
             gsub(/T/, "A", barcode)
             gsub(/X/, "T", barcode)

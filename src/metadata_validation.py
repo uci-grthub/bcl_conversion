@@ -438,10 +438,17 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
             continue
 
         is_summary_tab = False
+        is_barcode_list_tab = False
         try:
             is_summary_tab = isinstance(sheet, str) and 'summary' in sheet.lower()
+            is_barcode_list_tab = isinstance(sheet, str) and 'barcode' in sheet.lower() and 'list' in sheet.lower()
         except Exception:
-            is_summary_tab = False
+            pass
+
+        # Only Summary and Barcode List tabs canonically carry project names;
+        # all other specialty tabs (10x, BD, etc.) link to Summary via lane/group/Lab ID.
+        if not is_summary_tab and not is_barcode_list_tab:
+            continue
 
         for raw_proj in df[proj_col].tolist():
             proj = _clean_project_name(raw_proj)
@@ -458,15 +465,17 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                 if proj not in non_summary_proj_orig:
                     non_summary_proj_orig[proj] = raw_str
 
-    missing_in_tabs = sorted(summary_projects - non_summary_projects)
-    for proj in missing_in_tabs:
-        orig = summary_proj_orig.get(proj, proj).replace(' ', '_')
-        issues.append({
-            'sheet': 'Summary',
-            'row': '',
-            'col': 'Project',
-            'message': f"Project listed in Summary but missing from non-Summary tabs: {orig}"
-        })
+    # Only compare if Barcode List (the canonical non-summary project-name source) has data.
+    if non_summary_projects:
+        missing_in_tabs = sorted(summary_projects - non_summary_projects)
+        for proj in missing_in_tabs:
+            orig = summary_proj_orig.get(proj, proj).replace(' ', '_')
+            issues.append({
+                'sheet': 'Summary',
+                'row': '',
+                'col': 'Project',
+                'message': f"Project listed in Summary but missing from Barcode List: {orig}"
+            })
 
     missing_in_summary = sorted(non_summary_projects - summary_projects)
     for proj in missing_in_summary:
@@ -477,7 +486,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
             'sheet': 'Summary',
             'row': '',
             'col': 'Project',
-            'message': f"Project present in non-Summary tabs but missing from Summary: {orig} (tabs: {sheet_list})"
+            'message': f"Project present in Barcode List but missing from Summary: {orig}"
         })
 
     # Validate 'Sample sheet tab' column in Summary against actual lane/group sheet placements.
@@ -767,6 +776,10 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                 len1 = 0 if index1 in ('', 'nan', 'None') else len(index1)
                 len2 = 0 if index2 in ('', 'nan', 'None') else len(index2)
 
+                # No barcode data available for this lane/group — cannot validate masking.
+                if len1 == 0 and len2 == 0:
+                    continue
+
             if i1_len is not None and len1 != i1_len:
                 issues.append({
                     'sheet': sheet,
@@ -779,11 +792,18 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                 })
 
             if i2_len is not None:
+                _tab_ref = row.get('Sample sheet tab', '')
+                _tab_ref_str = '' if pd.isna(_tab_ref) else str(_tab_ref).lower()
+                is_atac_tab = (
+                    (isinstance(sheet, str) and 'atac' in sheet.lower())
+                    or 'atac' in _tab_ref_str
+                )
                 skip_i2_len_check = (
                     len2 == 0
                     and (
                         _is_10x_multiome_atac_row(row)
                         or _is_flexbar_row(row)
+                        or is_atac_tab
                     )
                 )
 
