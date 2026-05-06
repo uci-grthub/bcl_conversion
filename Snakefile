@@ -1278,7 +1278,10 @@ rule normalize_project_fastq_names:
                     pass
             os.symlink(os.path.abspath(dst_abs), src_abs)
 
-        flex_rows = globals().get('FLEXBAR_CONFIG_RENAMING_MAP', {}).get(config_id, [])
+        _all_flex_rows = globals().get('FLEXBAR_CONFIG_RENAMING_MAP', {}).get(config_id, [])
+        _flexbar_orig_proj = globals().get('FLEXBAR_ORDER_ID_PROJECT', {}).get(config_id, '')
+        _flexbar_proj = PROJECT_RENAME_MAP.get((config_id, _flexbar_orig_proj), _flexbar_orig_proj)
+        flex_rows = _all_flex_rows if new_project == _flexbar_proj else []
         for idx, row in enumerate(flex_rows):
             sample_name = str(row.get("Sample_Name", "")).strip()
             if not sample_name or sample_name.lower() == "nan":
