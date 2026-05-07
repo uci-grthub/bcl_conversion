@@ -615,7 +615,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
         try:
             config_id = parts[-3]
             if config_id not in renaming_maps:
-                map_path = f"results/renaming_map_{config_id}.csv"
+                map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
                 if os.path.exists(map_path):
                     try:
                         import pandas as pd
