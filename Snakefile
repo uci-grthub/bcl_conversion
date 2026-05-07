@@ -104,9 +104,13 @@ detected_lanes = []
 basecalls_path = DATA_DIR + "/Data/Intensities/BaseCalls"
 if os.path.exists(basecalls_path):
     detected_lanes = sorted([
-        int(d[1:]) for d in os.listdir(basecalls_path) 
+        int(d[1:]) for d in os.listdir(basecalls_path)
         if d.startswith("L") and d[1:].isdigit() and os.path.isdir(os.path.join(basecalls_path, d))
     ])
+
+_restrict_lanes = config.get("lanes", [])
+if _restrict_lanes:
+    detected_lanes = [l for l in detected_lanes if l in _restrict_lanes]
 
 # print("detected_lanes:", detected_lanes)
 
@@ -272,6 +276,8 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
             if 'Lane' in df.columns:
                 # Collect unique lanes (masking groups are merged into a single SampleSheet per lane)
                 unique_lanes = sorted(df['Lane'].dropna().apply(lambda x: int(float(x))).unique())
+                if _restrict_lanes:
+                    unique_lanes = [l for l in unique_lanes if l in _restrict_lanes]
                 for lane in unique_lanes:
                     LANE_CONFIGS.append({
                         'lane': lane,
