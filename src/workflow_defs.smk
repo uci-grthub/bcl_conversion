@@ -445,9 +445,9 @@ def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name)
     
     # Generate sample sheet file
     config_id = "lane1"
-    outfile = os.path.join(out_dir, f"SampleSheet_{config_id}.csv")
-    
-    os.makedirs(out_dir, exist_ok=True)
+    outfile = os.path.join(out_dir, config_id, f"SampleSheet_{config_id}.csv")
+
+    os.makedirs(os.path.join(out_dir, config_id), exist_ok=True)
     
     with open(outfile, 'w') as f:
         f.write("[Header]\n")
@@ -493,10 +493,10 @@ def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name)
     positions = [f"P{i+1:03d}" for i in range(len(df_samples))]
     map_df['Position'] = positions
     
-    map_file = os.path.join(out_dir, f"renaming_map_{config_id}.csv")
+    map_file = os.path.join(out_dir, config_id, f"renaming_map_{config_id}.csv")
     write_renaming_map(map_df, map_file)
     print(f"Generated renaming map: {map_file}")
-    
+
     return {config_id: outfile}
 
 def get_run_read_lengths(run_info_path):
@@ -1195,7 +1195,8 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
 
         ss_data = ss_data[cols]
         
-        outfile = os.path.join(out_dir, f"SampleSheet_{config_id}.csv")
+        outfile = os.path.join(out_dir, config_id, f"SampleSheet_{config_id}.csv")
+        os.makedirs(os.path.join(out_dir, config_id), exist_ok=True)
         with open(outfile, 'w') as f:
             f.write("[Header]\n")
             f.write("FileFormatVersion,2\n")
@@ -1307,7 +1308,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 global_position_counter += 1
             map_df['Position'] = positions
             
-            map_file = os.path.join(out_dir, f"renaming_map_{config_id}.csv")
+            map_file = os.path.join(out_dir, config_id, f"renaming_map_{config_id}.csv")
             write_renaming_map(map_df, map_file)
         except Exception as e:
             print(f"Error generating renaming map for {config_id}: {e}")
@@ -1372,7 +1373,7 @@ def get_order_id_configs(sample_sheets_dict):
     order_id_to_projects = {}
     
     for config_id in sample_sheets_dict:
-        map_path = f"results/renaming_map_{config_id}.csv"
+        map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
         if os.path.exists(map_path):
             try:
                 df = pd.read_csv(map_path)
@@ -1421,7 +1422,7 @@ def get_order_id_configs(sample_sheets_dict):
 def get_project_lane_pairs(sample_sheets_dict):
     pairs = set()
     for config_id in sample_sheets_dict:
-        map_path = f"results/renaming_map_{config_id}.csv"
+        map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
         if os.path.exists(map_path):
             try:
                 df = pd.read_csv(map_path)
@@ -1443,7 +1444,7 @@ def get_project_lane_pairs(sample_sheets_dict):
 def get_config_project_pairs(sample_sheets_dict):
     pairs = set()
     for config_id in sample_sheets_dict:
-        map_path = f"results/renaming_map_{config_id}.csv"
+        map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
         if os.path.exists(map_path):
             try:
                 df = pd.read_csv(map_path)
@@ -1544,7 +1545,7 @@ def get_project_plot_targets(project, lane_filter=None, order_id=None):
     return targets
 
 def read_sample_sheet(config_id):
-    sheet_path = f"results/SampleSheet_{config_id}.csv"
+    sheet_path = f"results/{config_id}/SampleSheet_{config_id}.csv"
     if not os.path.exists(sheet_path):
         return None
     
@@ -1604,7 +1605,7 @@ def _fastp_row_path(row, idx):
 
 def _fastp_rows_for_config(config_id):
     frames = []
-    map_path = f"results/renaming_map_{config_id}.csv"
+    map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
     if os.path.exists(map_path):
         try:
             frames.append(pd.read_csv(map_path))
@@ -1654,7 +1655,7 @@ def get_fastp_sample_input(wildcards):
     sample_path = wildcards.sample_path
 
     # Try to use renaming map first, then injected flexbar rows.
-    map_path = f"results/renaming_map_{config_id}.csv"
+    map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
     import time as _time
     df = None
     if os.path.exists(map_path):
@@ -1776,14 +1777,14 @@ def get_fastp_plots_lane_inputs(wildcards):
     lane = wildcards.lane
     config_id = f"lane{lane}"
     if config_id in CONFIG_IDS:
-        return [f"results/fastp_plots_{config_id}.done"]
+        return [f"results/{config_id}/fastp_plots_{config_id}.done"]
     return []
 
 def get_bcl_convert_fastqs(wildcards):
     import pandas as pd
     import os
     config_id = wildcards.config_id
-    map_path = f"results/renaming_map_{config_id}.csv"
+    map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
     if not os.path.exists(map_path):
         return []
     df = pd.read_csv(map_path)
