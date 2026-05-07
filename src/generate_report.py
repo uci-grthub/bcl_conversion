@@ -523,6 +523,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
     
     # Second pass: load lane-level consolidated files (only for lanes without project files)
     for md5_file in glob.glob("output/*/md5sums.txt"):
+        check_md5_file_permissions(md5_file)
         try:
             with open(md5_file, 'r') as f:
                 for line in f:
