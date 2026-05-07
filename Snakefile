@@ -2593,6 +2593,11 @@ rule bcl_convert:
             echo "Inline demux lane detected; preserving Undetermined reads."
             keep_undetermined=true
         fi
+
+        if [ -f "metadata/fqtk_barcodes_{wildcards.config_id}.tsv" ]; then
+            echo "fqtk demux lane detected; preserving Undetermined reads."
+            keep_undetermined=true
+        fi
         
         if [ "$keep_undetermined" = "true" ]; then
             echo "Keeping Undetermined reads for {wildcards.config_id}."
