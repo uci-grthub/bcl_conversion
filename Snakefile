@@ -799,7 +799,7 @@ rule report_order_id:
             # This handles Snakemake subprocess mode where named input lambdas
             # may resolve to [] even though the files exist on disk.
             import glob as _glob
-            links_yaml_files = sorted(_glob.glob(f"logs/project_links_*---*_{order_id}_*.yaml"))
+            links_yaml_files = sorted(_glob.glob(f"logs/**/project_links_*---*_{order_id}_*.yaml", recursive=True))
         for yaml_path in links_yaml_files:
             if os.path.exists(yaml_path):
                 with open(yaml_path) as _yf:

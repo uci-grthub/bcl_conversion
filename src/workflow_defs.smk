@@ -1376,9 +1376,21 @@ def get_order_id_configs(sample_sheets_dict):
         map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
         if os.path.exists(map_path):
             try:
-                df = pd.read_csv(map_path)
+                import time as _time
+                df = None
+                for _attempt in range(3):
+                    try:
+                        df = pd.read_csv(map_path)
+                        if not df.empty:
+                            break
+                    except Exception:
+                        pass
+                    _time.sleep(2)
+                if df is None or df.empty:
+                    print(f"Warning: {map_path} was empty or unreadable after retries, skipping")
+                    continue
                 df['Sample_Project'] = df['Sample_Project'].astype(str)
-                
+
                 # Extract lane from config_id for lane-aware order lookup
                 lane_match = re.match(r'lane(\d+)', config_id)
                 config_lane = int(lane_match.group(1)) if lane_match else 0
