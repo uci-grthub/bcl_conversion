@@ -799,14 +799,85 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
     
     # Ensure output directory exists
     os.makedirs(out_dir, exist_ok=True)
-    
-    global_position_counter = 1
+
+    # Build lane start offsets using all lanes in metadata, so Pxxx stays stable
+    # even when config['lanes'] runs only a subset of lanes.
+    def _is_valid_index(val):
+        if pd.isna(val):
+            return False
+        s = str(val).strip()
+        if not s:
+            return False
+        return s.lower() != 'nan'
+
+    def _parse_i1_i2_lengths(masking):
+        i1_len = None
+        i2_len = None
+        try:
+            for p in [x.strip() for x in str(masking).split(',') if x and str(x).strip()]:
+                if ':' not in p:
+                    continue
+                t, l = p.split(':', 1)
+                t = t.strip().upper()
+                l = int(str(l).strip())
+                if t == 'I1':
+                    i1_len = l
+                elif t == 'I2':
+                    i2_len = l
+        except Exception:
+            pass
+        return i1_len, i2_len
+
+    def _prepare_lane_df(raw_df, lane):
+        lane_prepped = raw_df[raw_df['Lane'] == lane].copy()
+
+        # Normalize I2-only rows: move barcode index -> index2 when I1 is disabled.
+        if 'Masking' in lane_prepped.columns and 'index' in lane_prepped.columns and 'index2' in lane_prepped.columns:
+            for ridx, row in lane_prepped.iterrows():
+                i1_len, i2_len = _parse_i1_i2_lengths(row.get('Masking', ''))
+                if i1_len == 0 and (i2_len or 0) > 0:
+                    idx1 = row.get('index', '')
+                    idx2 = row.get('index2', '')
+                    if _is_valid_index(idx1) and not _is_valid_index(idx2):
+                        lane_prepped.at[ridx, 'index2'] = str(idx1).strip()
+                        lane_prepped.at[ridx, 'index'] = ""
+
+        valid_indices = lane_prepped.apply(
+            lambda r: _is_valid_index(r.get('index', '')) or _is_valid_index(r.get('index2', '')),
+            axis=1
+        )
+        if valid_indices.any():
+            lane_prepped = lane_prepped[valid_indices]
+
+        for _col in ['index', 'index2']:
+            if _col in lane_prepped.columns:
+                lane_prepped[_col] = lane_prepped[_col].apply(
+                    lambda x: '' if pd.isna(x) or str(x).strip().lower() == 'nan' else str(x).strip()
+                )
+
+        lane_prepped = lane_prepped.drop_duplicates(subset=['Lane', 'Project', 'index', 'index2'], keep='first')
+
+        # Remove projects that are demuxed post-hoc (not present in renaming maps).
+        if 'Project' in lane_prepped.columns:
+            lane_prepped = lane_prepped[
+                ~lane_prepped['Project'].astype(str).str.contains('flexbar|pareseq|fqtk', case=False, na=False, regex=True)
+            ]
+
+        return lane_prepped.reset_index(drop=True)
+
+    lane_position_start = {}
+    _position_counter = 1
+    all_lanes_for_positioning = sorted({int(float(l)) for l in df['Lane'].dropna().unique()})
+    for lane_for_position in all_lanes_for_positioning:
+        lane_position_start[lane_for_position] = _position_counter
+        _position_counter += len(_prepare_lane_df(df, lane_for_position))
 
     for config in lane_configs:
         lane = config['lane']
         config_id = config['id']
         # Filter by Lane only — multiple masking groups are merged into one SampleSheet
-        lane_df = df[df['Lane'] == lane].copy()
+        lane_df = _prepare_lane_df(df, lane)
+        lane_position_counter = lane_position_start.get(lane, 1)
         # Determine if this config comes from a special ATAC sheet (allow both space and underscore)
         # that should preserve index-read handling.
         special_atac_index_reads = False
@@ -1301,11 +1372,11 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                     return str(val)
             map_df['Group'] = lane_df['Group'].apply(format_group).values
             
-            # Add Position (P001, P002, etc.)
+            # Add Position (P001, P002, etc.) using global lane offsets
             positions = []
             for _ in range(len(ss_data)):
-                positions.append(f"P{global_position_counter:03d}")
-                global_position_counter += 1
+                positions.append(f"P{lane_position_counter:03d}")
+                lane_position_counter += 1
             map_df['Position'] = positions
             
             map_file = os.path.join(out_dir, config_id, f"renaming_map_{config_id}.csv")
