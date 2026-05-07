@@ -75,6 +75,21 @@ def get_image_base64(path, max_width=600, quality=35):
         except:
             return None
 
+def check_md5_file_permissions(path):
+    """Fail if path is not readable by owner, group, and others."""
+    mode = os.stat(path).st_mode
+    required = 0o444  # r--r--r--
+    if (mode & required) != required:
+        missing = []
+        if not (mode & 0o400):
+            missing.append("owner")
+        if not (mode & 0o040):
+            missing.append("group")
+        if not (mode & 0o004):
+            missing.append("others")
+        print(f"ERROR: {path} is missing read permission for: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+
 def get_file_size(path):
     if os.path.exists(path):
         size_bytes = os.path.getsize(path)
@@ -482,6 +497,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 
     # First pass: load project-level md5s (these have the actual file checksums)
     for md5_file in glob.glob("output/*/*/md5sums.txt"):
+        check_md5_file_permissions(md5_file)
         try:
             project_from_path = os.path.basename(os.path.dirname(md5_file))
             with open(md5_file, 'r') as f:
