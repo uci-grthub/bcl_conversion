@@ -2747,7 +2747,7 @@ rule calculate_md5sums:
         """
         (
         cd output/{wildcards.config_id}/{wildcards.project}
-        find . -name '*.fastq.gz' \( -type f -o -type l \) -print0 | xargs -0 -P 8 md5sum | sort -k2 > md5sums.txt
+        find . -name '*.fastq.gz' \\( -type f -o -type l \\) -print0 | xargs -0 -P 8 md5sum | sort -k2 > md5sums.txt
         count=$(wc -l < md5sums.txt)
         echo "Generated md5sums.txt with $count entries for {wildcards.project}"
         if [ "$count" -eq 0 ]; then
