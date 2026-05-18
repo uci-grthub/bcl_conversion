@@ -69,6 +69,7 @@ NEXTCLOUD_DIR_PATH = config.get("nextcloud_dir_path", "nextcloud3")
 EMAIL_SENDER = config.get("email_sender", "kstachel@uci.edu")
 EMAIL_RECIPIENT = config.get("email_recipient", "kstachel@uci.edu")
 EMAIL_CC = config.get("email_cc", "kstachel@uci.edu")
+LOW_READS_THRESHOLD = config.get("low_reads_threshold", 1000)
 
 # Rule: rsync project to external drive specified in config.yaml
 EXTERNAL_DRIVE_PATH = config.get("external_drive_path", None)
@@ -710,6 +711,7 @@ rule all:
         f"results/{LIBRARY}-count.csv",
         f"Reports/{LIBRARY}_read_counts_email.done",
         expand("Reports/order_{order_id}/email_sent.done", order_id=ACTIVE_ORDER_IDS + FLEXBAR_ACTIVE_ORDER_IDS),
+        expand("output/{config_id}/{project}/.low_reads_checked", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         expand("logs/{config_id}/verify_project_link_{config_id}---{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         ([VALIDATION_XLSX] if VALIDATION_XLSX else []),
         expand("results/{config_id}/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
@@ -2729,6 +2731,117 @@ rule bcl_project_done:
                     removed += 1
             if removed:
                 print(f"Removed {removed} index FASTQ file(s) from {proj_dir}")
+
+rule check_low_reads:
+    """Send an alert email if any sample in a project has zero or low reads after bcl_project_done.
+
+    Reads Demultiplex_Stats.csv for the config_id and flags any sample belonging
+    to this project whose read count is below LOW_READS_THRESHOLD.  The sentinel
+    is always created so the pipeline is never blocked; the email is optional.
+    """
+    input:
+        project_done = "output/{config_id}/{project}/.project_done"
+    output:
+        sentinel = touch("output/{config_id}/{project}/.low_reads_checked")
+    wildcard_constraints:
+        config_id = "[^/]+",
+        project   = "[^/]+"
+    priority: 99
+    params:
+        sender    = EMAIL_SENDER,
+        receiver  = EMAIL_RECIPIENT,
+        cc        = EMAIL_CC,
+        threshold = LOW_READS_THRESHOLD,
+        library   = LIBRARY,
+    log:
+        "logs/{config_id}/check_low_reads_{config_id}_{project}.log"
+    run:
+        import os, subprocess, sys
+        import pandas as pd
+
+        config_id = wildcards.config_id
+        project   = wildcards.project
+        threshold = int(params.threshold)
+
+        log_fh = open(log[0], "w")
+        def _log(msg):
+            print(msg, file=log_fh, flush=True)
+
+        demux_path = os.path.join("output", config_id, "Reports", "Demultiplex_Stats.csv")
+        if not os.path.exists(demux_path):
+            _log(f"Demultiplex_Stats.csv not found at {demux_path}; skipping low-reads check.")
+            log_fh.close()
+        else:
+            try:
+                df = pd.read_csv(demux_path)
+            except Exception as e:
+                _log(f"Could not read {demux_path}: {e}")
+                log_fh.close()
+            else:
+                # Accept both old Sample_Project and new-name project
+                target_projects = {project}
+                for (cid, old_p), new_p in PROJECT_RENAME_MAP.items():
+                    if cid == config_id:
+                        if old_p == project:
+                            target_projects.add(new_p)
+                        elif new_p == project:
+                            target_projects.add(old_p)
+
+                if "Sample_Project" not in df.columns or "# Reads" not in df.columns:
+                    _log(f"Expected columns missing in {demux_path}; skipping.")
+                    log_fh.close()
+                else:
+                    proj_rows = df[df["Sample_Project"].astype(str).isin(target_projects)].copy()
+                    proj_rows["_reads"] = pd.to_numeric(proj_rows["# Reads"], errors="coerce").fillna(0).astype(int)
+                    low = proj_rows[proj_rows["_reads"] < threshold]
+
+                    if low.empty:
+                        _log(f"All samples in {project} ({config_id}) have >= {threshold} reads. No alert needed.")
+                        log_fh.close()
+                    else:
+                        lines = []
+                        for _, row in low.iterrows():
+                            sid   = str(row.get("SampleID", row.get("Sample_ID", "unknown"))).strip()
+                            reads = int(row["_reads"])
+                            lines.append(f"  {sid}: {reads:,} reads")
+                        sample_list = "\n".join(lines)
+                        all_zero = (low["_reads"] == 0).all()
+                        severity  = "ZERO" if all_zero else "LOW"
+                        n_affected = len(low)
+                        n_total    = len(proj_rows)
+
+                        subject = (
+                            f"[{severity} READS] {params.library} — {project} ({config_id}): "
+                            f"{n_affected}/{n_total} sample(s) below {threshold:,} reads"
+                        )
+                        body = (
+                            f"Low-reads alert for library {params.library}\n\n"
+                            f"Config:  {config_id}\n"
+                            f"Project: {project}\n"
+                            f"Threshold: {threshold:,} reads\n\n"
+                            f"{n_affected} of {n_total} sample(s) are below threshold:\n"
+                            f"{sample_list}\n\n"
+                            f"Please review the demultiplex report at:\n"
+                            f"  output/{config_id}/Reports/Demultiplex_Stats.csv\n"
+                        )
+                        _log(f"Sending {severity} READS alert for {n_affected} sample(s):\n{sample_list}")
+                        try:
+                            result = subprocess.run(
+                                [
+                                    "python3", "src/send_email.py",
+                                    params.sender, params.receiver, subject, body,
+                                    "none", params.cc,
+                                ],
+                                capture_output=True, text=True
+                            )
+                            _log(result.stdout)
+                            if result.returncode != 0:
+                                _log(f"Warning: email send returned exit code {result.returncode}:\n{result.stderr}")
+                            else:
+                                _log("Alert email sent successfully.")
+                        except Exception as e:
+                            _log(f"Warning: failed to send alert email: {e}")
+                        log_fh.close()
 
 rule calculate_md5sums:
     input:
