@@ -869,11 +869,9 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         return lane_prepped.reset_index(drop=True)
 
     lane_position_start = {}
-    _position_counter = 1
     all_lanes_for_positioning = sorted({int(float(l)) for l in df['Lane'].dropna().unique()})
     for lane_for_position in all_lanes_for_positioning:
-        lane_position_start[lane_for_position] = _position_counter
-        _position_counter += len(_prepare_lane_df(df, lane_for_position))
+        lane_position_start[lane_for_position] = 1
 
     for config in lane_configs:
         lane = config['lane']
