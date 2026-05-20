@@ -530,6 +530,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
     # Produce a metadata validation workbook (highlighted copy + RECOMMENDED_CHANGES tab)
     # Regenerate if: xlsx missing, metadata newer, or any orientation_decision file is newer
     # (the RC_ORIENTATION sheet needs decision files that may not exist on first pass).
+    out_xlsx = None
     try:
         _base = os.path.splitext(os.path.basename(metadata_file))[0]
         out_xlsx = os.path.join('metadata', f"metadata_validation_{_base}.xlsx")
@@ -543,6 +544,11 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             validate_metadata_and_write_report(metadata_file, out_xlsx=out_xlsx)
     except Exception as e:
         print(f"Warning: metadata validation report generation failed: {e}")
+
+    # Use validated xlsx as data source for sample sheet construction if available.
+    # RECOMMENDED_CHANGES and RC_ORIENTATION sheets are retained in the xlsx for
+    # inspection but skipped during sample iteration below.
+    _data_file = out_xlsx if (out_xlsx and os.path.exists(out_xlsx)) else metadata_file
     
     # Detect metadata format: MiSeq (simple) vs NovaSeqX (complex with Summary sheet)
     try:
@@ -620,16 +626,16 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
     all_samples = pd.DataFrame()
     
     try:
-        xl = pd.ExcelFile(metadata_file)
+        xl = pd.ExcelFile(_data_file)
         for sheet in xl.sheet_names:
-            if sheet == "Summary":
+            if sheet in ("Summary", "RECOMMENDED_CHANGES", "RC_ORIENTATION"):
                 continue
-            
+
             # print(f"Reading sheet: {sheet}")
             try:
                 # Read raw to find header
-                df_raw = pd.read_excel(metadata_file, sheet_name=sheet, header=None)
-                
+                df_raw = pd.read_excel(_data_file, sheet_name=sheet, header=None)
+
                 header_row = -1
                 for i, row in df_raw.iterrows():
                     row_values = [str(x).strip() for x in row.values]
@@ -637,12 +643,12 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                     if "Lane" in row_values and ("Sample_ID" in row_values or "Sample Name" in row_values or "Sample_Name" in row_values):
                         header_row = i
                         break
-                
+
                 if header_row == -1:
                     print(f"Could not find header in sheet {sheet}, skipping.")
                     continue
-                    
-                df = pd.read_excel(metadata_file, sheet_name=sheet, header=header_row)
+
+                df = pd.read_excel(_data_file, sheet_name=sheet, header=header_row)
                 
                 # Remove NBSP characters
                 for col in df.select_dtypes(include=['object']).columns:
@@ -694,7 +700,10 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                         pass
 
                 # Project
-                if 'Project name' in df.columns:
+                if 'Project' in df.columns and not (df['Project'].isna() | (df['Project'].astype(str).str.strip() == '')).all():
+                    df['Project'] = df['Project'].ffill()
+                    sheet_samples['Project'] = df['Project'].astype(str).str.strip().str.replace(' ', '_', regex=False)
+                elif 'Project name' in df.columns:
                     df['Project name'] = df['Project name'].ffill()
                     sheet_samples['Project'] = df['Project name'].astype(str).str.strip().str.replace(' ', '_', regex=False)
                 elif 'Sample_Project' in df.columns:

@@ -81,7 +81,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
         # Find header row BEFORE filling (to avoid filling header rows into data rows)
         header_row = -1
         nrows = raw.shape[0]
-        header_keywords = ['Lane', 'Sample_Project', 'Project name', 'Sample Name', 'Sample_Name', 'Sample_ID', 'Lab ID', 'Order ID', 'Email', 'Group', 'group', 'Gr']
+        header_keywords = ['Lane', 'Sample_Project', 'Project name', 'Sample Name', 'Sample_Name', 'Sample_ID', 'Lab ID', 'Order ID', 'order ID', 'Email', 'Group', 'group', 'Gr', 'gr']
         for i in range(nrows):
             row = raw.iloc[i]
             row_vals = [str(x) if not pd.isna(x) else '' for x in row.values]
@@ -129,7 +129,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
         # This handles merged cells in the Excel file where multiple rows share the same project/sample info
         try:
             # Identify columns that should be filled down (metadata columns, not barcode sequences)
-            fill_cols = ['Lane', 'Group', 'group', 'Gr', 'Order ID', 'LabID', 'Lab ID', 'Contact', 'Email',
+            fill_cols = ['Lane', 'Lane.1', 'Group', 'group', 'Gr', 'gr', 'Order ID', 'order ID', 'LabID', 'Lab ID', 'Contact', 'Email',
                         'Project name', 'Project', 'Sample_Project', 'Sample Name', 'Sample_Name',
                         'Sample_ID', 'Index Name']
             cols_to_fill = [c for c in fill_cols if c in df.columns]
@@ -160,8 +160,8 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
 
             # If summary sheet, exclude Order ID from forward-fill to avoid copying
             # one Order ID down the whole column; otherwise include it.
-            if is_summary_sheet and 'Order ID' in cols_to_fill:
-                cols_to_fill = [c for c in cols_to_fill if c != 'Order ID']
+            if is_summary_sheet:
+                cols_to_fill = [c for c in cols_to_fill if c not in ('Order ID', 'order ID')]
 
             final_fill = cols_to_fill + seq_cols
             if final_fill:
@@ -175,17 +175,18 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                 if 'LabID' in df.columns:
                     lab_cols.append('LabID')
 
-                if 'Order ID' in df.columns and lab_cols:
+                _oid_col = next((c for c in ('Order ID', 'order ID') if c in df.columns), None)
+                if _oid_col and lab_cols:
                     if is_summary_sheet:
                         # For summary sheets, fill missing Order ID per-row from Lab ID values
                         for lc in lab_cols:
                             try:
                                 # rows where Order ID is blank but lab id present
-                                missing_order = df['Order ID'].isna() | (df['Order ID'].astype(str).str.strip() == '')
+                                missing_order = df[_oid_col].isna() | (df[_oid_col].astype(str).str.strip() == '')
                                 has_lab = ~(df[lc].isna()) & (df[lc].astype(str).str.strip() != '')
                                 to_fill = missing_order & has_lab
                                 if to_fill.any():
-                                    df.loc[to_fill, 'Order ID'] = df.loc[to_fill, lc].astype(str).str.strip()
+                                    df.loc[to_fill, _oid_col] = df.loc[to_fill, lc].astype(str).str.strip()
                                 # do NOT break: allow other lab cols to supplement remaining blanks
                             except Exception:
                                 continue
@@ -193,11 +194,11 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                         # For non-summary sheets, backfill Order ID from Lab ID if entirely missing
                         for lc in lab_cols:
                             try:
-                                missing_order = df['Order ID'].isna() | (df['Order ID'].astype(str).str.strip() == '')
+                                missing_order = df[_oid_col].isna() | (df[_oid_col].astype(str).str.strip() == '')
                                 has_lab = ~(df[lc].isna()) & (df[lc].astype(str).str.strip() != '')
                                 to_fill = missing_order & has_lab
                                 if to_fill.any():
-                                    df.loc[to_fill, 'Order ID'] = df.loc[to_fill, lc].astype(str).str.strip()
+                                    df.loc[to_fill, _oid_col] = df.loc[to_fill, lc].astype(str).str.strip()
                                     break
                             except Exception:
                                 continue
@@ -292,13 +293,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
         # Build barcode length map by lane/group if barcode sequences are available
         try:
             lane_col = 'Lane' if 'Lane' in df.columns else None
-            group_col = None
-            if 'Group' in df.columns:
-                group_col = 'Group'
-            elif 'Gr' in df.columns:
-                group_col = 'Gr'
-            elif 'group' in df.columns:
-                group_col = 'group'
+            group_col = next((c for c in ('Group', 'Gr', 'group', 'gr') if c in df.columns), None)
 
             i7_col = None
             i7_authoritative = False
@@ -502,7 +497,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
             if isinstance(_sheet, str) and 'summary' in _sheet.lower():
                 continue
             _lc = 'Lane.1' if 'Lane.1' in _df.columns else ('Lane' if 'Lane' in _df.columns else None)
-            _gc = next((c for c in ('Group', 'Gr', 'group') if c in _df.columns), None)
+            _gc = next((c for c in ('Group', 'Gr', 'group', 'gr') if c in _df.columns), None)
             if not _lc or not _gc:
                 continue
             _sheet_to_lane_groups[_sheet] = set()
@@ -526,7 +521,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
             if _tab_col is None:
                 continue
             _lc = 'Lane' if 'Lane' in _df.columns else None
-            _gc = next((c for c in ('Group', 'Gr', 'group') if c in _df.columns), None)
+            _gc = next((c for c in ('Group', 'Gr', 'group', 'gr') if c in _df.columns), None)
             if not _lc or not _gc:
                 continue
             for _pos, (_ridx, _row) in enumerate(_df.iterrows()):
@@ -692,13 +687,8 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
 
             # Prefer barcode lengths from Barcode List via lane/group mapping
             lane_val = row.get('Lane') if 'Lane' in df.columns else None
-            group_val = None
-            if 'Group' in df.columns:
-                group_val = row.get('Group')
-            elif 'Gr' in df.columns:
-                group_val = row.get('Gr')
-            elif 'group' in df.columns:
-                group_val = row.get('group')
+            _gcol = next((c for c in ('Group', 'Gr', 'group', 'gr') if c in df.columns), None)
+            group_val = row.get(_gcol) if _gcol else None
 
             mapped = _get_barcode_len(lane_val, group_val)
             lane_key = None
@@ -725,7 +715,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                                 break
                         if bdf is not None:
                             b_lane_col = 'Lane' if 'Lane' in bdf.columns else None
-                            b_group_col = 'Group' if 'Group' in bdf.columns else ('Gr' if 'Gr' in bdf.columns else ('group' if 'group' in bdf.columns else None))
+                            b_group_col = next((c for c in ('Group', 'Gr', 'group', 'gr') if c in bdf.columns), None)
                             b_i5_col = 'i5 Barcode Sequence' if 'i5 Barcode Sequence' in bdf.columns else ('index2' if 'index2' in bdf.columns else ('Index2' if 'Index2' in bdf.columns else None))
                             if b_lane_col and b_group_col and b_i5_col:
                                 try:
@@ -841,6 +831,118 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                         'excel_row': int(pos) + 2
                     })
 
+    # Build (lane_key, group_key) -> {Lane, Group, Project, Order ID} lookup for column propagation.
+    # Summary sheets are the authoritative source: their values always overwrite any previously set
+    # values from non-Summary sheets. Non-Summary sheets only fill keys not already present.
+    _prop_lookup = {}
+
+    def _populate_prop_lookup(items, overwrite=False):
+        for _sname, _sdf in items:
+            _lc = 'Lane.1' if 'Lane.1' in _sdf.columns else ('Lane' if 'Lane' in _sdf.columns else None)
+            _gc = next((c for c in ('Group', 'Gr', 'group', 'gr') if c in _sdf.columns), None)
+            _pc = next((c for c in ('Project', 'Project name', 'Project Name', 'Sample_Project') if c in _sdf.columns), None)
+            _oc = next((c for c in ('Order ID', 'order ID') if c in _sdf.columns), None)
+            if not _lc or not _gc:
+                continue
+            for _, _row in _sdf.iterrows():
+                try:
+                    _lk = _norm_key(_row.get(_lc))
+                    _gk = _norm_key(_row.get(_gc))
+                    if not _lk or not _gk:
+                        continue
+                    entry = _prop_lookup.setdefault((_lk, _gk), {'Lane': _lk, 'Group': _gk})
+                    if _pc:
+                        v = _row.get(_pc)
+                        if not pd.isna(v) and str(v).strip() not in ('', 'nan', 'None'):
+                            if overwrite or 'Project' not in entry:
+                                entry['Project'] = str(v).strip()
+                    if _oc:
+                        v = _row.get(_oc)
+                        if not pd.isna(v) and str(v).strip() not in ('', 'nan', 'None'):
+                            if overwrite or 'Order ID' not in entry:
+                                entry['Order ID'] = str(v).strip()
+                except Exception:
+                    continue
+
+    # Non-Summary sheets first (fill only); then Summary sheets overwrite with authoritative values.
+    _populate_prop_lookup(
+        ((s, d) for s, d in sheet_dfs.items()
+         if not (isinstance(s, str) and 'summary' in s.lower())),
+        overwrite=False,
+    )
+    _populate_prop_lookup(
+        ((s, d) for s, d in sheet_dfs.items()
+         if isinstance(s, str) and 'summary' in s.lower()),
+        overwrite=True,
+    )
+
+    # Propagate Lane, Group, Project, Order ID to every sheet.
+    # RECOMMENDED_CHANGES and RC_ORIENTATION are written separately and never appear in sheet_dfs,
+    # but guard against them explicitly in case the input file already contains those names.
+    _NO_PROPAGATE = {'RECOMMENDED_CHANGES', 'RC_ORIENTATION'}
+    for _sheet in list(sheet_dfs.keys()):
+        if _sheet in _NO_PROPAGATE:
+            continue
+        _df = sheet_dfs[_sheet]
+        _lc = 'Lane.1' if 'Lane.1' in _df.columns else ('Lane' if 'Lane' in _df.columns else None)
+        _gc = next((c for c in ('Group', 'Gr', 'group', 'gr') if c in _df.columns), None)
+        if not _lc or not _gc:
+            continue
+        # Each entry: (lookup_key, [aliases in priority order])
+        # The first alias found in the sheet is used; if none found, the first alias is created.
+        _PROP_TARGETS = [
+            ('Lane',     ['Lane']),
+            ('Group',    ['Group', 'Gr', 'group', 'gr']),
+            ('Project',  ['Project', 'Project name', 'Project Name', 'Sample_Project']),
+            ('Order ID', ['Order ID', 'order ID']),
+        ]
+        _newly_added = []
+        for _info_key, _aliases in _PROP_TARGETS:
+            if _info_key == 'Lane' and 'Lane.1' in _df.columns:
+                continue
+
+            _target_col = next((c for c in _aliases if c in _df.columns), None)
+            _col_absent = _target_col is None
+            if _col_absent:
+                _target_col = _aliases[0]
+                _df[_target_col] = ''
+                _missing = pd.Series([True] * len(_df), index=_df.index)
+            else:
+                _missing = _df[_target_col].isna() | (
+                    _df[_target_col].astype(str).str.strip().isin(('', 'nan', 'None'))
+                )
+
+            if not _missing.any():
+                continue
+
+            def _get_val(row, lc=_lc, gc=_gc, ik=_info_key):
+                try:
+                    lv = _norm_key(row.get(lc))
+                    # Lane and Lane.1 are aliases; fall back to the other if one is absent
+                    if lv is None:
+                        alt = 'Lane' if lc == 'Lane.1' else ('Lane.1' if lc == 'Lane' else None)
+                        if alt:
+                            lv = _norm_key(row.get(alt))
+                    gv = _norm_key(row.get(gc))
+                    if lv and gv:
+                        return _prop_lookup.get((lv, gv), {}).get(ik, '')
+                except Exception:
+                    pass
+                return ''
+
+            _df.loc[_missing, _target_col] = _df[_missing].apply(_get_val, axis=1)
+            if _col_absent:
+                _newly_added.append(_target_col)
+
+        if _newly_added:
+            # Move key columns to the front for visibility; keep whatever alias name the sheet uses
+            _front = [c for c in _df.columns if c in {'Lane', 'Group', 'Gr', 'group', 'gr',
+                                                        'Project', 'Project name', 'Project Name', 'Sample_Project',
+                                                        'Order ID', 'order ID'}]
+            _rest = [c for c in _df.columns if c not in set(_front)]
+            _df = _df[_front + _rest]
+        sheet_dfs[_sheet] = _df
+
     # Write validation workbook if possible
     os.makedirs('metadata', exist_ok=True)
     if out_xlsx is None:
@@ -918,7 +1020,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
             _proj_to_group = {}
             for _sname, _sdf in sheet_dfs.items():
                 _proj_col = next((c for c in ('Sample_Project', 'Project', 'project') if c in _sdf.columns), None)
-                _grp_col = next((c for c in ('Group', 'Gr', 'group') if c in _sdf.columns), None)
+                _grp_col = next((c for c in ('Group', 'Gr', 'group', 'gr') if c in _sdf.columns), None)
                 if _proj_col and _grp_col:
                     for _, _row in _sdf.iterrows():
                         try:
