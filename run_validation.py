@@ -45,11 +45,14 @@ if __name__ == "__main__":
     metadata_stem = os.path.splitext(os.path.basename(metadata_file))[0]
     output_xlsx = os.path.join('metadata', f"metadata_validation_{metadata_stem}.xlsx")
     
+    if os.path.exists(output_xlsx):
+        os.remove(output_xlsx)
+
     print(f"Starting metadata validation...")
     print(f"Input:  {metadata_file}")
     print(f"Output: {output_xlsx}")
     print("=" * 80)
-    
+
     try:
         validate_metadata_and_write_report(metadata_file, out_xlsx=output_xlsx)
         print("=" * 80)
