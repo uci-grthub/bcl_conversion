@@ -118,7 +118,7 @@ if _restrict_lanes:
 # Metadata path from merged config (project-specific if exists, otherwise base config)
 metadata = config.get("metadata", "metadata/SampleSheet.xlsx")
 METADATA_FILE = config.get("metadata")  # From merged config
-VALIDATION_XLSX = f"metadata/metadata_validation_{os.path.basename(metadata)}.xlsx" if metadata else None
+VALIDATION_XLSX = f"metadata/metadata_validation_{os.path.splitext(os.path.basename(metadata))[0]}.xlsx" if metadata else None
 LANE_CONFIGS = []
 PROJECT_LOOKUP = {}
 MASKING_LOOKUP = {}
