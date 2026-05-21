@@ -1267,6 +1267,14 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 lane_df = lane_df[~fqtk_mask].reset_index(drop=True)
                 override_cycles_list = [oc for oc, fq in zip(override_cycles_list, fqtk_mask.values) if not fq]
 
+        # Sort by Group so SampleSheet row order matches renaming map order (preserves S-number alignment)
+        if 'Group' in lane_df.columns:
+            group_order = pd.to_numeric(lane_df['Group'], errors='coerce').fillna(999).values
+            sort_idx = sorted(range(len(group_order)), key=lambda i: group_order[i])
+            ss_data = ss_data.iloc[sort_idx].reset_index(drop=True)
+            lane_df = lane_df.iloc[sort_idx].reset_index(drop=True)
+            override_cycles_list = [override_cycles_list[i] for i in sort_idx]
+
         # Reorder columns
         cols = ['Lane', 'Sample_ID', 'Sample_Name', 'index', 'index2', 'Sample_Project', 'OverrideCycles']
         # Add missing cols if any
@@ -1382,9 +1390,14 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                     return str(val)
             map_df['Group'] = lane_df['Group'].apply(format_group).values
             
-            # Add Position (P001, P002, etc.) using global lane offsets
+            # Add Position (P001, P002, ...) sorted by Group so Group 1 always gets lower positions
+            map_df = map_df.sort_values(
+                by='Group',
+                key=lambda col: col.apply(lambda v: int(v) if str(v).isdigit() else float('inf')),
+                kind='stable'
+            ).reset_index(drop=True)
             positions = []
-            for _ in range(len(ss_data)):
+            for _ in range(len(map_df)):
                 positions.append(f"P{lane_position_counter:03d}")
                 lane_position_counter += 1
             map_df['Position'] = positions
@@ -1663,10 +1676,11 @@ def read_sample_sheet(config_id):
 def _fastp_row_path(row, idx):
     project = str(row.get('Sample_Project', '')).strip()
     sample_name = str(row.get('Sample_Name', '')).strip()
-    output_project = PROJECT_RENAME_MAP.get((str(row.get('Run', '')).strip(), project), project)
 
     run = str(row.get('Run', '')).strip()
     lane = int(row.get('Lane', 0))
+    config_id = f"lane{lane}"
+    output_project = PROJECT_RENAME_MAP.get((config_id, project), project)
     try:
         group = str(int(float(row.get('Group', 0))))
     except:
@@ -1783,7 +1797,9 @@ def get_fastp_sample_input(wildcards):
             if not path:
                 continue
             
-            if path == sample_path:
+            path_stem = path.split('/', 1)[1] if '/' in path else path
+            sample_stem = sample_path.split('/', 1)[1] if '/' in sample_path else sample_path
+            if path == sample_path or path_stem == sample_stem:
                 project = str(row.get('Sample_Project', '')).strip()
                 sample_name = str(row.get('Sample_Name', '')).strip()
                 run = str(row.get('Run', '')).strip()
@@ -1798,10 +1814,13 @@ def get_fastp_sample_input(wildcards):
                     prefix = f"{prefix}/{output_project}"
                 
                 if is_parse_or_10x(project):
-                    s_num = idx + 1
-                    r1 = f"{prefix}/{sample_name}_S{s_num}_L{lane:03d}_R1_001.fastq.gz"
+                    import glob as _glob
+                    matches = _glob.glob(f"{prefix}/{sample_name}_S*_L{lane:03d}_R1_001.fastq.gz")
+                    if not matches:
+                        raise FileNotFoundError(f"No R1 fastq found for {sample_name} in {prefix}")
+                    r1 = matches[0]
                     if NUM_READS > 1:
-                        r2 = f"{prefix}/{sample_name}_S{s_num}_L{lane:03d}_R2_001.fastq.gz"
+                        r2 = r1.replace('_R1_001.fastq.gz', '_R2_001.fastq.gz')
                         return [r1, r2]
                     else:
                         return [r1]
