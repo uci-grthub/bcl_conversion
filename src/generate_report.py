@@ -572,7 +572,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 <div style="margin-bottom: 24px;">
 <h2 style="margin: 0 0 12px 0; font-size: 20px; letter-spacing: -0.2px; color: #333333;">Your Download Links</h2>
 <div style="background: #fff9ec; border: 1px solid rgba(245, 183, 0, 0.5); color: #7a5800; padding: 14px 16px; border-radius: 14px; margin-bottom: 16px; box-shadow: 0 8px 18px rgba(245, 183, 0, 0.12);">
-<strong style="display: block; margin-bottom: 8px;">📋 Direct Links:</strong>
+<strong style="display: block; margin-bottom: 8px;">Direct Links:</strong>
 {all_download_links_html}
 <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(0, 0, 0, 0.1); font-size: 13px;">
 <strong>To download entire folder as zip:</strong> Append <code style="background: rgba(0,0,0,0.1); padding: 2px 4px; border-radius: 3px;">/download</code> to the link above.
