@@ -75,6 +75,21 @@ def get_image_base64(path, max_width=600, quality=35):
         except:
             return None
 
+def check_md5_file_permissions(path):
+    """Fail if path is not readable by owner, group, and others."""
+    mode = os.stat(path).st_mode
+    required = 0o444  # r--r--r--
+    if (mode & required) != required:
+        missing = []
+        if not (mode & 0o400):
+            missing.append("owner")
+        if not (mode & 0o040):
+            missing.append("group")
+        if not (mode & 0o004):
+            missing.append("others")
+        print(f"ERROR: {path} is missing read permission for: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+
 def get_file_size(path):
     if os.path.exists(path):
         size_bytes = os.path.getsize(path)
@@ -482,6 +497,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 
     # First pass: load project-level md5s (these have the actual file checksums)
     for md5_file in glob.glob("output/*/*/md5sums.txt"):
+        check_md5_file_permissions(md5_file)
         try:
             project_from_path = os.path.basename(os.path.dirname(md5_file))
             with open(md5_file, 'r') as f:
@@ -507,6 +523,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
     
     # Second pass: load lane-level consolidated files (only for lanes without project files)
     for md5_file in glob.glob("output/*/md5sums.txt"):
+        check_md5_file_permissions(md5_file)
         try:
             with open(md5_file, 'r') as f:
                 for line in f:
@@ -555,7 +572,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 <div style="margin-bottom: 24px;">
 <h2 style="margin: 0 0 12px 0; font-size: 20px; letter-spacing: -0.2px; color: #333333;">Your Download Links</h2>
 <div style="background: #fff9ec; border: 1px solid rgba(245, 183, 0, 0.5); color: #7a5800; padding: 14px 16px; border-radius: 14px; margin-bottom: 16px; box-shadow: 0 8px 18px rgba(245, 183, 0, 0.12);">
-<strong style="display: block; margin-bottom: 8px;">📋 Direct Links:</strong>
+<strong style="display: block; margin-bottom: 8px;">Direct Links:</strong>
 {all_download_links_html}
 <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(0, 0, 0, 0.1); font-size: 13px;">
 <strong>To download entire folder as zip:</strong> Append <code style="background: rgba(0,0,0,0.1); padding: 2px 4px; border-radius: 3px;">/download</code> to the link above.
@@ -615,7 +632,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
         try:
             config_id = parts[-3]
             if config_id not in renaming_maps:
-                map_path = f"results/renaming_map_{config_id}.csv"
+                map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
                 if os.path.exists(map_path):
                     try:
                         import pandas as pd

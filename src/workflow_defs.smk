@@ -184,7 +184,7 @@ def is_special_atac_project_or_sheet(name):
         n = str(name or "").replace("_", "").replace(" ", "").lower()
     except Exception:
         n = ""
-    return n in ("bdrhapsodyatacseq", "10xmultiomeatacseq")
+    return n in ("bdrhapsodyatacseq", "bdrhapsodyatac", "10xmultiomeatacseq")
 
 
 def is_10x_multiome_atac_project_or_sheet(name):
@@ -445,9 +445,9 @@ def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name)
     
     # Generate sample sheet file
     config_id = "lane1"
-    outfile = os.path.join(out_dir, f"SampleSheet_{config_id}.csv")
-    
-    os.makedirs(out_dir, exist_ok=True)
+    outfile = os.path.join(out_dir, config_id, f"SampleSheet_{config_id}.csv")
+
+    os.makedirs(os.path.join(out_dir, config_id), exist_ok=True)
     
     with open(outfile, 'w') as f:
         f.write("[Header]\n")
@@ -493,10 +493,10 @@ def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name)
     positions = [f"P{i+1:03d}" for i in range(len(df_samples))]
     map_df['Position'] = positions
     
-    map_file = os.path.join(out_dir, f"renaming_map_{config_id}.csv")
+    map_file = os.path.join(out_dir, config_id, f"renaming_map_{config_id}.csv")
     write_renaming_map(map_df, map_file)
     print(f"Generated renaming map: {map_file}")
-    
+
     return {config_id: outfile}
 
 def get_run_read_lengths(run_info_path):
@@ -530,10 +530,11 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
     # Produce a metadata validation workbook (highlighted copy + RECOMMENDED_CHANGES tab)
     # Regenerate if: xlsx missing, metadata newer, or any orientation_decision file is newer
     # (the RC_ORIENTATION sheet needs decision files that may not exist on first pass).
+    out_xlsx = None
     try:
         _base = os.path.splitext(os.path.basename(metadata_file))[0]
         out_xlsx = os.path.join('metadata', f"metadata_validation_{_base}.xlsx")
-        _dec_files = glob.glob('logs/orientation_decision_*.json')
+        _dec_files = glob.glob('logs/*/orientation_decision_*.json')
         _needs_regen = (
             not os.path.exists(out_xlsx)
             or os.path.getmtime(metadata_file) > os.path.getmtime(out_xlsx)
@@ -543,6 +544,11 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             validate_metadata_and_write_report(metadata_file, out_xlsx=out_xlsx)
     except Exception as e:
         print(f"Warning: metadata validation report generation failed: {e}")
+
+    # Use validated xlsx as data source for sample sheet construction if available.
+    # RECOMMENDED_CHANGES and RC_ORIENTATION sheets are retained in the xlsx for
+    # inspection but skipped during sample iteration below.
+    _data_file = out_xlsx if (out_xlsx and os.path.exists(out_xlsx)) else metadata_file
     
     # Detect metadata format: MiSeq (simple) vs NovaSeqX (complex with Summary sheet)
     try:
@@ -568,7 +574,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 try:
                     lane = int(float(row.get('Lane', pd.NA)))
                     group = int(float(row.get('Group', pd.NA)))
-                    project = str(row.get('Project name', '')).strip()
+                    project = str(row.get('Project name', '')).strip().replace(' ', '_')
                     if project and project.lower() != 'nan':
                         barcode_list_lookup[(lane, group)] = project
                 except:
@@ -620,16 +626,16 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
     all_samples = pd.DataFrame()
     
     try:
-        xl = pd.ExcelFile(metadata_file)
+        xl = pd.ExcelFile(_data_file)
         for sheet in xl.sheet_names:
-            if sheet == "Summary":
+            if sheet in ("Summary", "RECOMMENDED_CHANGES", "RC_ORIENTATION"):
                 continue
-            
+
             # print(f"Reading sheet: {sheet}")
             try:
                 # Read raw to find header
-                df_raw = pd.read_excel(metadata_file, sheet_name=sheet, header=None)
-                
+                df_raw = pd.read_excel(_data_file, sheet_name=sheet, header=None)
+
                 header_row = -1
                 for i, row in df_raw.iterrows():
                     row_values = [str(x).strip() for x in row.values]
@@ -637,12 +643,12 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                     if "Lane" in row_values and ("Sample_ID" in row_values or "Sample Name" in row_values or "Sample_Name" in row_values):
                         header_row = i
                         break
-                
+
                 if header_row == -1:
                     print(f"Could not find header in sheet {sheet}, skipping.")
                     continue
-                    
-                df = pd.read_excel(metadata_file, sheet_name=sheet, header=header_row)
+
+                df = pd.read_excel(_data_file, sheet_name=sheet, header=header_row)
                 
                 # Remove NBSP characters
                 for col in df.select_dtypes(include=['object']).columns:
@@ -668,6 +674,9 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 elif 'group' in df.columns:
                     df['group'] = df['group'].ffill()
                     sheet_samples['Group'] = df['group']
+                elif 'gr' in df.columns:
+                    df['gr'] = df['gr'].ffill()
+                    sheet_samples['Group'] = df['gr']
                 else:
                     sheet_samples['Group'] = pd.NA
 
@@ -691,12 +700,15 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                         pass
 
                 # Project
-                if 'Project name' in df.columns:
+                if 'Project' in df.columns and not (df['Project'].isna() | (df['Project'].astype(str).str.strip() == '')).all():
+                    df['Project'] = df['Project'].ffill()
+                    sheet_samples['Project'] = df['Project'].astype(str).str.strip().str.replace(' ', '_', regex=False)
+                elif 'Project name' in df.columns:
                     df['Project name'] = df['Project name'].ffill()
-                    sheet_samples['Project'] = df['Project name']
+                    sheet_samples['Project'] = df['Project name'].astype(str).str.strip().str.replace(' ', '_', regex=False)
                 elif 'Sample_Project' in df.columns:
                     df['Sample_Project'] = df['Sample_Project'].ffill()
-                    sheet_samples['Project'] = df['Sample_Project']
+                    sheet_samples['Project'] = df['Sample_Project'].astype(str).str.strip().str.replace(' ', '_', regex=False)
                 else:
                     sheet_samples['Project'] = pd.NA
                 
@@ -799,14 +811,83 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
     
     # Ensure output directory exists
     os.makedirs(out_dir, exist_ok=True)
-    
-    global_position_counter = 1
+
+    # Build lane start offsets using all lanes in metadata, so Pxxx stays stable
+    # even when config['lanes'] runs only a subset of lanes.
+    def _is_valid_index(val):
+        if pd.isna(val):
+            return False
+        s = str(val).strip()
+        if not s:
+            return False
+        return s.lower() != 'nan'
+
+    def _parse_i1_i2_lengths(masking):
+        i1_len = None
+        i2_len = None
+        try:
+            for p in [x.strip() for x in str(masking).split(',') if x and str(x).strip()]:
+                if ':' not in p:
+                    continue
+                t, l = p.split(':', 1)
+                t = t.strip().upper()
+                l = int(str(l).strip())
+                if t == 'I1':
+                    i1_len = l
+                elif t == 'I2':
+                    i2_len = l
+        except Exception:
+            pass
+        return i1_len, i2_len
+
+    def _prepare_lane_df(raw_df, lane):
+        lane_prepped = raw_df[raw_df['Lane'] == lane].copy()
+
+        # Normalize I2-only rows: move barcode index -> index2 when I1 is disabled.
+        if 'Masking' in lane_prepped.columns and 'index' in lane_prepped.columns and 'index2' in lane_prepped.columns:
+            for ridx, row in lane_prepped.iterrows():
+                i1_len, i2_len = _parse_i1_i2_lengths(row.get('Masking', ''))
+                if i1_len == 0 and (i2_len or 0) > 0:
+                    idx1 = row.get('index', '')
+                    idx2 = row.get('index2', '')
+                    if _is_valid_index(idx1) and not _is_valid_index(idx2):
+                        lane_prepped.at[ridx, 'index2'] = str(idx1).strip()
+                        lane_prepped.at[ridx, 'index'] = ""
+
+        valid_indices = lane_prepped.apply(
+            lambda r: _is_valid_index(r.get('index', '')) or _is_valid_index(r.get('index2', '')),
+            axis=1
+        )
+        if valid_indices.any():
+            lane_prepped = lane_prepped[valid_indices]
+
+        for _col in ['index', 'index2']:
+            if _col in lane_prepped.columns:
+                lane_prepped[_col] = lane_prepped[_col].apply(
+                    lambda x: '' if pd.isna(x) or str(x).strip().lower() == 'nan' else str(x).strip()
+                )
+
+        lane_prepped = lane_prepped.drop_duplicates(subset=['Lane', 'Project', 'index', 'index2'], keep='first')
+
+        # Remove projects that are demuxed post-hoc (not present in renaming maps).
+        if 'Project' in lane_prepped.columns:
+            lane_prepped = lane_prepped[
+                ~lane_prepped['Project'].astype(str).str.contains('flexbar|pareseq|fqtk', case=False, na=False, regex=True)
+            ]
+
+        return lane_prepped.reset_index(drop=True)
+
+    lane_position_start = {}
+    all_lanes_for_positioning = sorted({int(float(l)) for l in df['Lane'].dropna().unique()})
+    for lane_for_position in all_lanes_for_positioning:
+        lane_position_start[lane_for_position] = 1
 
     for config in lane_configs:
         lane = config['lane']
         config_id = config['id']
         # Filter by Lane only — multiple masking groups are merged into one SampleSheet
-        lane_df = df[df['Lane'] == lane].copy()
+        lane_df = _prepare_lane_df(df, lane)
+        lane_position_counter = lane_position_start.get(lane, 1)
         # Determine if this config comes from a special ATAC sheet (allow both space and underscore)
         # that should preserve index-read handling.
         special_atac_index_reads = False
@@ -1106,7 +1187,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                             if type_.startswith('R'):
                                 cycle_str = f"U{len_}" if actual_is_index else f"Y{len_}"
                             elif type_.startswith('I'):
-                                if type_ == 'I2' and special_10x_atac and not row_has_index2:
+                                if type_ == 'I2' and (special_10x_atac or special_atac_index_reads) and not row_has_index2:
                                     cycle_str = f"U{len_}"
                                 else:
                                     cycle_str = f"I{len_}"
@@ -1186,6 +1267,14 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 lane_df = lane_df[~fqtk_mask].reset_index(drop=True)
                 override_cycles_list = [oc for oc, fq in zip(override_cycles_list, fqtk_mask.values) if not fq]
 
+        # Sort by Group so SampleSheet row order matches renaming map order (preserves S-number alignment)
+        if 'Group' in lane_df.columns:
+            group_order = pd.to_numeric(lane_df['Group'], errors='coerce').fillna(999).values
+            sort_idx = sorted(range(len(group_order)), key=lambda i: group_order[i])
+            ss_data = ss_data.iloc[sort_idx].reset_index(drop=True)
+            lane_df = lane_df.iloc[sort_idx].reset_index(drop=True)
+            override_cycles_list = [override_cycles_list[i] for i in sort_idx]
+
         # Reorder columns
         cols = ['Lane', 'Sample_ID', 'Sample_Name', 'index', 'index2', 'Sample_Project', 'OverrideCycles']
         # Add missing cols if any
@@ -1195,7 +1284,8 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
 
         ss_data = ss_data[cols]
         
-        outfile = os.path.join(out_dir, f"SampleSheet_{config_id}.csv")
+        outfile = os.path.join(out_dir, config_id, f"SampleSheet_{config_id}.csv")
+        os.makedirs(os.path.join(out_dir, config_id), exist_ok=True)
         with open(outfile, 'w') as f:
             f.write("[Header]\n")
             f.write("FileFormatVersion,2\n")
@@ -1221,7 +1311,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 if any(kw in name for name in names_to_check for kw in _INDEX_READ_KEYWORDS):
                     create_fastq_for_index = "1"
                 f.write(f"CreateFastqForIndexReads,{create_fastq_for_index}\n")
-            if special_10x_atac:
+            if special_10x_atac or special_atac_index_reads:
                 f.write("TrimUMI,0\n")
             f.write("MinimumTrimmedReadLength,8\n")
             f.write("MaskShortReads,8\n")
@@ -1300,14 +1390,19 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                     return str(val)
             map_df['Group'] = lane_df['Group'].apply(format_group).values
             
-            # Add Position (P001, P002, etc.)
+            # Add Position (P001, P002, ...) sorted by Group so Group 1 always gets lower positions
+            map_df = map_df.sort_values(
+                by='Group',
+                key=lambda col: col.apply(lambda v: int(v) if str(v).isdigit() else float('inf')),
+                kind='stable'
+            ).reset_index(drop=True)
             positions = []
-            for _ in range(len(ss_data)):
-                positions.append(f"P{global_position_counter:03d}")
-                global_position_counter += 1
+            for _ in range(len(map_df)):
+                positions.append(f"P{lane_position_counter:03d}")
+                lane_position_counter += 1
             map_df['Position'] = positions
             
-            map_file = os.path.join(out_dir, f"renaming_map_{config_id}.csv")
+            map_file = os.path.join(out_dir, config_id, f"renaming_map_{config_id}.csv")
             write_renaming_map(map_df, map_file)
         except Exception as e:
             print(f"Error generating renaming map for {config_id}: {e}")
@@ -1372,12 +1467,24 @@ def get_order_id_configs(sample_sheets_dict):
     order_id_to_projects = {}
     
     for config_id in sample_sheets_dict:
-        map_path = f"results/renaming_map_{config_id}.csv"
+        map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
         if os.path.exists(map_path):
             try:
-                df = pd.read_csv(map_path)
+                import time as _time
+                df = None
+                for _attempt in range(3):
+                    try:
+                        df = pd.read_csv(map_path)
+                        if not df.empty:
+                            break
+                    except Exception:
+                        pass
+                    _time.sleep(2)
+                if df is None or df.empty:
+                    print(f"Warning: {map_path} was empty or unreadable after retries, skipping")
+                    continue
                 df['Sample_Project'] = df['Sample_Project'].astype(str)
-                
+
                 # Extract lane from config_id for lane-aware order lookup
                 lane_match = re.match(r'lane(\d+)', config_id)
                 config_lane = int(lane_match.group(1)) if lane_match else 0
@@ -1421,7 +1528,7 @@ def get_order_id_configs(sample_sheets_dict):
 def get_project_lane_pairs(sample_sheets_dict):
     pairs = set()
     for config_id in sample_sheets_dict:
-        map_path = f"results/renaming_map_{config_id}.csv"
+        map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
         if os.path.exists(map_path):
             try:
                 df = pd.read_csv(map_path)
@@ -1443,7 +1550,7 @@ def get_project_lane_pairs(sample_sheets_dict):
 def get_config_project_pairs(sample_sheets_dict):
     pairs = set()
     for config_id in sample_sheets_dict:
-        map_path = f"results/renaming_map_{config_id}.csv"
+        map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
         if os.path.exists(map_path):
             try:
                 df = pd.read_csv(map_path)
@@ -1544,7 +1651,7 @@ def get_project_plot_targets(project, lane_filter=None, order_id=None):
     return targets
 
 def read_sample_sheet(config_id):
-    sheet_path = f"results/SampleSheet_{config_id}.csv"
+    sheet_path = f"results/{config_id}/SampleSheet_{config_id}.csv"
     if not os.path.exists(sheet_path):
         return None
     
@@ -1569,10 +1676,11 @@ def read_sample_sheet(config_id):
 def _fastp_row_path(row, idx):
     project = str(row.get('Sample_Project', '')).strip()
     sample_name = str(row.get('Sample_Name', '')).strip()
-    output_project = PROJECT_RENAME_MAP.get((str(row.get('Run', '')).strip(), project), project)
 
     run = str(row.get('Run', '')).strip()
     lane = int(row.get('Lane', 0))
+    config_id = f"lane{lane}"
+    output_project = PROJECT_RENAME_MAP.get((config_id, project), project)
     try:
         group = str(int(float(row.get('Group', 0))))
     except:
@@ -1604,7 +1712,7 @@ def _fastp_row_path(row, idx):
 
 def _fastp_rows_for_config(config_id):
     frames = []
-    map_path = f"results/renaming_map_{config_id}.csv"
+    map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
     if os.path.exists(map_path):
         try:
             frames.append(pd.read_csv(map_path))
@@ -1654,7 +1762,7 @@ def get_fastp_sample_input(wildcards):
     sample_path = wildcards.sample_path
 
     # Try to use renaming map first, then injected flexbar rows.
-    map_path = f"results/renaming_map_{config_id}.csv"
+    map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
     import time as _time
     df = None
     if os.path.exists(map_path):
@@ -1689,7 +1797,9 @@ def get_fastp_sample_input(wildcards):
             if not path:
                 continue
             
-            if path == sample_path:
+            path_stem = path.split('/', 1)[1] if '/' in path else path
+            sample_stem = sample_path.split('/', 1)[1] if '/' in sample_path else sample_path
+            if path == sample_path or path_stem == sample_stem:
                 project = str(row.get('Sample_Project', '')).strip()
                 sample_name = str(row.get('Sample_Name', '')).strip()
                 run = str(row.get('Run', '')).strip()
@@ -1704,10 +1814,13 @@ def get_fastp_sample_input(wildcards):
                     prefix = f"{prefix}/{output_project}"
                 
                 if is_parse_or_10x(project):
-                    s_num = idx + 1
-                    r1 = f"{prefix}/{sample_name}_S{s_num}_L{lane:03d}_R1_001.fastq.gz"
+                    import glob as _glob
+                    matches = _glob.glob(f"{prefix}/{sample_name}_S*_L{lane:03d}_R1_001.fastq.gz")
+                    if not matches:
+                        raise FileNotFoundError(f"No R1 fastq found for {sample_name} in {prefix}")
+                    r1 = matches[0]
                     if NUM_READS > 1:
-                        r2 = f"{prefix}/{sample_name}_S{s_num}_L{lane:03d}_R2_001.fastq.gz"
+                        r2 = r1.replace('_R1_001.fastq.gz', '_R2_001.fastq.gz')
                         return [r1, r2]
                     else:
                         return [r1]
@@ -1776,14 +1889,14 @@ def get_fastp_plots_lane_inputs(wildcards):
     lane = wildcards.lane
     config_id = f"lane{lane}"
     if config_id in CONFIG_IDS:
-        return [f"results/fastp_plots_{config_id}.done"]
+        return [f"results/{config_id}/fastp_plots_{config_id}.done"]
     return []
 
 def get_bcl_convert_fastqs(wildcards):
     import pandas as pd
     import os
     config_id = wildcards.config_id
-    map_path = f"results/renaming_map_{config_id}.csv"
+    map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
     if not os.path.exists(map_path):
         return []
     df = pd.read_csv(map_path)

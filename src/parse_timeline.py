@@ -65,6 +65,8 @@ def main():
 
     # Find all .bench files
     bench_files = glob.glob(os.path.join(benchmark_dir, '*.bench'))
+    # Exclude reverse complement jobs
+    bench_files = [f for f in bench_files if '_rc_' not in os.path.basename(f)]
     if not bench_files:
         print(f"No .bench files found in {benchmark_dir}")
         return 3

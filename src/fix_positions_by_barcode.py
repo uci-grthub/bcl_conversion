@@ -82,7 +82,7 @@ def fix_positions_by_barcode(config_id, output_dir, map_file):
         
         # Parse filename: {run}-L{lane}-G{group}-{position}-{barcode}-{read}.fastq.gz
         # Example: Side-L7-G3-P175-GCCGCAAC-AGACATGA-R1.fastq.gz
-        match = re.match(r'^(.+?)-L(\d+)-G(\d+)-P(\d+)-([\w-]+)-(R[12I12]).fastq.gz$', filename)
+        match = re.match(r'^(.+?)-L(\d+)-G(\d+)-P(\d+)-([\w-]+)-([RI][12]).fastq.gz$', filename)
         
         if not match:
             # Try Illumina format: {sample}_S{num}_L{lane}_{read}_001.fastq.gz

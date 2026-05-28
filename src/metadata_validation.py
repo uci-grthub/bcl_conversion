@@ -40,6 +40,15 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
             pass
         return str(val).strip()
 
+    def _norm_project_name(val):
+        """Normalize a project name: replace spaces and underscores with a single underscore."""
+        if pd.isna(val):
+            return ''
+        s = str(val).strip()
+        if not s or s.lower() in ('nan', 'none'):
+            return ''
+        return re.sub(r'[\s_]+', '_', s).strip('_')
+
     if not metadata_file or not os.path.exists(metadata_file):
         issues.append({'sheet': '', 'row': '', 'col': '', 'message': f'Metadata file not found: {metadata_file}'})
         os.makedirs('metadata', exist_ok=True)
@@ -72,7 +81,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
         # Find header row BEFORE filling (to avoid filling header rows into data rows)
         header_row = -1
         nrows = raw.shape[0]
-        header_keywords = ['Lane', 'Sample_Project', 'Project name', 'Sample Name', 'Sample_Name', 'Sample_ID', 'Lab ID', 'Order ID', 'Email', 'Group', 'group', 'Gr']
+        header_keywords = ['Lane', 'Sample_Project', 'Project name', 'Sample Name', 'Sample_Name', 'Sample_ID', 'Lab ID', 'Order ID', 'order ID', 'Email', 'Group', 'group', 'Gr', 'gr']
         for i in range(nrows):
             row = raw.iloc[i]
             row_vals = [str(x) if not pd.isna(x) else '' for x in row.values]
@@ -120,7 +129,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
         # This handles merged cells in the Excel file where multiple rows share the same project/sample info
         try:
             # Identify columns that should be filled down (metadata columns, not barcode sequences)
-            fill_cols = ['Lane', 'Group', 'group', 'Gr', 'Order ID', 'LabID', 'Lab ID', 'Contact', 'Email',
+            fill_cols = ['Lane', 'Lane.1', 'Group', 'group', 'Gr', 'gr', 'Order ID', 'order ID', 'LabID', 'Lab ID', 'Contact', 'Email',
                         'Project name', 'Project', 'Sample_Project', 'Sample Name', 'Sample_Name',
                         'Sample_ID', 'Index Name']
             cols_to_fill = [c for c in fill_cols if c in df.columns]
@@ -151,8 +160,8 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
 
             # If summary sheet, exclude Order ID from forward-fill to avoid copying
             # one Order ID down the whole column; otherwise include it.
-            if is_summary_sheet and 'Order ID' in cols_to_fill:
-                cols_to_fill = [c for c in cols_to_fill if c != 'Order ID']
+            if is_summary_sheet:
+                cols_to_fill = [c for c in cols_to_fill if c not in ('Order ID', 'order ID')]
 
             final_fill = cols_to_fill + seq_cols
             if final_fill:
@@ -166,17 +175,18 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                 if 'LabID' in df.columns:
                     lab_cols.append('LabID')
 
-                if 'Order ID' in df.columns and lab_cols:
+                _oid_col = next((c for c in ('Order ID', 'order ID') if c in df.columns), None)
+                if _oid_col and lab_cols:
                     if is_summary_sheet:
                         # For summary sheets, fill missing Order ID per-row from Lab ID values
                         for lc in lab_cols:
                             try:
                                 # rows where Order ID is blank but lab id present
-                                missing_order = df['Order ID'].isna() | (df['Order ID'].astype(str).str.strip() == '')
+                                missing_order = df[_oid_col].isna() | (df[_oid_col].astype(str).str.strip() == '')
                                 has_lab = ~(df[lc].isna()) & (df[lc].astype(str).str.strip() != '')
                                 to_fill = missing_order & has_lab
                                 if to_fill.any():
-                                    df.loc[to_fill, 'Order ID'] = df.loc[to_fill, lc].astype(str).str.strip()
+                                    df.loc[to_fill, _oid_col] = df.loc[to_fill, lc].astype(str).str.strip()
                                 # do NOT break: allow other lab cols to supplement remaining blanks
                             except Exception:
                                 continue
@@ -184,11 +194,11 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                         # For non-summary sheets, backfill Order ID from Lab ID if entirely missing
                         for lc in lab_cols:
                             try:
-                                missing_order = df['Order ID'].isna() | (df['Order ID'].astype(str).str.strip() == '')
+                                missing_order = df[_oid_col].isna() | (df[_oid_col].astype(str).str.strip() == '')
                                 has_lab = ~(df[lc].isna()) & (df[lc].astype(str).str.strip() != '')
                                 to_fill = missing_order & has_lab
                                 if to_fill.any():
-                                    df.loc[to_fill, 'Order ID'] = df.loc[to_fill, lc].astype(str).str.strip()
+                                    df.loc[to_fill, _oid_col] = df.loc[to_fill, lc].astype(str).str.strip()
                                     break
                             except Exception:
                                 continue
@@ -247,13 +257,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
             proj_variants = ['Project name', 'Project Name', 'Project', 'Sample_Project']
             present = [c for c in proj_variants if c in df.columns]
             if present:
-                def _norm_proj_val(v):
-                    if pd.isna(v):
-                        return ''
-                    s = str(v).strip()
-                    s = s.replace('_', ' ')
-                    s = ' '.join(s.split())
-                    return s
+                _norm_proj_val = _norm_project_name
 
                 # create normalized versions and detect per-row inconsistencies
                 norm_cols = {}
@@ -289,13 +293,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
         # Build barcode length map by lane/group if barcode sequences are available
         try:
             lane_col = 'Lane' if 'Lane' in df.columns else None
-            group_col = None
-            if 'Group' in df.columns:
-                group_col = 'Group'
-            elif 'Gr' in df.columns:
-                group_col = 'Gr'
-            elif 'group' in df.columns:
-                group_col = 'group'
+            group_col = next((c for c in ('Group', 'Gr', 'group', 'gr') if c in df.columns), None)
 
             i7_col = None
             i7_authoritative = False
@@ -417,15 +415,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
         # Masking validation runs after all sheets are processed
 
     # Validate project-name parity between Summary and non-Summary tabs
-    def _clean_project_name(val):
-        if pd.isna(val):
-            return ''
-        s = str(val).strip()
-        if not s or s.lower() in ('nan', 'none'):
-            return ''
-        s = s.replace('_', ' ')
-        s = ' '.join(s.split())
-        return s
+    _clean_project_name = _norm_project_name
 
     summary_projects = set()
     non_summary_projects = set()
@@ -443,10 +433,17 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
             continue
 
         is_summary_tab = False
+        is_barcode_list_tab = False
         try:
             is_summary_tab = isinstance(sheet, str) and 'summary' in sheet.lower()
+            is_barcode_list_tab = isinstance(sheet, str) and 'barcode' in sheet.lower() and 'list' in sheet.lower()
         except Exception:
-            is_summary_tab = False
+            pass
+
+        # Only Summary and Barcode List tabs canonically carry project names;
+        # all other specialty tabs (10x, BD, etc.) link to Summary via lane/group/Lab ID.
+        if not is_summary_tab and not is_barcode_list_tab:
+            continue
 
         for raw_proj in df[proj_col].tolist():
             proj = _clean_project_name(raw_proj)
@@ -463,27 +460,117 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                 if proj not in non_summary_proj_orig:
                     non_summary_proj_orig[proj] = raw_str
 
-    missing_in_tabs = sorted(summary_projects - non_summary_projects)
-    for proj in missing_in_tabs:
-        orig = summary_proj_orig.get(proj, proj)
-        issues.append({
-            'sheet': 'Summary',
-            'row': '',
-            'col': 'Project',
-            'message': f"Project listed in Summary but missing from non-Summary tabs: {orig}"
-        })
+    # Only compare if Barcode List (the canonical non-summary project-name source) has data.
+    if non_summary_projects:
+        missing_in_tabs = sorted(summary_projects - non_summary_projects)
+        for proj in missing_in_tabs:
+            orig = summary_proj_orig.get(proj, proj).replace(' ', '_')
+            issues.append({
+                'sheet': 'Summary',
+                'row': '',
+                'col': 'Project',
+                'message': f"Project listed in Summary but missing from Barcode List: {orig}"
+            })
 
     missing_in_summary = sorted(non_summary_projects - summary_projects)
     for proj in missing_in_summary:
-        orig = non_summary_proj_orig.get(proj, proj)
+        orig = non_summary_proj_orig.get(proj, proj).replace(' ', '_')
         sheets = sorted(non_summary_project_sheets.get(proj, set()))
         sheet_list = ', '.join(sheets) if sheets else 'unknown sheet'
         issues.append({
             'sheet': 'Summary',
             'row': '',
             'col': 'Project',
-            'message': f"Project present in non-Summary tabs but missing from Summary: {orig} (tabs: {sheet_list})"
+            'message': f"Project present in Barcode List but missing from Summary: {orig}"
         })
+
+    # Validate 'Sample sheet tab' column in Summary against actual lane/group sheet placements.
+    # Build two maps:
+    #   _lane_group_to_sheets : (lane, group) -> set of sheet names that contain it
+    #   _sheet_to_lane_groups : sheet name    -> set of (lane, group) pairs it contains
+    # Prefer the right-side duplicate Lane column (renamed "Lane.1" by pandas) because it
+    # holds the project-metadata lane matching the Summary, not the BCL sample-sheet lane.
+    _lane_group_to_sheets = {}
+    _sheet_to_lane_groups = {}
+    for _sheet, _df in sheet_dfs.items():
+        try:
+            if isinstance(_sheet, str) and 'summary' in _sheet.lower():
+                continue
+            _lc = 'Lane.1' if 'Lane.1' in _df.columns else ('Lane' if 'Lane' in _df.columns else None)
+            _gc = next((c for c in ('Group', 'Gr', 'group', 'gr') if c in _df.columns), None)
+            if not _lc or not _gc:
+                continue
+            _sheet_to_lane_groups[_sheet] = set()
+            for (_lv, _gv), _ in _df.groupby([_lc, _gc]):
+                _lk = _norm_key(_lv)
+                _gk = _norm_key(_gv)
+                if _lk and _gk:
+                    _lane_group_to_sheets.setdefault((_lk, _gk), set()).add(_sheet)
+                    _sheet_to_lane_groups[_sheet].add((_lk, _gk))
+        except Exception:
+            continue
+
+    def _norm_sheet_ref(s):
+        return re.sub(r'[\s_]+', '', str(s)).lower()
+
+    for _sheet, _df in sheet_dfs.items():
+        try:
+            if not (isinstance(_sheet, str) and 'summary' in _sheet.lower()):
+                continue
+            _tab_col = next((c for c in _df.columns if str(c).strip().lower() == 'sample sheet tab'), None)
+            if _tab_col is None:
+                continue
+            _lc = 'Lane' if 'Lane' in _df.columns else None
+            _gc = next((c for c in ('Group', 'Gr', 'group', 'gr') if c in _df.columns), None)
+            if not _lc or not _gc:
+                continue
+            for _pos, (_ridx, _row) in enumerate(_df.iterrows()):
+                _tab_val = _row.get(_tab_col)
+                if pd.isna(_tab_val) or str(_tab_val).strip() == '':
+                    continue
+                _tab_str = str(_tab_val).strip()
+                # Skip multi-value or annotation-style cells
+                if ',' in _tab_str or 'attachment' in _tab_str.lower():
+                    continue
+                _lk = _norm_key(_row.get(_lc))
+                _gk = _norm_key(_row.get(_gc))
+                if _lk is None or _gk is None:
+                    continue
+                # Resolve the named tab to an actual sheet (space/underscore-insensitive)
+                _named_sheet = next(
+                    (s for s in _sheet_to_lane_groups if _norm_sheet_ref(s) == _norm_sheet_ref(_tab_str)),
+                    None
+                )
+                if _named_sheet is None:
+                    continue  # named tab not found — covered by project-parity check
+                # Check whether this lane/group is present in the named tab
+                if (_lk, _gk) not in _sheet_to_lane_groups[_named_sheet]:
+                    _actual = _lane_group_to_sheets.get((_lk, _gk), set())
+                    if _actual:
+                        _msg = (
+                            f"'Sample sheet tab' lists '{_tab_str}' but lane {_lk} group {_gk} "
+                            f"data is in: {', '.join(sorted(_actual))}"
+                        )
+                    else:
+                        _tab_coverage = ', '.join(
+                            f"lane {l} group {g}"
+                            for l, g in sorted(_sheet_to_lane_groups[_named_sheet])
+                        ) or 'no lane/group data'
+                        _msg = (
+                            f"'Sample sheet tab' lists '{_tab_str}' but lane {_lk} group {_gk} "
+                            f"is not in that tab (tab covers: {_tab_coverage})"
+                        )
+                    issues.append({
+                        'sheet': _sheet,
+                        'row': int(_ridx),
+                        'col': str(_tab_col),
+                        'message': _msg,
+                        'lane': _lk,
+                        'group': _gk,
+                        'excel_row': int(_ridx) + 2
+                    })
+        except Exception:
+            continue
 
     # Validate masking against index lengths after all sheets are processed
     def _mask_len_map(masking_str):
@@ -600,13 +687,8 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
 
             # Prefer barcode lengths from Barcode List via lane/group mapping
             lane_val = row.get('Lane') if 'Lane' in df.columns else None
-            group_val = None
-            if 'Group' in df.columns:
-                group_val = row.get('Group')
-            elif 'Gr' in df.columns:
-                group_val = row.get('Gr')
-            elif 'group' in df.columns:
-                group_val = row.get('group')
+            _gcol = next((c for c in ('Group', 'Gr', 'group', 'gr') if c in df.columns), None)
+            group_val = row.get(_gcol) if _gcol else None
 
             mapped = _get_barcode_len(lane_val, group_val)
             lane_key = None
@@ -633,7 +715,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                                 break
                         if bdf is not None:
                             b_lane_col = 'Lane' if 'Lane' in bdf.columns else None
-                            b_group_col = 'Group' if 'Group' in bdf.columns else ('Gr' if 'Gr' in bdf.columns else ('group' if 'group' in bdf.columns else None))
+                            b_group_col = next((c for c in ('Group', 'Gr', 'group', 'gr') if c in bdf.columns), None)
                             b_i5_col = 'i5 Barcode Sequence' if 'i5 Barcode Sequence' in bdf.columns else ('index2' if 'index2' in bdf.columns else ('Index2' if 'Index2' in bdf.columns else None))
                             if b_lane_col and b_group_col and b_i5_col:
                                 try:
@@ -684,6 +766,10 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                 len1 = 0 if index1 in ('', 'nan', 'None') else len(index1)
                 len2 = 0 if index2 in ('', 'nan', 'None') else len(index2)
 
+                # No barcode data available for this lane/group — cannot validate masking.
+                if len1 == 0 and len2 == 0:
+                    continue
+
             if i1_len is not None and len1 != i1_len:
                 issues.append({
                     'sheet': sheet,
@@ -696,11 +782,18 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                 })
 
             if i2_len is not None:
+                _tab_ref = row.get('Sample sheet tab', '')
+                _tab_ref_str = '' if pd.isna(_tab_ref) else str(_tab_ref).lower()
+                is_atac_tab = (
+                    (isinstance(sheet, str) and 'atac' in sheet.lower())
+                    or 'atac' in _tab_ref_str
+                )
                 skip_i2_len_check = (
                     len2 == 0
                     and (
                         _is_10x_multiome_atac_row(row)
                         or _is_flexbar_row(row)
+                        or is_atac_tab
                     )
                 )
 
@@ -737,6 +830,118 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                         'group': group_key if group_key is not None else group_val,
                         'excel_row': int(pos) + 2
                     })
+
+    # Build (lane_key, group_key) -> {Lane, Group, Project, Order ID} lookup for column propagation.
+    # Summary sheets are the authoritative source: their values always overwrite any previously set
+    # values from non-Summary sheets. Non-Summary sheets only fill keys not already present.
+    _prop_lookup = {}
+
+    def _populate_prop_lookup(items, overwrite=False):
+        for _sname, _sdf in items:
+            _lc = 'Lane.1' if 'Lane.1' in _sdf.columns else ('Lane' if 'Lane' in _sdf.columns else None)
+            _gc = next((c for c in ('Group', 'Gr', 'group', 'gr') if c in _sdf.columns), None)
+            _pc = next((c for c in ('Project', 'Project name', 'Project Name', 'Sample_Project') if c in _sdf.columns), None)
+            _oc = next((c for c in ('Order ID', 'order ID') if c in _sdf.columns), None)
+            if not _lc or not _gc:
+                continue
+            for _, _row in _sdf.iterrows():
+                try:
+                    _lk = _norm_key(_row.get(_lc))
+                    _gk = _norm_key(_row.get(_gc))
+                    if not _lk or not _gk:
+                        continue
+                    entry = _prop_lookup.setdefault((_lk, _gk), {'Lane': _lk, 'Group': _gk})
+                    if _pc:
+                        v = _row.get(_pc)
+                        if not pd.isna(v) and str(v).strip() not in ('', 'nan', 'None'):
+                            if overwrite or 'Project' not in entry:
+                                entry['Project'] = str(v).strip()
+                    if _oc:
+                        v = _row.get(_oc)
+                        if not pd.isna(v) and str(v).strip() not in ('', 'nan', 'None'):
+                            if overwrite or 'Order ID' not in entry:
+                                entry['Order ID'] = str(v).strip()
+                except Exception:
+                    continue
+
+    # Non-Summary sheets first (fill only); then Summary sheets overwrite with authoritative values.
+    _populate_prop_lookup(
+        ((s, d) for s, d in sheet_dfs.items()
+         if not (isinstance(s, str) and 'summary' in s.lower())),
+        overwrite=False,
+    )
+    _populate_prop_lookup(
+        ((s, d) for s, d in sheet_dfs.items()
+         if isinstance(s, str) and 'summary' in s.lower()),
+        overwrite=True,
+    )
+
+    # Propagate Lane, Group, Project, Order ID to every sheet.
+    # RECOMMENDED_CHANGES and RC_ORIENTATION are written separately and never appear in sheet_dfs,
+    # but guard against them explicitly in case the input file already contains those names.
+    _NO_PROPAGATE = {'RECOMMENDED_CHANGES', 'RC_ORIENTATION'}
+    for _sheet in list(sheet_dfs.keys()):
+        if _sheet in _NO_PROPAGATE:
+            continue
+        _df = sheet_dfs[_sheet]
+        _lc = 'Lane.1' if 'Lane.1' in _df.columns else ('Lane' if 'Lane' in _df.columns else None)
+        _gc = next((c for c in ('Group', 'Gr', 'group', 'gr') if c in _df.columns), None)
+        if not _lc or not _gc:
+            continue
+        # Each entry: (lookup_key, [aliases in priority order])
+        # The first alias found in the sheet is used; if none found, the first alias is created.
+        _PROP_TARGETS = [
+            ('Lane',     ['Lane']),
+            ('Group',    ['Group', 'Gr', 'group', 'gr']),
+            ('Project',  ['Project', 'Project name', 'Project Name', 'Sample_Project']),
+            ('Order ID', ['Order ID', 'order ID']),
+        ]
+        _newly_added = []
+        for _info_key, _aliases in _PROP_TARGETS:
+            if _info_key == 'Lane' and 'Lane.1' in _df.columns:
+                continue
+
+            _target_col = next((c for c in _aliases if c in _df.columns), None)
+            _col_absent = _target_col is None
+            if _col_absent:
+                _target_col = _aliases[0]
+                _df[_target_col] = ''
+                _missing = pd.Series([True] * len(_df), index=_df.index)
+            else:
+                _missing = _df[_target_col].isna() | (
+                    _df[_target_col].astype(str).str.strip().isin(('', 'nan', 'None'))
+                )
+
+            if not _missing.any():
+                continue
+
+            def _get_val(row, lc=_lc, gc=_gc, ik=_info_key):
+                try:
+                    lv = _norm_key(row.get(lc))
+                    # Lane and Lane.1 are aliases; fall back to the other if one is absent
+                    if lv is None:
+                        alt = 'Lane' if lc == 'Lane.1' else ('Lane.1' if lc == 'Lane' else None)
+                        if alt:
+                            lv = _norm_key(row.get(alt))
+                    gv = _norm_key(row.get(gc))
+                    if lv and gv:
+                        return _prop_lookup.get((lv, gv), {}).get(ik, '')
+                except Exception:
+                    pass
+                return ''
+
+            _df.loc[_missing, _target_col] = _df[_missing].apply(_get_val, axis=1)
+            if _col_absent:
+                _newly_added.append(_target_col)
+
+        if _newly_added:
+            # Move key columns to the front for visibility; keep whatever alias name the sheet uses
+            _front = [c for c in _df.columns if c in {'Lane', 'Group', 'Gr', 'group', 'gr',
+                                                        'Project', 'Project name', 'Project Name', 'Sample_Project',
+                                                        'Order ID', 'order ID'}]
+            _rest = [c for c in _df.columns if c not in set(_front)]
+            _df = _df[_front + _rest]
+        sheet_dfs[_sheet] = _df
 
     # Write validation workbook if possible
     os.makedirs('metadata', exist_ok=True)
@@ -815,7 +1020,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
             _proj_to_group = {}
             for _sname, _sdf in sheet_dfs.items():
                 _proj_col = next((c for c in ('Sample_Project', 'Project', 'project') if c in _sdf.columns), None)
-                _grp_col = next((c for c in ('Group', 'Gr', 'group') if c in _sdf.columns), None)
+                _grp_col = next((c for c in ('Group', 'Gr', 'group', 'gr') if c in _sdf.columns), None)
                 if _proj_col and _grp_col:
                     for _, _row in _sdf.iterrows():
                         try:
@@ -841,7 +1046,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
 
             rc_rows = []
             try:
-                for dec_file in sorted(_glob.glob('logs/orientation_decision_*.json')):
+                for dec_file in sorted(_glob.glob('logs/*/orientation_decision_*.json')):
                     config_id = os.path.basename(dec_file).replace('orientation_decision_', '').replace('.json', '')
                     with open(dec_file) as _df:
                         dec = _json.load(_df)

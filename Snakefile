@@ -69,6 +69,7 @@ NEXTCLOUD_DIR_PATH = config.get("nextcloud_dir_path", "nextcloud3")
 EMAIL_SENDER = config.get("email_sender", "kstachel@uci.edu")
 EMAIL_RECIPIENT = config.get("email_recipient", "kstachel@uci.edu")
 EMAIL_CC = config.get("email_cc", "kstachel@uci.edu")
+LOW_READS_THRESHOLD = config.get("low_reads_threshold", 1000)
 
 # Rule: rsync project to external drive specified in config.yaml
 EXTERNAL_DRIVE_PATH = config.get("external_drive_path", None)
@@ -104,16 +105,20 @@ detected_lanes = []
 basecalls_path = DATA_DIR + "/Data/Intensities/BaseCalls"
 if os.path.exists(basecalls_path):
     detected_lanes = sorted([
-        int(d[1:]) for d in os.listdir(basecalls_path) 
+        int(d[1:]) for d in os.listdir(basecalls_path)
         if d.startswith("L") and d[1:].isdigit() and os.path.isdir(os.path.join(basecalls_path, d))
     ])
+
+_restrict_lanes = config.get("lanes", [])
+if _restrict_lanes:
+    detected_lanes = [l for l in detected_lanes if l in _restrict_lanes]
 
 # print("detected_lanes:", detected_lanes)
 
 # Metadata path from merged config (project-specific if exists, otherwise base config)
 metadata = config.get("metadata", "metadata/SampleSheet.xlsx")
 METADATA_FILE = config.get("metadata")  # From merged config
-VALIDATION_XLSX = f"metadata/metadata_validation_{os.path.basename(metadata)}.xlsx" if metadata else None
+VALIDATION_XLSX = f"metadata/metadata_validation_{os.path.splitext(os.path.basename(metadata))[0]}.xlsx" if metadata else None
 LANE_CONFIGS = []
 PROJECT_LOOKUP = {}
 MASKING_LOOKUP = {}
@@ -272,6 +277,8 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
             if 'Lane' in df.columns:
                 # Collect unique lanes (masking groups are merged into a single SampleSheet per lane)
                 unique_lanes = sorted(df['Lane'].dropna().apply(lambda x: int(float(x))).unique())
+                if _restrict_lanes:
+                    unique_lanes = [l for l in unique_lanes if l in _restrict_lanes]
                 for lane in unique_lanes:
                     LANE_CONFIGS.append({
                         'lane': lane,
@@ -526,7 +533,7 @@ if EXCLUDE_ORDER_IDS:
     CONFIG_PROJECT_PAIRS = [(c, p) for c, p in CONFIG_PROJECT_PAIRS if p not in _exclude_projects]
     PROJECTS = [p for p in PROJECTS if p not in _exclude_projects]
 
-PROJECT_LINK_LOGS = [f"logs/project_link_{config_id}---{project}.log" for config_id, project in CONFIG_PROJECT_PAIRS]
+PROJECT_LINK_LOGS = [f"logs/{config_id}/project_link_{config_id}---{project}.log" for config_id, project in CONFIG_PROJECT_PAIRS]
 
 # Build flexbar order ID map: config_id -> order_id
 # Flexbar projects appear in PROJECT_LOOKUP for a flexbar lane but not in any BCL convert samplesheet.
@@ -691,23 +698,24 @@ ORDER_ID_MD5S = [f"Reports/order_{oid}/md5sums.txt" for oid in ACTIVE_ORDER_IDS]
 
 rule all:
     input:
-        expand("results/fastp_plots_{config_id}.done", config_id=CONFIG_IDS),
+        expand("results/{config_id}/fastp_plots_{config_id}.done", config_id=CONFIG_IDS),
         expand(".output/{config_id}/.done", config_id=CONFIG_IDS),
         expand("output/{config_id}/{project}/md5sums.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         ORDER_ID_REPORTS,
         ORDER_ID_MD5S,
-        expand("results/fastp_plots_summary_lane{lane}.done", lane=detected_lanes),
+        expand("results/{config_id}/fastp_plots_summary_lane{lane}.done", config_id=CONFIG_IDS, lane=detected_lanes),
         expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
         expand("results/{config_id}/{project}/read_counts_{project}.csv", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
-        # expand("logs/project_link_{config_id}_{project}.log", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
-        expand("logs/project_links_{config_id}---{project}.yaml", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
+        # expand("logs/{config_id}/project_link_{config_id}_{project}.log", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
+        expand("logs/{config_id}/project_links_{config_id}---{project}.yaml", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         f"results/{LIBRARY}-count.csv",
         f"Reports/{LIBRARY}_read_counts_email.done",
         expand("Reports/order_{order_id}/email_sent.done", order_id=ACTIVE_ORDER_IDS + FLEXBAR_ACTIVE_ORDER_IDS),
-        expand("logs/verify_project_link_{config_id}---{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
+        expand("output/{config_id}/{project}/.low_reads_checked", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
+        expand("logs/{config_id}/verify_project_link_{config_id}---{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         ([VALIDATION_XLSX] if VALIDATION_XLSX else []),
-        expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
-        expand("results/fqtk_{config_id}.done", config_id=FQTK_CONFIGS),
+        expand("results/{config_id}/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
+        expand("results/{config_id}/fqtk_{config_id}.done", config_id=FQTK_CONFIGS),
         # "logs/rsync_to_external_drive.done",
         # "results/check_index_rc_swap.txt"
     benchmark:
@@ -731,7 +739,7 @@ rule report_order_id:
             )
         ],
         links_yamls = lambda wildcards: [
-            f"logs/project_links_{c}---{p}.yaml"
+            f"logs/{c}/project_links_{c}---{p}.yaml"
             for c, p in CONFIG_PROJECT_PAIRS
             if p in ORDER_ID_CONFIGS.get(wildcards.order_id, [])
             and (
@@ -793,7 +801,7 @@ rule report_order_id:
             # This handles Snakemake subprocess mode where named input lambdas
             # may resolve to [] even though the files exist on disk.
             import glob as _glob
-            links_yaml_files = sorted(_glob.glob(f"logs/project_links_*---*_{order_id}_*.yaml"))
+            links_yaml_files = sorted(_glob.glob(f"logs/**/project_links_*---*_{order_id}_*.yaml", recursive=True))
         for yaml_path in links_yaml_files:
             if os.path.exists(yaml_path):
                 with open(yaml_path) as _yf:
@@ -943,10 +951,10 @@ rule report_order_id:
 rule flexbar_project_link:
     """Create a Nextcloud share for the flexbar output directory and record the link."""
     input:
-        done = "results/flexbar_{config_id}.done"
+        done = "results/{config_id}/flexbar_{config_id}.done"
     output:
-        link_log  = "logs/flexbar_project_link_{config_id}.log",
-        yaml_file = "logs/flexbar_project_links_{config_id}.yaml"
+        link_log  = "logs/{config_id}/flexbar_project_link_{config_id}.log",
+        yaml_file = "logs/{config_id}/flexbar_project_links_{config_id}.yaml"
     benchmark:
         "benchmarks/flexbar_project_link_{config_id}.bench"
     wildcard_constraints:
@@ -1111,7 +1119,7 @@ rule flexbar_project_link:
 
 rule collect_flexbar_report_extras:
     input:
-        done = "results/flexbar_{config_id}.done"
+        done = "results/{config_id}/flexbar_{config_id}.done"
     output:
         flexbar_log = "Reports/order_{order_id}/flexbarOut_{config_id}.log",
         barcodes    = "Reports/order_{order_id}/flexbar_barcodes_{config_id}.txt",
@@ -1208,7 +1216,7 @@ rule fastp_sample:
         json = "results/{config_id}/{sample_path}.fastp.json",
         html = "results/{config_id}/{sample_path}.fastp.html"
     log:
-        "logs/fastp_sample/{config_id}/{sample_path}.log"
+        "logs/{config_id}/fastp_sample/{config_id}/{sample_path}.log"
     benchmark:
         "benchmarks/fastp_sample_{config_id}_{sample_path}.bench"
     wildcard_constraints:
@@ -1237,7 +1245,7 @@ rule fastp_sample:
 rule normalize_project_fastq_names:
     input:
         done = "output/{config_id}/{project}/.project_done",
-        renaming_map = "results/renaming_map_{config_id}.csv"
+        renaming_map = "results/{config_id}/renaming_map_{config_id}.csv"
     output:
         sentinel = touch("output/{config_id}/{project}/.fastq_names_done")
     wildcard_constraints:
@@ -1366,9 +1374,9 @@ rule fastp_per_config:
     input:
         get_fastp_targets
     output:
-        touch("results/fastp_{config_id}.done")
+        touch("results/{config_id}/fastp_{config_id}.done")
     log:
-        "logs/fastp_per_config_{config_id}.log"
+        "logs/{config_id}/fastp_per_config_{config_id}.log"
     benchmark:
         "benchmarks/fastp_per_config_{config_id}.bench"
     wildcard_constraints:
@@ -1381,7 +1389,7 @@ rule fastp_plots_sample:
         mean = "results/{config_id}/{sample_path}-mean_phred.png",
         base = "results/{config_id}/{sample_path}-base_comp.png"
     log:
-        "logs/fastp_plots_sample/{config_id}/{sample_path}.log"
+        "logs/{config_id}/fastp_plots_sample/{config_id}/{sample_path}.log"
     benchmark:
         "benchmarks/fastp_plots_sample_{config_id}_{sample_path}.bench"
     wildcard_constraints:
@@ -1405,9 +1413,9 @@ rule fastp_plots_per_config:
     input:
         get_fastp_plots_targets
     output:
-        touch("results/fastp_plots_{config_id}.done")
+        touch("results/{config_id}/fastp_plots_{config_id}.done")
     log:
-        "logs/fastp_plots_per_config_{config_id}.log"
+        "logs/{config_id}/fastp_plots_per_config_{config_id}.log"
     benchmark:
         "benchmarks/fastp_plots_per_config_{config_id}.bench"
     wildcard_constraints:
@@ -1421,7 +1429,7 @@ rule summarize_project_reads:
     output:
         "results/{config_id}/{project}/read_counts_{project}.csv"
     log:
-        "logs/summarize_project_reads_{config_id}_{project}.log"
+        "logs/{config_id}/summarize_project_reads_{config_id}_{project}.log"
     benchmark:
         "benchmarks/summarize_project_reads_{config_id}_{project}.bench"
     run:
@@ -1480,9 +1488,9 @@ rule compile_read_counts:
             config_id=[c for c, p in CONFIG_PROJECT_PAIRS],
             project=[p for c, p in CONFIG_PROJECT_PAIRS],
         ),
-        maps = expand("results/renaming_map_{config_id}.csv", config_id=CONFIG_IDS),
-        flexbar_done = expand("results/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
-        fqtk_done    = expand("results/fqtk_{config_id}.done", config_id=FQTK_CONFIGS)
+        maps = expand("results/{config_id}/renaming_map_{config_id}.csv", config_id=CONFIG_IDS),
+        flexbar_done = expand("results/{config_id}/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
+        fqtk_done    = expand("results/{config_id}/fqtk_{config_id}.done", config_id=FQTK_CONFIGS)
     output:
         csv = f"results/{LIBRARY}-count.csv"
     log:
@@ -1754,9 +1762,9 @@ rule fastp_plots_lane:
     input:
         get_fastp_plots_lane_inputs
     output:
-        touch("results/fastp_plots_summary_lane{lane}.done")
+        touch("results/{config_id}/fastp_plots_summary_lane{lane}.done")
     log:
-        "logs/fastp_plots_lane{lane}.log"
+        "logs/{config_id}/fastp_plots_lane{lane}.log"
     wildcard_constraints:
         lane = r"\d+"
 
@@ -1768,9 +1776,9 @@ rule flexbar_per_config:
     threads: 16
     priority: 99
     output:
-        touch("results/flexbar_{config_id}.done")
+        touch("results/{config_id}/flexbar_{config_id}.done")
     log:
-        "logs/flexbar_{config_id}.log"
+        "logs/{config_id}/flexbar_{config_id}.log"
     benchmark:
         "benchmarks/flexbar_per_config_{config_id}.bench"
     params:
@@ -1807,12 +1815,12 @@ rule flexbar_per_config:
         # Build processed FASTA from raw tab-delimited barcodes.
         awk -F'\t' '
         NF >= 3 {{
-            name = tolower($1)
+            name = $1
             barcode = $3
             gsub(/\r/, "", name)
             gsub(/\r/, "", barcode)
             gsub(/ /, "_", name)
-            gsub(/[^a-z0-9_]/, "", name)
+            gsub(/[^a-zA-Z0-9_]/, "", name)
             gsub(/A/, "X", barcode)
             gsub(/T/, "A", barcode)
             gsub(/X/, "T", barcode)
@@ -1900,12 +1908,12 @@ rule flexbar_stage_project:
     a normal project.
     """
     input:
-        done = "results/flexbar_{config_id}.done"
+        done = "results/{config_id}/flexbar_{config_id}.done"
     output:
         project_done = "output/{config_id}/{project}/.project_done",
         names_done   = "output/{config_id}/{project}/.fastq_names_done"
     log:
-        "logs/flexbar_stage_project_{config_id}_{project}.log"
+        "logs/{config_id}/flexbar_stage_project_{config_id}_{project}.log"
     wildcard_constraints:
         config_id = _FLEXBAR_STAGE_CONFIG_CONSTRAINT,
         project   = _FLEXBAR_STAGE_PROJECT_CONSTRAINT
@@ -1979,9 +1987,9 @@ rule fqtk_per_config:
         bcl_done    = ".output/{config_id}/.done",
         barcode_tsv = "metadata/fqtk_barcodes_{config_id}.tsv"
     output:
-        touch("results/fqtk_{config_id}.done")
+        touch("results/{config_id}/fqtk_{config_id}.done")
     log:
-        "logs/fqtk_{config_id}.log"
+        "logs/{config_id}/fqtk_{config_id}.log"
     benchmark:
         "benchmarks/fqtk_per_config_{config_id}.bench"
     params:
@@ -2050,12 +2058,12 @@ rule fqtk_stage_project:
     Writes .project_done and .fastq_names_done sentinels.
     """
     input:
-        done = "results/fqtk_{config_id}.done"
+        done = "results/{config_id}/fqtk_{config_id}.done"
     output:
         project_done = "output/{config_id}/{project}/.project_done",
         names_done   = "output/{config_id}/{project}/.fastq_names_done"
     log:
-        "logs/fqtk_stage_project_{config_id}_{project}.log"
+        "logs/{config_id}/fqtk_stage_project_{config_id}_{project}.log"
     wildcard_constraints:
         config_id = _FQTK_STAGE_CONFIG_CONSTRAINT,
         project   = _FQTK_STAGE_PROJECT_CONSTRAINT
@@ -2098,7 +2106,7 @@ rule fqtk_stage_project:
         # Compute global S-number offset: count BCL Convert rows for this config
         # so fqtk samples continue the numbering (e.g. BCL=84 rows → fqtk gets S85, S86)
         import pandas as _pd
-        _map_path = f"results/renaming_map_{config_id}.csv"
+        _map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
         _s_num_offset = 0
         if os.path.exists(_map_path):
             try:
@@ -2140,8 +2148,8 @@ rule generate_samplesheets:
         metadata = METADATA_FILE if METADATA_FILE else [],
         run_info = "src/RunInfo_nn.xml"
     output:
-        expand("results/SampleSheet_{config_id}.csv", config_id=CONFIG_IDS),
-        expand("logs/generate_samplesheets_{config_id}.done", config_id=CONFIG_IDS)
+        expand("results/{config_id}/SampleSheet_{config_id}.csv", config_id=CONFIG_IDS),
+        expand("logs/{config_id}/generate_samplesheets_{config_id}.done", config_id=CONFIG_IDS)
     log:
         "logs/generate_samplesheets.log"
     benchmark:
@@ -2179,8 +2187,8 @@ rule generate_samplesheets:
         
         for config in lane_configs:
             config_id = config['id']
-            samplesheet_path = f"results/SampleSheet_{config_id}.csv"
-            done_marker = f"logs/generate_samplesheets_{config_id}.done"
+            samplesheet_path = f"results/{config_id}/SampleSheet_{config_id}.csv"
+            done_marker = f"logs/{config_id}/generate_samplesheets_{config_id}.done"
             
             needs_generation = False
             
@@ -2208,7 +2216,7 @@ rule generate_samplesheets:
             print(f"All sample sheets up to date, ensuring done markers exist...")
             for config in lane_configs:
                 config_id = config['id']
-                done_marker = f"logs/generate_samplesheets_{config_id}.done"
+                done_marker = f"logs/{config_id}/generate_samplesheets_{config_id}.done"
                 if not os.path.exists(done_marker):
                     os.makedirs(os.path.dirname(done_marker), exist_ok=True)
                     open(done_marker, 'w').close()
@@ -2220,8 +2228,8 @@ rule generate_samplesheets:
             print(f"No metadata file found, creating placeholder sample sheets")
             for config in configs_to_generate:
                 config_id = config['id']
-                samplesheet_path = f"results/SampleSheet_{config_id}.csv"
-                done_marker = f"logs/generate_samplesheets_{config_id}.done"
+                samplesheet_path = f"results/{config_id}/SampleSheet_{config_id}.csv"
+                done_marker = f"logs/{config_id}/generate_samplesheets_{config_id}.done"
                 
                 os.makedirs(os.path.dirname(samplesheet_path), exist_ok=True)
                 open(samplesheet_path, 'w').close()
@@ -2238,7 +2246,7 @@ rule generate_samplesheets:
             old_hashes = {}
             for config in configs_to_generate:
                 config_id = config['id']
-                samplesheet_path = f"results/SampleSheet_{config_id}.csv"
+                samplesheet_path = f"results/{config_id}/SampleSheet_{config_id}.csv"
                 old_hashes[config_id] = get_file_hash(samplesheet_path)
             
             # Generate all sample sheets
@@ -2257,8 +2265,8 @@ rule generate_samplesheets:
             # Check which sample sheets actually changed and update only their done markers
             for config in lane_configs:
                 config_id = config['id']
-                samplesheet_path = f"results/SampleSheet_{config_id}.csv"
-                done_marker = f"logs/generate_samplesheets_{config_id}.done"
+                samplesheet_path = f"results/{config_id}/SampleSheet_{config_id}.csv"
+                done_marker = f"logs/{config_id}/generate_samplesheets_{config_id}.done"
                 
                 # Ensure sample sheet exists
                 if not os.path.exists(samplesheet_path):
@@ -2277,9 +2285,9 @@ rule generate_samplesheets:
                         open(done_marker, 'w').close()
                         print(f"Updated done marker for {config_id} (content changed)")
                         for stale in [
-                            f"results/SampleSheet_{config_id}_validated.csv",
-                            f"logs/barcode_hamming_validation_{config_id}.done",
-                            f"logs/barcode_hamming_validation_{config_id}.txt",
+                            f"results/{config_id}/SampleSheet_{config_id}_validated.csv",
+                            f"logs/{config_id}/barcode_hamming_validation_{config_id}.done",
+                            f"logs/{config_id}/barcode_hamming_validation_{config_id}.txt",
                         ]:
                             if os.path.exists(stale):
                                 os.remove(stale)
@@ -2306,8 +2314,8 @@ rule generate_samplesheets:
             # Create placeholders for configs that were supposed to be generated
             for config in configs_to_generate:
                 config_id = config['id']
-                samplesheet_path = f"results/SampleSheet_{config_id}.csv"
-                done_marker = f"logs/generate_samplesheets_{config_id}.done"
+                samplesheet_path = f"results/{config_id}/SampleSheet_{config_id}.csv"
+                done_marker = f"logs/{config_id}/generate_samplesheets_{config_id}.done"
                 
                 os.makedirs(os.path.dirname(samplesheet_path), exist_ok=True)
                 open(samplesheet_path, 'w').close()
@@ -2320,11 +2328,11 @@ rule generate_samplesheets:
 # Generate renaming map by copying from generate_samplesheets output
 rule generate_renaming_map:
     input:
-        sample_sheet = "results/SampleSheet_{config_id}.csv"
+        sample_sheet = "results/{config_id}/SampleSheet_{config_id}.csv"
     output:
-        map = "results/renaming_map_{config_id}.csv"
+        map = "results/{config_id}/renaming_map_{config_id}.csv"
     log:
-        "logs/generate_renaming_map_{config_id}.log"
+        "logs/{config_id}/generate_renaming_map_{config_id}.log"
     benchmark:
         "benchmarks/generate_renaming_map_{config_id}.bench"
     params:
@@ -2438,13 +2446,13 @@ rule validate_barcode_hamming_distances:
     With --fix: sets BarcodeMismatchesIndex1/2 to 0 for conflicting samples and retries.
     """
     input:
-        samplesheet = "results/SampleSheet_{config_id}.csv"
+        samplesheet = maybe_ancient("results/{config_id}/SampleSheet_{config_id}.csv")
     output:
-        report = "logs/barcode_hamming_validation_{config_id}.txt",
-        marker = touch("logs/barcode_hamming_validation_{config_id}.done"),
-        fixed_sheet = "results/SampleSheet_{config_id}_validated.csv"
+        report = "logs/{config_id}/barcode_hamming_validation_{config_id}.txt",
+        marker = touch("logs/{config_id}/barcode_hamming_validation_{config_id}.done"),
+        fixed_sheet = "results/{config_id}/SampleSheet_{config_id}_validated.csv"
     log:
-        "logs/barcode_hamming_validation_{config_id}.log"
+        "logs/{config_id}/barcode_hamming_validation_{config_id}.log"
     benchmark:
         "benchmarks/barcode_hamming_validation_{config_id}.bench"
     wildcard_constraints:
@@ -2478,16 +2486,16 @@ rule validate_barcode_hamming_distances:
 
 rule bcl_convert:
     input:
-        sample_sheet=lambda wildcards: f"results/SampleSheet_{wildcards.config_id}_validated.csv",
-        renaming_map = "results/renaming_map_{config_id}.csv",
+        sample_sheet=lambda wildcards: f"results/{wildcards.config_id}/SampleSheet_{wildcards.config_id}_validated.csv",
+        renaming_map = maybe_ancient("results/{config_id}/renaming_map_{config_id}.csv"),
         data_dir=DATA_DIR,
-        _sheet_done=lambda wildcards: f"logs/generate_samplesheets_{wildcards.config_id}.done",
+        _sheet_done=lambda wildcards: maybe_ancient(f"logs/{wildcards.config_id}/generate_samplesheets_{wildcards.config_id}.done"),
         run_info = "src/RunInfo_nn.xml",
         prev_done = get_prev_bcl_done
     output:
         done_file = touch(".output/{config_id}/.done")
     log:
-        "logs/bcl_convert_{config_id}.log"
+        "logs/{config_id}/bcl_convert_{config_id}.log"
     benchmark:
         "benchmarks/bcl_convert_{config_id}.bench"
     wildcard_constraints:
@@ -2587,6 +2595,11 @@ rule bcl_convert:
             echo "Inline demux lane detected; preserving Undetermined reads."
             keep_undetermined=true
         fi
+
+        if [ -f "metadata/fqtk_barcodes_{wildcards.config_id}.tsv" ]; then
+            echo "fqtk demux lane detected; preserving Undetermined reads."
+            keep_undetermined=true
+        fi
         
         if [ "$keep_undetermined" = "true" ]; then
             echo "Keeping Undetermined reads for {wildcards.config_id}."
@@ -2621,7 +2634,7 @@ rule bcl_project_done:
     """
     input:
         done = maybe_ancient(".output/{config_id}/.done"),
-        decision = "logs/orientation_decision_{config_id}.json"
+        decision = maybe_ancient("logs/{config_id}/orientation_decision_{config_id}.json")
     output:
         sentinel = touch("output/{config_id}/{project}/.project_done")
     wildcard_constraints:
@@ -2719,13 +2732,124 @@ rule bcl_project_done:
             if removed:
                 print(f"Removed {removed} index FASTQ file(s) from {proj_dir}")
 
+rule check_low_reads:
+    """Send an alert email if any sample in a project has zero or low reads after bcl_project_done.
+
+    Reads Demultiplex_Stats.csv for the config_id and flags any sample belonging
+    to this project whose read count is below LOW_READS_THRESHOLD.  The sentinel
+    is always created so the pipeline is never blocked; the email is optional.
+    """
+    input:
+        project_done = "output/{config_id}/{project}/.project_done"
+    output:
+        sentinel = touch("output/{config_id}/{project}/.low_reads_checked")
+    wildcard_constraints:
+        config_id = "[^/]+",
+        project   = "[^/]+"
+    priority: 99
+    params:
+        sender    = EMAIL_SENDER,
+        receiver  = EMAIL_RECIPIENT,
+        cc        = EMAIL_CC,
+        threshold = LOW_READS_THRESHOLD,
+        library   = LIBRARY,
+    log:
+        "logs/{config_id}/check_low_reads_{config_id}_{project}.log"
+    run:
+        import os, subprocess, sys
+        import pandas as pd
+
+        config_id = wildcards.config_id
+        project   = wildcards.project
+        threshold = int(params.threshold)
+
+        log_fh = open(log[0], "w")
+        def _log(msg):
+            print(msg, file=log_fh, flush=True)
+
+        demux_path = os.path.join("output", config_id, "Reports", "Demultiplex_Stats.csv")
+        if not os.path.exists(demux_path):
+            _log(f"Demultiplex_Stats.csv not found at {demux_path}; skipping low-reads check.")
+            log_fh.close()
+        else:
+            try:
+                df = pd.read_csv(demux_path)
+            except Exception as e:
+                _log(f"Could not read {demux_path}: {e}")
+                log_fh.close()
+            else:
+                # Accept both old Sample_Project and new-name project
+                target_projects = {project}
+                for (cid, old_p), new_p in PROJECT_RENAME_MAP.items():
+                    if cid == config_id:
+                        if old_p == project:
+                            target_projects.add(new_p)
+                        elif new_p == project:
+                            target_projects.add(old_p)
+
+                if "Sample_Project" not in df.columns or "# Reads" not in df.columns:
+                    _log(f"Expected columns missing in {demux_path}; skipping.")
+                    log_fh.close()
+                else:
+                    proj_rows = df[df["Sample_Project"].astype(str).isin(target_projects)].copy()
+                    proj_rows["_reads"] = pd.to_numeric(proj_rows["# Reads"], errors="coerce").fillna(0).astype(int)
+                    low = proj_rows[proj_rows["_reads"] < threshold]
+
+                    if low.empty:
+                        _log(f"All samples in {project} ({config_id}) have >= {threshold} reads. No alert needed.")
+                        log_fh.close()
+                    else:
+                        lines = []
+                        for _, row in low.iterrows():
+                            sid   = str(row.get("SampleID", row.get("Sample_ID", "unknown"))).strip()
+                            reads = int(row["_reads"])
+                            lines.append(f"  {sid}: {reads:,} reads")
+                        sample_list = "\n".join(lines)
+                        all_zero = (low["_reads"] == 0).all()
+                        severity  = "ZERO" if all_zero else "LOW"
+                        n_affected = len(low)
+                        n_total    = len(proj_rows)
+
+                        subject = (
+                            f"[{severity} READS] {params.library} — {project} ({config_id}): "
+                            f"{n_affected}/{n_total} sample(s) below {threshold:,} reads"
+                        )
+                        body = (
+                            f"Low-reads alert for library {params.library}\n\n"
+                            f"Config:  {config_id}\n"
+                            f"Project: {project}\n"
+                            f"Threshold: {threshold:,} reads\n\n"
+                            f"{n_affected} of {n_total} sample(s) are below threshold:\n"
+                            f"{sample_list}\n\n"
+                            f"Please review the demultiplex report at:\n"
+                            f"  output/{config_id}/Reports/Demultiplex_Stats.csv\n"
+                        )
+                        _log(f"Sending {severity} READS alert for {n_affected} sample(s):\n{sample_list}")
+                        try:
+                            result = subprocess.run(
+                                [
+                                    "python3", "src/send_email.py",
+                                    params.sender, params.receiver, subject, body,
+                                    "none", params.cc,
+                                ],
+                                capture_output=True, text=True
+                            )
+                            _log(result.stdout)
+                            if result.returncode != 0:
+                                _log(f"Warning: email send returned exit code {result.returncode}:\n{result.stderr}")
+                            else:
+                                _log("Alert email sent successfully.")
+                        except Exception as e:
+                            _log(f"Warning: failed to send alert email: {e}")
+                        log_fh.close()
+
 rule calculate_md5sums:
     input:
         done = "output/{config_id}/{project}/.fastq_names_done"
     output:
         md5 = "output/{config_id}/{project}/md5sums.txt"
     log:
-        "logs/calculate_md5sums_{config_id}_{project}.log"
+        "logs/{config_id}/calculate_md5sums_{config_id}_{project}.log"
     benchmark:
         "benchmarks/calculate_md5sums_{config_id}_{project}.bench"
     wildcard_constraints:
@@ -2736,7 +2860,7 @@ rule calculate_md5sums:
         """
         (
         cd output/{wildcards.config_id}/{wildcards.project}
-        find . -name '*.fastq.gz' \( -type f -o -type l \) -print0 | xargs -0 -P 8 md5sum | sort -k2 > md5sums.txt
+        find . -name '*.fastq.gz' \\( -type f -o -type l \\) -print0 | xargs -0 -P 8 md5sum | sort -k2 > md5sums.txt
         count=$(wc -l < md5sums.txt)
         echo "Generated md5sums.txt with $count entries for {wildcards.project}"
         if [ "$count" -eq 0 ]; then
@@ -2749,9 +2873,9 @@ rule calculate_md5sums:
 # Rule: generate exclude-indexes file for each config_id
 rule generate_exclude_indexes:
     input:
-        samplesheets = lambda wildcards: [f"results/SampleSheet_{other_id}.csv" for other_id in get_config_ids_for_lane(get_lane_for_config(wildcards.config_id)) if other_id != wildcards.config_id]
+        samplesheets = lambda wildcards: [f"results/{other_id}/SampleSheet_{other_id}.csv" for other_id in get_config_ids_for_lane(get_lane_for_config(wildcards.config_id)) if other_id != wildcards.config_id]
     output:
-        txt = "results/exclude_indexes_{config_id}.txt"
+        txt = "results/{config_id}/exclude_indexes_{config_id}.txt"
     benchmark:
         "benchmarks/generate_exclude_indexes_{config_id}.bench"
     run:
@@ -2771,7 +2895,7 @@ rule analyze_undetermined:
     output:
         csv = "results/undetermined_indices/{config_id}.csv"
     log:
-        "logs/analyze_undetermined_{config_id}.log"
+        "logs/{config_id}/analyze_undetermined_{config_id}.log"
     benchmark:
         "benchmarks/analyze_undetermined_{config_id}.bench"
     params:
@@ -2807,12 +2931,12 @@ rule detect_rc_candidates:
     Produces a JSON list of suspect project records (may be empty).
     """
     input:
-        undetermined = "results/undetermined_indices/{config_id}.csv",
-        samplesheet = "results/SampleSheet_{config_id}.csv"
+        undetermined = maybe_ancient("results/undetermined_indices/{config_id}.csv"),
+        samplesheet = maybe_ancient("results/{config_id}/SampleSheet_{config_id}.csv")
     output:
-        candidates = "logs/rc_candidates_{config_id}.json"
+        candidates = "logs/{config_id}/rc_candidates_{config_id}.json"
     log:
-        "logs/detect_rc_candidates_{config_id}.log"
+        "logs/{config_id}/detect_rc_candidates_{config_id}.log"
     wildcard_constraints:
         config_id = "[^/]+"
     params:
@@ -2855,12 +2979,12 @@ rule generate_rc_samplesheet:
     If no suspects, copies the original SampleSheet unchanged.
     """
     input:
-        samplesheet = "results/SampleSheet_{config_id}.csv",
-        candidates = "logs/rc_candidates_{config_id}.json"
+        samplesheet = maybe_ancient("results/{config_id}/SampleSheet_{config_id}.csv"),
+        candidates = maybe_ancient("logs/{config_id}/rc_candidates_{config_id}.json")
     output:
-        rc_samplesheet = "results/SampleSheet_{config_id}_rc.csv"
+        rc_samplesheet = "results/{config_id}/SampleSheet_{config_id}_rc.csv"
     log:
-        "logs/generate_rc_samplesheet_{config_id}.log"
+        "logs/{config_id}/generate_rc_samplesheet_{config_id}.log"
     wildcard_constraints:
         config_id = "[^/]+"
     run:
@@ -2889,13 +3013,13 @@ rule validate_barcode_hamming_distances_rc:
     dual-indexed samples, and checks i7 alone for single-indexed samples.
     """
     input:
-        samplesheet = "results/SampleSheet_{config_id}_rc.csv"
+        samplesheet = maybe_ancient("results/{config_id}/SampleSheet_{config_id}_rc.csv")
     output:
-        report = "logs/barcode_hamming_validation_rc_{config_id}.txt",
-        marker = touch("logs/barcode_hamming_validation_rc_{config_id}.done"),
-        fixed_sheet = "results/SampleSheet_{config_id}_rc_validated.csv"
+        report = "logs/{config_id}/barcode_hamming_validation_rc_{config_id}.txt",
+        marker = touch("logs/{config_id}/barcode_hamming_validation_rc_{config_id}.done"),
+        fixed_sheet = "results/{config_id}/SampleSheet_{config_id}_rc_validated.csv"
     log:
-        "logs/barcode_hamming_validation_rc_{config_id}.log"
+        "logs/{config_id}/barcode_hamming_validation_rc_{config_id}.log"
     benchmark:
         "benchmarks/barcode_hamming_validation_rc_{config_id}.bench"
     wildcard_constraints:
@@ -2933,9 +3057,9 @@ rule bcl_convert_rc:
     directory without running BCL Convert.
     """
     input:
-        rc_samplesheet = "results/SampleSheet_{config_id}_rc_validated.csv",
-        renaming_map = "results/renaming_map_{config_id}.csv",
-        candidates = "logs/rc_candidates_{config_id}.json",
+        rc_samplesheet = maybe_ancient("results/{config_id}/SampleSheet_{config_id}_rc_validated.csv"),
+        renaming_map = maybe_ancient("results/{config_id}/renaming_map_{config_id}.csv"),
+        candidates = maybe_ancient("logs/{config_id}/rc_candidates_{config_id}.json"),
         data_dir = DATA_DIR,
         run_info = "src/RunInfo_nn.xml",
         orig_done = maybe_ancient(".output/{config_id}/.done")
@@ -2943,7 +3067,7 @@ rule bcl_convert_rc:
         output_dir = directory(".output_rc/{config_id}"),
         done_file = touch(".output_rc/{config_id}/.done")
     log:
-        "logs/bcl_convert_rc_{config_id}.log"
+        "logs/{config_id}/bcl_convert_rc_{config_id}.log"
     benchmark:
         "benchmarks/bcl_convert_rc_{config_id}.bench"
     wildcard_constraints:
@@ -3009,11 +3133,11 @@ rule pick_orientation:
     input:
         done_orig = maybe_ancient(".output/{config_id}/.done"),
         done_rc = ".output_rc/{config_id}/.done",
-        candidates = "logs/rc_candidates_{config_id}.json"
+        candidates = "logs/{config_id}/rc_candidates_{config_id}.json"
     output:
-        decision = "logs/orientation_decision_{config_id}.json"
+        decision = "logs/{config_id}/orientation_decision_{config_id}.json"
     log:
-        "logs/pick_orientation_{config_id}.log"
+        "logs/{config_id}/pick_orientation_{config_id}.log"
     wildcard_constraints:
         config_id = "[^/]+"
     run:
@@ -3121,7 +3245,7 @@ rule update_validation_workbook:
     are known, so the RC_ORIENTATION sheet reflects which projects ran through RC.
     """
     input:
-        decisions = expand("logs/orientation_decision_{config_id}.json", config_id=CONFIG_IDS),
+        decisions = expand("logs/{config_id}/orientation_decision_{config_id}.json", config_id=CONFIG_IDS),
         metadata = maybe_ancient(metadata)
     output:
         xlsx = VALIDATION_XLSX
@@ -3133,7 +3257,7 @@ rule check_index_rc_swap:
     SampleSheet CSVs and undetermined indices CSVs.
     """
     input:
-        samples = lambda wildcards: sorted(glob.glob("results/SampleSheet_*.csv")),
+        samples = lambda wildcards: sorted(glob.glob("results/*/SampleSheet_*.csv")),
         undetermined = lambda wildcards: sorted(glob.glob("results/undetermined_indices/*.csv"))
     output:
         "results/check_index_rc_swap.txt"
@@ -3151,8 +3275,8 @@ rule project_link:
     input:
         done = "output/{config_id}/{project}/.project_done"
     output:
-        log = "logs/project_link_{config_id}---{project}.log",
-        yaml_file = "logs/project_links_{config_id}---{project}.yaml"
+        log = "logs/{config_id}/project_link_{config_id}---{project}.log",
+        yaml_file = "logs/{config_id}/project_links_{config_id}---{project}.yaml"
     benchmark:
         "benchmarks/project_link_{config_id}---{project}.bench"
     wildcard_constraints:
@@ -3409,11 +3533,11 @@ rule project_link:
 
 rule rescan_nextcloud:
     input:
-        "logs/project_link_{config_id}---{project}.log"
+        "logs/{config_id}/project_link_{config_id}---{project}.log"
     output:
-        touch("logs/nextcloud_scan_{config_id}---{project}.done")
+        touch("logs/{config_id}/nextcloud_scan_{config_id}---{project}.done")
     log:
-        "logs/rescan_nextcloud_{config_id}_{project}.log"
+        "logs/{config_id}/rescan_nextcloud_{config_id}_{project}.log"
     benchmark:
         "benchmarks/rescan_nextcloud_{config_id}_{project}.bench"
     wildcard_constraints:
@@ -3459,12 +3583,12 @@ rule rescan_nextcloud:
 
 rule verify_project_links:
     input:
-        project_link_log = "logs/project_link_{config_id}---{project}.log",
-        scan_done = "logs/nextcloud_scan_{config_id}---{project}.done"
+        project_link_log = "logs/{config_id}/project_link_{config_id}---{project}.log",
+        scan_done = "logs/{config_id}/nextcloud_scan_{config_id}---{project}.done"
     output:
-        report = "logs/verify_project_link_{config_id}---{project}.txt"
+        report = "logs/{config_id}/verify_project_link_{config_id}---{project}.txt"
     log:
-        "logs/verify_project_link_{config_id}---{project}.log"
+        "logs/{config_id}/verify_project_link_{config_id}---{project}.log"
     benchmark:
         "benchmarks/verify_project_link_{config_id}---{project}.bench"
     wildcard_constraints:
@@ -3606,7 +3730,7 @@ rule debug_project_link_files:
             print(f"{done_path}: {'EXISTS' if os.path.exists(done_path) else 'MISSING'}")
         print("\n=== DIAGNOSTIC: Expected .log files ===")
         for config_id, project in CONFIG_PROJECT_PAIRS:
-            log_path = f"logs/project_link_{config_id}_{project}.log"
+            log_path = f"logs/{config_id}/project_link_{config_id}_{project}.log"
             print(f"{log_path}: {'EXISTS' if os.path.exists(log_path) else 'MISSING'}")
         print("\n=== DIAGNOSTIC: All files in logs/ matching project_link_*.log ===")
         for fname in sorted(os.listdir('logs')):
