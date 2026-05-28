@@ -3315,12 +3315,14 @@ rule project_link:
     run:
         import traceback
         import subprocess
+        import sys
         from pathlib import Path
         import time
         import urllib.parse
         import re
         import os
         import shlex
+        import glob as _glob
         
         config_id = wildcards.config_id
         project = wildcards.project
@@ -3377,6 +3379,11 @@ rule project_link:
                 return m2.group(1)
             return None
 
+        def extract_share_id(xml_text):
+            if not xml_text: return None
+            m = re.search(r'<id>(\d+)</id>', xml_text)
+            return m.group(1) if m else None
+
         # Capture executed commands for logging
         executed_cmds = []
 
@@ -3401,6 +3408,8 @@ rule project_link:
                 retry_count = 0
                 share_url = None
                 share_token = None
+                share_id_num = None
+                share_xml = None
                 rate_limited = False
                 last_error = None
                 
@@ -3433,6 +3442,7 @@ rule project_link:
                             # Success - extract data from response
                             share_url = extract_share_url(share_xml)
                             share_token = extract_share_token(share_xml)
+                            share_id_num = extract_share_id(share_xml)
                             if share_url and share_token:
                                 try:
                                     owner = extract_share_owner(share_xml)
@@ -3450,6 +3460,7 @@ rule project_link:
                             share_xml = fetch_existing_share(nc_path, None)
                             share_url = extract_share_url(share_xml)
                             share_token = extract_share_token(share_xml)
+                            share_id_num = extract_share_id(share_xml)
                             if share_url and share_token:
                                 try:
                                     owner = extract_share_owner(share_xml)
@@ -3476,6 +3487,36 @@ rule project_link:
                         last_error = f"Exception: {str(e)}"
                         if retry_count < max_retries:
                             time.sleep(wait_time)
+
+                # --- RESTORE PRIOR TOKEN FROM EXISTING LOGS ---
+                if share_url and share_token and share_id_num:
+                    old_token = None
+                    for lp in sorted(_glob.glob("logs/**/project_link_*.log", recursive=True)):
+                        if os.path.abspath(lp) == os.path.abspath(log_file):
+                            continue
+                        try:
+                            content = Path(lp).read_text()
+                            if f"NC_PATH: {nc_path}" in content and "Status: SUCCESS" in content:
+                                m = re.search(r'^WebDAV Token: (\S+)', content, re.MULTILINE)
+                                if m:
+                                    old_token = m.group(1)
+                                    break
+                        except Exception:
+                            pass
+                    if old_token and old_token != share_token:
+                        put_cmd = [
+                            sys.executable, "scripts/test_nextcloud_token.py",
+                            "--share-id", share_id_num,
+                            "--token", old_token
+                        ]
+                        executed_cmds.append(put_cmd)
+                        put_result = subprocess.run(put_cmd, capture_output=True, text=True, timeout=30)
+                        m_token = re.search(r'New Token\s*:\s*(\S+)', put_result.stdout)
+                        m_url = re.search(r'New URL\s*:\s*(\S+)', put_result.stdout)
+                        if m_token:
+                            share_token = m_token.group(1)
+                        if m_url:
+                            share_url = m_url.group(1)
 
                 # --- LOGGING WEB DAV CREDENTIALS AND EXECUTED COMMANDS ---
                 with open(log_file, 'w') as f:
