@@ -4,10 +4,10 @@ Test script for Nextcloud OCS share token management.
 
 Usage:
   # Create/find a share and print its auto-assigned token
-  python scripts/test_nextcloud_token.py --path /DragenExt3/path/to/folder
+  python scripts/test_nextcloud_token.py --path /Jbod2/path/to/folder
 
   # Create/find a share then reassign a specific token (e.g. to restore a known link)
-  python scripts/test_nextcloud_token.py --path /DragenExt3/path/to/folder --token abc123xyz
+  python scripts/test_nextcloud_token.py --path /Jbod2/path/to/folder --token abc123xyz
 
   # Reassign a token on an already-known share ID (skip the POST step)
   python scripts/test_nextcloud_token.py --share-id 42 --token abc123xyz
@@ -22,6 +22,24 @@ import re
 import subprocess
 import sys
 import urllib.parse
+
+DEFAULT_ENV_FILE = "/staging/nextcloud/testing_illumina/.env"
+
+
+def load_env_file(path):
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                line = re.sub(r"^export\s+", "", line)
+                m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$', line)
+                if m:
+                    key, val = m.group(1), m.group(2).strip("'\"")
+                    os.environ.setdefault(key, val)
+    except FileNotFoundError:
+        pass
 
 
 def require_env(name):
@@ -95,15 +113,18 @@ def update_share_token(nc_url, user, password, share_id, new_token):
 
 def main():
     parser = argparse.ArgumentParser(description="Test Nextcloud OCS share token management")
-    parser.add_argument("--path", help="Nextcloud path to share (e.g. /DragenExt3/...)")
+    parser.add_argument("--path", help="Nextcloud path to share (e.g. /Jbod2/...)")
     parser.add_argument("--share-id", help="Known share ID (skips POST/GET step)")
     parser.add_argument("--token", help="Custom token to assign via PUT (optional)")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
+    parser.add_argument("--env-file", default=DEFAULT_ENV_FILE,
+                        help=f"Path to .env file with credentials (default: {DEFAULT_ENV_FILE})")
     args = parser.parse_args()
 
     if not args.path and not args.share_id:
         parser.error("Provide --path and/or --share-id")
 
+    load_env_file(args.env_file)
     nc_url = require_env("NEXTCLOUD_URL").rstrip("/")
     user = require_env("NEXTCLOUD_USER")
     password = require_env("NEXTCLOUD_PASSWORD")
@@ -114,22 +135,23 @@ def main():
 
     # --- Step 1: resolve share ID if not provided ---
     if not share_id:
-        body, http_code = create_share(nc_url, user, password, args.path)
+        # Check for an existing share first to avoid creating a duplicate with a new token.
+        body, http_code = get_existing_share(nc_url, user, password, args.path)
         print(f"\n  Response body:\n{body}")
+        share_id = extract_xml(body, "id")
+        share_token = extract_xml(body, "token")
+        share_url = extract_xml(body, "url")
 
-        if http_code in ("200", "201"):
-            share_id = extract_xml(body, "id")
-            share_token = extract_xml(body, "token")
-            share_url = extract_xml(body, "url")
-        elif http_code in ("400", "403"):
-            print("  Share may already exist — fetching via GET")
-            body, http_code = get_existing_share(nc_url, user, password, args.path)
+        if not share_id:
+            print("  No existing share found — creating via POST")
+            body, http_code = create_share(nc_url, user, password, args.path)
             print(f"\n  Response body:\n{body}")
-            share_id = extract_xml(body, "id")
-            share_token = extract_xml(body, "token")
-            share_url = extract_xml(body, "url")
-        else:
-            sys.exit(f"Unexpected HTTP {http_code} from POST")
+            if http_code in ("200", "201"):
+                share_id = extract_xml(body, "id")
+                share_token = extract_xml(body, "token")
+                share_url = extract_xml(body, "url")
+            else:
+                sys.exit(f"Unexpected HTTP {http_code} from POST")
 
         if not share_id:
             sys.exit("Could not extract share ID from response")
