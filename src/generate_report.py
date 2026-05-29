@@ -560,8 +560,8 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 24px;">
 <tr>
 <td style="padding: 18px; background-color: #ffffff; border-radius: 14px; box-shadow: 0 14px 30px rgba(0, 34, 68, 0.12); border: 1px solid rgba(0, 50, 98, 0.06);">
-<p style="margin: 0 0 10px 0; line-height: 1.6;"><strong>Dear GRTHub User,</strong></p>
-<p style="margin: 0 0 10px 0; line-height: 1.6;">The sequencing data for the samples you submitted to the GRTHub has been processed and is now available for downloading in FastQ file format. If you would like to work with your data on UCI HPC3, GRTHub staff can transfer the data directly for you; please contact GRTHub directly to facilitate this.</p>
+<p style="margin: 0 0 10px 0; line-height: 1.6;"><strong>Dear GRT Hub User,</strong></p>
+<p style="margin: 0 0 10px 0; line-height: 1.6;">The sequencing data for the samples you submitted to the GRT Hub has been processed and is now available for downloading in FastQ file format. If you would like to work with your data on UCI HPC3, GRT Hub staff can transfer the data directly for you; please contact GRT Hub directly to facilitate this.</p>
 <p style="margin: 0 0 10px 0; line-height: 1.6;">Your fastq files will remain available for downloading during a period of <strong>1 month only</strong>. Please download your files immediately and verify their integrity using the provided md5sum values as soon as possible, and before the end of this period. After 1 month, the FastQ files will be deleted from our servers.</p>
 <p style="margin: 0; line-height: 1.6;"><strong>A file containing the md5sum for your FastQ files is included in this report. Instructions for downloading the files are attached.</strong></p>
 </td>

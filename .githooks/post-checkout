@@ -37,11 +37,24 @@ case "$sequencer" in
         ;;
 esac
 
+# Copy newest .xlsx from ../SampleSheets into metadata/ (always)
+source_xlsx=$(find ../SampleSheets -maxdepth 1 -name "*.xlsx" -printf "%T@ %p\n" 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
+if [ -n "$source_xlsx" ]; then
+    mkdir -p metadata
+    cp "$source_xlsx" metadata/
+    echo "  Copied $source_xlsx --> metadata/"
+else
+    echo "  WARNING: No .xlsx found in ../SampleSheets"
+fi
+
+# Always update metadata and library_name in config if it exists
+metadata_file=$(find metadata/ -maxdepth 1 -name "*.xlsx" ! -name "metadata_validation*" | head -1)
+
 if [ ! -f snakemake_config_project.yaml ]; then
     cp snakemake_config.yaml snakemake_config_project.yaml
+fi
 
-    # Infer metadata from the .xlsx file in metadata/ (exclude validation files)
-    metadata_file=$(find metadata/ -maxdepth 1 -name "*.xlsx" ! -name "metadata_validation*" | head -1)
+if [ -f snakemake_config_project.yaml ]; then
     if [ -n "$metadata_file" ]; then
         sed -i "s|^metadata:.*|metadata: \"$metadata_file\"|" snakemake_config_project.yaml
         echo "  metadata --> $metadata_file"
