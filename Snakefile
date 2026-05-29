@@ -190,9 +190,9 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
                         s = str(v).strip()
                         if not s or s.lower() == 'nan':
                             continue
-                        m = re.match(r'^\d+[iI]-\d+$', s)
+                        m = re.match(r'^(?:order_)?(\d+[iI]-\d+)$', s)
                         if m:
-                            order_ids.append(s.replace('i', 'I'))
+                            order_ids.append(m.group(1).replace('i', 'I'))
                         else:
                             project_candidates.append(s.replace(' ', '_'))
 
