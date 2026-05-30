@@ -41,21 +41,6 @@ def rename_fastqs(config_id, output_dir, map_file):
 
     print(f"Renaming files in {output_dir} using {map_file}")
 
-    # Load demux stats for RC-aware barcode lookup
-    demux_index_lookup = {}  # (project, sample_id) -> Index value
-    demux_csv = os.path.join(output_dir, "Reports", "Demultiplex_Stats.csv")
-    if os.path.exists(demux_csv):
-        try:
-            demux_df = pd.read_csv(demux_csv)
-            for _, drow in demux_df.iterrows():
-                _proj = str(drow.get('Sample_Project', '')).strip()
-                _sid = str(drow.get('SampleID', '')).strip()
-                _idx = str(drow.get('Index', '')).strip().rstrip('-')
-                if _proj and _sid and _idx:
-                    demux_index_lookup[(_proj, _sid)] = _idx
-        except Exception as e:
-            print(f"Warning: could not load {demux_csv}: {e}")
-
     for i, row in df.iterrows():
         sample_name = str(row['Sample_Name']).strip()
         project = str(row['Sample_Project']).strip()
@@ -88,10 +73,6 @@ def rename_fastqs(config_id, output_dir, map_file):
         else:
             barcode = ""
             
-        demux_index = demux_index_lookup.get((project, sample_name))
-        if demux_index:
-            barcode = demux_index
-
         position = str(row.get('Position', f"P{i+1:03d}")).strip()
             
         # Construct old filename pattern
