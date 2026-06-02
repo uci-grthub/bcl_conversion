@@ -1817,8 +1817,12 @@ def get_fastp_sample_input(wildcards):
                     import glob as _glob
                     matches = _glob.glob(f"{prefix}/{sample_name}_S*_L{lane:03d}_R1_001.fastq.gz")
                     if not matches:
-                        raise FileNotFoundError(f"No R1 fastq found for {sample_name} in {prefix}")
-                    r1 = matches[0]
+                        # Directory doesn't exist yet (BCL convert hasn't run); return a
+                        # predictable placeholder so dry-run DAG evaluation doesn't abort.
+                        # The real path is resolved at execution time after normalize_project_fastq_names.
+                        r1 = f"{prefix}/{sample_name}_S1_L{lane:03d}_R1_001.fastq.gz"
+                    else:
+                        r1 = matches[0]
                     if NUM_READS > 1:
                         r2 = r1.replace('_R1_001.fastq.gz', '_R2_001.fastq.gz')
                         return [r1, r2]
