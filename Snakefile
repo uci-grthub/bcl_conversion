@@ -705,6 +705,7 @@ rule all:
         ORDER_ID_MD5S,
         expand("results/{config_id}/fastp_plots_summary_lane{lane}.done", config_id=CONFIG_IDS, lane=detected_lanes),
         expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
+        expand("results/undetermined_indices/{config_id}_rc.csv", config_id=CONFIG_IDS),
         expand("results/{config_id}/{project}/read_counts_{project}.csv", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         # expand("logs/{config_id}/project_link_{config_id}_{project}.log", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         expand("logs/{config_id}/project_links_{config_id}---{project}.yaml", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
@@ -2925,6 +2926,54 @@ rule analyze_undetermined:
 
             logf.write(f"Converted {len(rows)} barcodes from {params.barcodes}\n")
 
+rule analyze_undetermined_rc:
+    """Convert RC-pass Top_Unknown_Barcodes to the same CSV format as analyze_undetermined.
+    Runs after pick_orientation so the RC pass is guaranteed to exist (or was skipped).
+    Writes an empty file if no RC pass was run for this config_id.
+    """
+    input:
+        decision = "logs/{config_id}/orientation_decision_{config_id}.json",
+        done_rc = ".output_rc/{config_id}/.done"
+    output:
+        csv = "results/undetermined_indices/{config_id}_rc.csv"
+    log:
+        "logs/{config_id}/analyze_undetermined_rc_{config_id}.log"
+    benchmark:
+        "benchmarks/analyze_undetermined_rc_{config_id}.bench"
+    wildcard_constraints:
+        config_id = "[^/]+"
+    run:
+        import csv as csv_mod
+        import os
+
+        barcodes_path = f".output_rc/{wildcards.config_id}/Reports/Top_Unknown_Barcodes.csv"
+        os.makedirs(os.path.dirname(output.csv), exist_ok=True)
+        with open(log[0], 'w') as logf:
+            if not os.path.exists(barcodes_path):
+                logf.write(f"No RC pass barcodes file at {barcodes_path}; writing empty CSV.\n")
+                with open(output.csv, 'w', newline='') as f:
+                    csv_mod.writer(f).writerow(['Count', 'Type', 'Index Sequence'])
+                return
+
+            rows = []
+            with open(barcodes_path) as f:
+                reader = csv_mod.DictReader(f)
+                for r in reader:
+                    idx1 = r.get('index', '').strip()
+                    idx2 = r.get('index2', '').strip()
+                    count = int(r.get('# Reads', '0'))
+                    seq = f"{idx1}+{idx2}" if idx2 else idx1
+                    index_type = "Dual" if idx2 else "Single"
+                    rows.append((count, index_type, seq))
+
+            with open(output.csv, 'w', newline='') as f:
+                writer = csv_mod.writer(f)
+                writer.writerow(['Count', 'Type', 'Index Sequence'])
+                for count, itype, seq in rows:
+                    writer.writerow([count, itype, seq])
+
+            logf.write(f"Converted {len(rows)} barcodes from {barcodes_path}\n")
+
 rule detect_rc_candidates:
     """Detect projects with likely i7 reverse-complement orientation issues
     for a single config_id by comparing undetermined barcodes to expected indexes.
@@ -3227,18 +3276,24 @@ rule pick_orientation:
                             os_mod.remove(item_path)
 
         # Remove Undetermined*.fastq.gz from .output unless needed for flexbar.
+        # Also remove original project dirs for RC-winning projects — their reads
+        # came from the original (wrong-orientation) demux and are superseded by
+        # the RC pass already in .output_rc.
         orig_lane_dir = f".output/{wildcards.config_id}"
         if os_mod.path.isdir(orig_lane_dir):
             with open(log[0], 'a') as lf:
                 for item in os_mod.listdir(orig_lane_dir):
+                    item_path = os_mod.path.join(orig_lane_dir, item)
                     if item.startswith('Undetermined') and item.endswith('.fastq.gz'):
-                        item_path = os_mod.path.join(orig_lane_dir, item)
                         if os_mod.path.isfile(item_path):
                             if preserve_undetermined:
                                 lf.write(f"Preserving original undetermined reads for flexbar lane: {item_path}\n")
                             else:
                                 lf.write(f"Removing original undetermined reads: {item_path}\n")
                                 os_mod.remove(item_path)
+                    elif os_mod.path.isdir(item_path) and item in rc_projects:
+                        lf.write(f"Removing original staging dir for RC-winning project: {item_path}\n")
+                        _shutil_rc.rmtree(item_path)
 
 rule update_validation_workbook:
     """Regenerate the metadata validation workbook after all orientation decisions
