@@ -160,6 +160,28 @@ def validate_sheet_barcodes(sheet_path, tolerance=1):
                         conflict_rows[pair2["row"]].add("i7")
                         conflict_rows[pair2["row"]].add("i5")
 
+        # BCL Convert performs a per-index distance check independently of the
+        # combined check above. If ≥2 samples share an identical i5 barcode
+        # while any has BMI2>0, BCL Convert rejects the sheet (distance=0 fails
+        # its >2*BMI2 threshold), even when i7 separation is sufficient.
+        # Flag these so --fix sets BMI2=0, telling BCL Convert to use i7 alone.
+        i5_to_pairs = defaultdict(list)
+        for pair in index_pairs:
+            if pair["i5"] and pair["bmi2"] is not None and pair["bmi2"] > 0:
+                i5_to_pairs[pair["i5"]].append(pair)
+        for i5_seq, group in i5_to_pairs.items():
+            if len(group) >= 2:
+                sample_names = [p["sample"] for p in group]
+                msg = (
+                    f"Lane {lane}: {len(group)} samples share identical i5 barcode "
+                    f"{i5_seq} with BarcodeMismatchesIndex2>0 "
+                    f"({', '.join(sample_names)}). "
+                    f"BCL Convert requires BarcodeMismatchesIndex2=0 for shared i5 barcodes."
+                )
+                errors.append(msg)
+                for pair in group:
+                    conflict_rows[pair["row"]].add("i5")
+
     return len(errors) == 0, errors, config_id, conflict_rows
 
 

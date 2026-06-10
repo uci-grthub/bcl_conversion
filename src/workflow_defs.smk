@@ -1636,13 +1636,14 @@ def get_project_plot_targets(project, lane_filter=None, order_id=None):
                 barcode = f"{index1}-{index2}" if index2 else index1
                 position = str(row.get('Position', f"P{idx+1:03d}")).strip()
 
+                output_project = PROJECT_RENAME_MAP.get((config_id, orig_project), orig_project)
                 if is_parse_or_10x(orig_project):
                     if not sample_name or sample_name.lower() == 'nan':
                         continue
-                    path = f"{orig_project}/{sample_name}"
+                    path = f"{output_project}/{sample_name}"
                 else:
                     stem = f"{run}-L{lane_val}-G{group}-{position}-{barcode}"
-                    path = f"{orig_project}/{stem}"
+                    path = f"{output_project}/{stem}"
 
                 targets.append(f"results/{config_id}/{path}-mean_phred.png")
                 targets.append(f"results/{config_id}/{path}-base_comp.png")
