@@ -192,8 +192,18 @@ fi
 # ---------------------------------------------------------------------------
 # Collect source paths and track order_ids
 # ---------------------------------------------------------------------------
-SYNC_PATHS=()
+# FASTQ_PATHS: large output/{config_id}/{project}/ dirs synced with --ignore-existing
+#              so already-transferred FASTQs are never re-sent.
+# META_PATHS:  everything else (sample sheets, renaming maps, sentinels, results,
+#              DRAGEN metadata) synced without --ignore-existing so updated files
+#              overwrite stale copies on the destination.
+# ---------------------------------------------------------------------------
+FASTQ_PATHS=()
+META_PATHS=()
+SHEET_PATHS=()    # sample sheets + renaming maps: force-overwrite via checksum
 SEEN_ORDERS=()
+SEEN_CONFIGS=()
+PROJECT_DIRS=()   # tracks (config_id, project) pairs for results/ syncing
 
 for triple in "${TRIPLES[@]}"; do
     IFS=$'\t' read -r CID GRP OID <<< "$triple"
@@ -202,12 +212,14 @@ for triple in "${TRIPLES[@]}"; do
         # Direct config_id [project] mode
         if [[ -n "$PROJECT" ]]; then
             dir="output/$CID/$PROJECT"
-            [[ -d "$dir" ]] && SYNC_PATHS+=("./$dir")
+            [[ -d "$dir" ]] && FASTQ_PATHS+=("./$dir")
+            PROJECT_DIRS+=("$CID/$PROJECT")
         else
             while IFS= read -r -d '' d; do
                 proj="$(basename "$d")"
                 [[ "$proj" == "Reports" || "$proj" == "Logs" || "$proj" == "flexbar" ]] && continue
-                SYNC_PATHS+=("./$d")
+                FASTQ_PATHS+=("./$d")
+                PROJECT_DIRS+=("$CID/$proj")
             done < <(find "output/$CID" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
         fi
     elif [[ -n "$GRP" ]]; then
@@ -215,7 +227,8 @@ for triple in "${TRIPLES[@]}"; do
         echo "--- config_id='$CID' group='$GRP'${OID:+ order_id='$OID'} ---"
         found=false
         while IFS= read -r -d '' d; do
-            SYNC_PATHS+=("./$d")
+            FASTQ_PATHS+=("./$d")
+            PROJECT_DIRS+=("$CID/$(basename "$d")")
             found=true
         done < <(find "output/$CID" -mindepth 1 -maxdepth 1 -type d -name "*_G${GRP}" -print0 2>/dev/null)
         if ! $found; then
@@ -227,7 +240,8 @@ for triple in "${TRIPLES[@]}"; do
         while IFS= read -r -d '' d; do
             proj="$(basename "$d")"
             [[ "$proj" == "Reports" || "$proj" == "Logs" || "$proj" == "flexbar" ]] && continue
-            SYNC_PATHS+=("./$d")
+            FASTQ_PATHS+=("./$d")
+            PROJECT_DIRS+=("$CID/$proj")
         done < <(find "output/$CID" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
     fi
 
@@ -238,28 +252,91 @@ for triple in "${TRIPLES[@]}"; do
         done
         $already_seen || SEEN_ORDERS+=("$OID")
     fi
+
+    # Per-config-id files: sentinels, DRAGEN metadata, DRAGEN Logs/Reports dirs,
+    # and generated sample sheets / renaming maps.
+    # Added once per unique config_id regardless of how many groups are in the triple list.
+    already_seen_config=false
+    for seen_cid in "${SEEN_CONFIGS[@]:-}"; do
+        [[ "$seen_cid" == "$CID" ]] && already_seen_config=true && break
+    done
+    if ! $already_seen_config; then
+        SEEN_CONFIGS+=("$CID")
+        # Sentinel files
+        [[ -f ".output/$CID/.done" ]]    && META_PATHS+=("./.output/$CID/.done")
+        [[ -f ".output_rc/$CID/.done" ]] && META_PATHS+=("./.output_rc/$CID/.done")
+        while IFS= read -r -d '' f; do
+            META_PATHS+=("./$f")
+        done < <(find "logs/$CID" -name "*.done" -print0 2>/dev/null)
+        # orientation_decision JSON (input to analyze_undetermined_rc)
+        [[ -f "logs/$CID/orientation_decision_${CID}.json" ]] && META_PATHS+=("./logs/$CID/orientation_decision_${CID}.json")
+        # Hidden DRAGEN output Reports dirs (contain Top_Unknown_Barcodes.csv read by analyze_undetermined rules)
+        [[ -d ".output/$CID/Reports" ]]    && META_PATHS+=("./.output/$CID/Reports")
+        [[ -d ".output_rc/$CID/Reports" ]] && META_PATHS+=("./.output_rc/$CID/Reports")
+        # analyze_undetermined output CSVs
+        [[ -f "results/undetermined_indices/$CID.csv" ]]      && META_PATHS+=("./results/undetermined_indices/$CID.csv")
+        [[ -f "results/undetermined_indices/${CID}_rc.csv" ]] && META_PATHS+=("./results/undetermined_indices/${CID}_rc.csv")
+        # DRAGEN per-lane Logs and Reports directories (visible output/)
+        [[ -d "output/$CID/Logs" ]]    && META_PATHS+=("./output/$CID/Logs")
+        [[ -d "output/$CID/Reports" ]] && META_PATHS+=("./output/$CID/Reports")
+        # DRAGEN per-lane metadata files
+        for f in "output/$CID/dragen-replay.json" "output/$CID/dragen.metrics.json" "output/$CID/dragen.time_metrics.csv"; do
+            [[ -f "$f" ]] && META_PATHS+=("./$f")
+        done
+        # Generated sample sheets and renaming map — copied with cp -f to force
+        # overwrite regardless of timestamp or size (destination can appear newer
+        # after a prior rsync when index assignments have changed).
+        while IFS= read -r -d '' f; do
+            SHEET_PATHS+=("./$f")
+        done < <(find "results/$CID" -maxdepth 1 \( -name "SampleSheet_*.csv" -o -name "renaming_map_*.csv" \) -print0 2>/dev/null)
+    fi
 done
 
-# Order-level report dirs (all discovered order_ids, not just explicit --order-id)
-for oid in "${SEEN_ORDERS[@]:-}"; do
-    dir="Reports/order_${oid}"
-    [[ -d "$dir" ]] && SYNC_PATHS+=("./$dir")
+# Per-project fastp results directories (updated when FASTQs are reprocessed)
+for cid_proj in "${PROJECT_DIRS[@]:-}"; do
+    IFS='/' read -r CID PROJ <<< "$cid_proj"
+    [[ -d "results/$CID/$PROJ" ]] && META_PATHS+=("./results/$CID/$PROJ")
 done
 
-if [[ ${#SYNC_PATHS[@]} -eq 0 ]]; then
+
+if [[ ${#FASTQ_PATHS[@]} -eq 0 && ${#META_PATHS[@]} -eq 0 ]]; then
     echo "No output directories found to sync."
     exit 0
 fi
 
-RSYNC_OPTS=(-av --relative --ignore-existing)
-$DRY_RUN && RSYNC_OPTS+=(-n)
-
 echo ""
 echo "Syncing to: $DEST"
-echo "Paths:"
-for p in "${SYNC_PATHS[@]}"; do
-    echo "  $p"
-done
-echo ""
 
-rsync "${RSYNC_OPTS[@]}" "${SYNC_PATHS[@]}" "$DEST/"
+if [[ ${#FASTQ_PATHS[@]} -gt 0 ]]; then
+    FASTQ_OPTS=(-av --relative --ignore-existing)
+    $DRY_RUN && FASTQ_OPTS+=(-n)
+    echo ""
+    echo "FASTQs (--ignore-existing):"
+    for p in "${FASTQ_PATHS[@]}"; do echo "  $p"; done
+    echo ""
+    rsync "${FASTQ_OPTS[@]}" "${FASTQ_PATHS[@]}" "$DEST/"
+fi
+
+if [[ ${#META_PATHS[@]} -gt 0 ]]; then
+    META_OPTS=(-av --relative)
+    $DRY_RUN && META_OPTS+=(-n)
+    echo ""
+    echo "Metadata / results (overwrite):"
+    for p in "${META_PATHS[@]}"; do echo "  $p"; done
+    echo ""
+    rsync "${META_OPTS[@]}" "${META_PATHS[@]}" "$DEST/"
+fi
+
+if [[ ${#SHEET_PATHS[@]} -gt 0 ]]; then
+    echo ""
+    echo "Sample sheets / renaming maps (force overwrite):"
+    for p in "${SHEET_PATHS[@]}"; do
+        rel="${p#./}"
+        dst="$DEST/$rel"
+        echo "  $rel"
+        if ! $DRY_RUN; then
+            mkdir -p "$(dirname "$dst")"
+            cp -f "$rel" "$dst"
+        fi
+    done
+fi
