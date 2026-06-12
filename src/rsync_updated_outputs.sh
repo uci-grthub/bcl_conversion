@@ -298,6 +298,29 @@ for cid_proj in "${PROJECT_DIRS[@]:-}"; do
     [[ -d "results/$CID/$PROJ" ]] && META_PATHS+=("./results/$CID/$PROJ")
 done
 
+# Run-level metadata .xlsx files (force-overwrite, same as sample sheets)
+METADATA_FILE="$(python3 - <<'PYEOF'
+import sys, os
+for cfg in ("snakemake_config_project.yaml", "snakemake_config.yaml"):
+    if os.path.exists(cfg):
+        try:
+            import yaml as _yaml
+            with open(cfg) as f:
+                data = _yaml.safe_load(f)
+            mf = data.get("metadata", "").strip()
+            if mf:
+                print(mf)
+                sys.exit(0)
+        except Exception:
+            pass
+print("", end="")
+PYEOF
+)"
+if [[ -n "$METADATA_FILE" && -f "$METADATA_FILE" ]]; then
+    SHEET_PATHS+=("./$METADATA_FILE")
+    validated="$(dirname "$METADATA_FILE")/metadata_validation_$(basename "$METADATA_FILE")"
+    [[ -f "$validated" ]] && SHEET_PATHS+=("./$validated")
+fi
 
 if [[ ${#FASTQ_PATHS[@]} -eq 0 && ${#META_PATHS[@]} -eq 0 ]]; then
     echo "No output directories found to sync."

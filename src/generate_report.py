@@ -975,23 +975,30 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 
         for config_id in lane_configs:
             # Look for plots in fastp_plots_base_dir/{config_id}/{project}/{stem}-*.png
-            # Use orig_project_name for file lookups if provided (fastp runs before rename)
-            plot_dir = os.path.join(fastp_plots_base_dir, config_id, fastp_lookup_name)
-            expected = [
-                os.path.join(plot_dir, f"{stem}-mean_phred.png"),
-                os.path.join(plot_dir, f"{stem}-base_comp.png"),
-                # Optional third plot type if present (future-proof): pick any third matching pattern
-            ]
+            # Try renamed project dir first, then original (fastp may have run before rename).
+            plot_lookup_names = []
+            for name in (project, orig_project_name):
+                if name and name not in plot_lookup_names:
+                    plot_lookup_names.append(name)
 
-            # If fewer than 3 expected plots exist, try to find additional matching images
-            candidates = [p for p in expected if os.path.exists(p)]
-            if len(candidates) < 3 and os.path.exists(plot_dir):
-                wildcard_matches = sorted(glob.glob(os.path.join(plot_dir, f"{stem}-*.png")))
-                for m in wildcard_matches:
-                    if m not in candidates:
-                        candidates.append(m)
-                    if len(candidates) >= 3:
-                        break
+            candidates = []
+            plot_dir = os.path.join(fastp_plots_base_dir, config_id, plot_lookup_names[0])
+            for lookup_name in plot_lookup_names:
+                candidate_dir = os.path.join(fastp_plots_base_dir, config_id, lookup_name)
+                found = [p for p in [
+                    os.path.join(candidate_dir, f"{stem}-mean_phred.png"),
+                    os.path.join(candidate_dir, f"{stem}-base_comp.png"),
+                ] if os.path.exists(p)]
+                if len(found) < 3 and os.path.exists(candidate_dir):
+                    for m in sorted(glob.glob(os.path.join(candidate_dir, f"{stem}-*.png"))):
+                        if m not in found:
+                            found.append(m)
+                        if len(found) >= 3:
+                            break
+                if found:
+                    candidates = found
+                    plot_dir = candidate_dir
+                    break
 
             print(f"Checking for plots in {plot_dir} for {stem}")
             for c in candidates:
