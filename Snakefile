@@ -390,32 +390,8 @@ CONFIG_IDS = list(SAMPLE_SHEETS_DICT.keys()) if SAMPLE_SHEETS_DICT else []
 if not CONFIG_IDS and detected_lanes:
     CONFIG_IDS = [f"lane{l}" for l in detected_lanes]
 
-# Optional preferred bcl_convert sequencing by config_id.
-# Example in config YAML:
-# bcl_convert_order:
-#   - lane3
-#   - lane1
-#   - lane2
-_preferred_bcl_order = [str(x) for x in config.get("bcl_convert_order", [])]
-_preferred_bcl_order = [cid for cid in _preferred_bcl_order if cid in CONFIG_IDS]
-BCL_CONVERT_ORDER = _preferred_bcl_order + [cid for cid in CONFIG_IDS if cid not in _preferred_bcl_order]
-# Only chain sequential dependencies when the user explicitly provided an order.
-# An empty bcl_convert_order means "run all lanes in parallel".
-if _preferred_bcl_order:
-    BCL_CONVERT_PREV = {
-        cid: (BCL_CONVERT_ORDER[i - 1] if i > 0 else None)
-        for i, cid in enumerate(BCL_CONVERT_ORDER)
-    }
-else:
-    BCL_CONVERT_PREV = {}
-
-def get_prev_bcl_done(wildcards):
-    prev_cid = BCL_CONVERT_PREV.get(wildcards.config_id)
-    if not prev_cid:
-        return []
-    if os.path.exists(f".output/{wildcards.config_id}/.done"):
-        return []
-    return [maybe_ancient(f".output/{prev_cid}/.done")]
+# BCL Convert now runs as a single all-lane invocation (rule bcl_convert_all),
+# so the former per-lane `bcl_convert_order` sequencing is obsolete and removed.
 
 FASTP_THREADS = config.get("fastp_threads", 4)
 
@@ -2485,32 +2461,54 @@ rule validate_barcode_hamming_distances:
         ) > {log} 2>&1
         """
 
-rule bcl_convert:
+rule generate_combined_samplesheet:
+    """Merge the validated per-lane SampleSheets into one all-lane sheet.
+
+    Each row already carries its own Lane, OverrideCycles and per-sample
+    BarcodeMismatchesIndex1/2, so this concatenates the [BCLConvert_Data]
+    sections and unions the otherwise run-global [BCLConvert_Settings] block
+    (see src/combine_samplesheets.py).
+    """
     input:
-        sample_sheet=lambda wildcards: f"results/{wildcards.config_id}/SampleSheet_{wildcards.config_id}_validated.csv",
-        renaming_map = maybe_ancient("results/{config_id}/renaming_map_{config_id}.csv"),
-        data_dir=DATA_DIR,
-        _sheet_done=lambda wildcards: maybe_ancient(f"logs/{wildcards.config_id}/generate_samplesheets_{wildcards.config_id}.done"),
-        run_info = "src/RunInfo_nn.xml",
-        prev_done = get_prev_bcl_done
+        sheets = expand("results/{config_id}/SampleSheet_{config_id}_validated.csv", config_id=CONFIG_IDS),
+        _sheet_done = expand("logs/{config_id}/generate_samplesheets_{config_id}.done", config_id=CONFIG_IDS)
     output:
-        done_file = touch(".output/{config_id}/.done")
+        combined = "results/combined/SampleSheet_combined_validated.csv"
     log:
-        "logs/{config_id}/bcl_convert_{config_id}.log"
+        "logs/combined/generate_combined_samplesheet.log"
+    shell:
+        """
+        python3 src/combine_samplesheets.py {output.combined} {input.sheets} > {log} 2>&1
+        """
+
+rule bcl_convert_all:
+    """Single DRAGEN BCL Convert invocation across ALL lanes.
+
+    Replaces the former per-lane DRAGEN runs (no --bcl-only-lane): DRAGEN reads
+    the Lane column from the combined sheet and demultiplexes every lane in one
+    process. Writes a single run-level staging dir; the per-lane `bcl_convert`
+    rule fans these outputs out into `.output/{config_id}/` so the downstream
+    per-lane workflow is unchanged.
+    """
+    input:
+        sample_sheet = "results/combined/SampleSheet_combined_validated.csv",
+        data_dir = DATA_DIR,
+        run_info = "src/RunInfo_nn.xml"
+    output:
+        done_file = touch(".output/.combined/.done")
+    log:
+        "logs/combined/bcl_convert_all.log"
     benchmark:
-        "benchmarks/bcl_convert_{config_id}.bench"
-    wildcard_constraints:
-        config_id = "[^/]+"
+        "benchmarks/bcl_convert_all.bench"
     priority: 100
     resources:
         serial_operation=1
     threads: 1
     params:
-        lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', ''),
         run_info_path = "src/RunInfo_nn.xml",
         tiles = TILES,
         scratch_dir = SCRATCH_DIR,
-        keep_undetermined_configs = KEEP_UNDETERMINED_CONFIGS
+        parallel_tiles = config.get("bcl_num_parallel_tiles", 1)
     shell:
         """
         (
@@ -2519,34 +2517,14 @@ rule bcl_convert:
         }}
         trap cleanup INT TERM
 
-        run_dragen() {{
-            local sample_sheet_path="$1"
-            timeout 7200 dragen --bcl-conversion-only true \
-            --bcl-input-directory {input.data_dir} \
-            --output-directory "$dragen_out" \
-            --force \
-            --bcl-sampleproject-subdirectories true \
-            --sample-sheet "$sample_sheet_path" \
-            --strict-mode false \
-            --bcl-only-lane {params.lane} \
-            --run-info {params.run_info_path} \
-            --bcl-num-parallel-tiles 1 \
-            --bcl-num-conversion-threads 8 \
-            --bcl-num-compression-threads 8 \
-            --bcl-num-decompression-threads 8 \
-            $tiles_arg
-        }}
-
-        # Masking is now handled by OverrideCycles in the sample sheet
-
         tiles_arg=""
         if [ ! -z "{params.tiles}" ]; then
             tiles_arg="--tiles {params.tiles}"
         fi
 
-        final_out=".output/{wildcards.config_id}"
+        final_out=".output/.combined"
         if [ ! -z "{params.scratch_dir}" ]; then
-            dragen_out="{params.scratch_dir}/{wildcards.config_id}"
+            dragen_out="{params.scratch_dir}/.combined"
         else
             dragen_out="$final_out"
         fi
@@ -2554,7 +2532,20 @@ rule bcl_convert:
         find "$dragen_out" -name "*.fastq.gz" -delete 2>/dev/null || true
         mkdir -p "$dragen_out"
 
-        run_dragen {input.sample_sheet}
+        # Masking is handled by per-row OverrideCycles in the sample sheet.
+        timeout 7200 dragen --bcl-conversion-only true \
+            --bcl-input-directory {input.data_dir} \
+            --output-directory "$dragen_out" \
+            --force \
+            --bcl-sampleproject-subdirectories true \
+            --sample-sheet {input.sample_sheet} \
+            --strict-mode false \
+            --run-info {params.run_info_path} \
+            --bcl-num-parallel-tiles {params.parallel_tiles} \
+            --bcl-num-conversion-threads 8 \
+            --bcl-num-compression-threads 8 \
+            --bcl-num-decompression-threads 8 \
+            $tiles_arg
 
         dragen_status=$?
         if [ $dragen_status -ne 0 ]; then
@@ -2581,39 +2572,45 @@ rule bcl_convert:
             echo "Scratch data removed after successful sync."
         fi
 
-        # Keep Undetermined reads if config is in keep_undetermined_configs or flexbar file exists.
-        keep_undetermined=false
-        echo "DEBUG keep_undetermined_configs='{params.keep_undetermined_configs}' config_id='{wildcards.config_id}'"
-        _keep_configs="{params.keep_undetermined_configs}"
-        for cfg in $_keep_configs; do
-            if [ "$cfg" = "{wildcards.config_id}" ]; then
-                keep_undetermined=true
-                break
-            fi
-        done
-        
-        if [ -f "metadata/flexbar_barcodes_{wildcards.config_id}.txt" ]; then
-            echo "Inline demux lane detected; preserving Undetermined reads."
-            keep_undetermined=true
-        fi
-
-        if [ -f "metadata/fqtk_barcodes_{wildcards.config_id}.tsv" ]; then
-            echo "fqtk demux lane detected; preserving Undetermined reads."
-            keep_undetermined=true
-        fi
-        
-        if [ "$keep_undetermined" = "true" ]; then
-            echo "Keeping Undetermined reads for {wildcards.config_id}."
-        else
-            find "$final_out" -name "Undetermined*" -delete
-            echo "Undetermined reads deleted"
-        fi
-        # Rename FASTQ files
-        src/run_rename.sh {wildcards.config_id} "$final_out" {input.renaming_map}
-
         trap - INT TERM
         touch {output.done_file}
         ) > {log} 2>&1
+        """
+
+rule bcl_convert:
+    """Per-lane fan-out from the single combined BCL Convert run.
+
+    Same output contract (.output/{config_id}/.done) as before, so everything
+    downstream is unchanged. Instead of running DRAGEN, it distributes this
+    lane's FASTQs/Undetermined/Reports out of the combined staging dir
+    (see src/bcl_fanout.py), applies the keep-Undetermined policy and renames.
+    """
+    input:
+        combined_done = ".output/.combined/.done",
+        sample_sheet = lambda wildcards: f"results/{wildcards.config_id}/SampleSheet_{wildcards.config_id}_validated.csv",
+        renaming_map = maybe_ancient("results/{config_id}/renaming_map_{config_id}.csv"),
+        _sheet_done = lambda wildcards: maybe_ancient(f"logs/{wildcards.config_id}/generate_samplesheets_{wildcards.config_id}.done")
+    output:
+        done_file = touch(".output/{config_id}/.done")
+    log:
+        "logs/{config_id}/bcl_convert_{config_id}.log"
+    benchmark:
+        "benchmarks/bcl_convert_{config_id}.bench"
+    wildcard_constraints:
+        config_id = "[^/]+"
+    priority: 100
+    threads: 1
+    params:
+        lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', ''),
+        keep_undetermined_configs = KEEP_UNDETERMINED_CONFIGS
+    shell:
+        """
+        python3 src/bcl_fanout.py \
+            {wildcards.config_id} {params.lane} \
+            ".output/.combined" ".output/{wildcards.config_id}" \
+            {input.renaming_map} \
+            --keep-undetermined-configs "{params.keep_undetermined_configs}" \
+            > {log} 2>&1
         """
 
 rule bcl_project_done:
