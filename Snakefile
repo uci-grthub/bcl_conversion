@@ -1799,7 +1799,8 @@ rule flexbar_per_config:
         barcodes_abs = lambda wildcards: os.path.abspath(f"metadata/flexbar_barcodes_{wildcards.config_id}.fasta"),
         adapter_abs = lambda wildcards, input: os.path.abspath(input.adapter),
         r1_abs = lambda wildcards, input: os.path.abspath(f".output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R1_001.fastq.gz"),
-        flexbar_bin = FLEXBAR_BIN
+        flexbar_bin = FLEXBAR_BIN,
+        retry_min_reads = config.get("flexbar_retry_min_reads", 1000000)
     shell:
         """
         (
@@ -1821,42 +1822,120 @@ rule flexbar_per_config:
             fi
         fi
 
-        # Build processed FASTA from raw tab-delimited barcodes.
-        awk -F'\t' '
-        NF >= 2 {{
-            name = $1
-            barcode = $2
-            gsub(/\r/, "", name)
-            gsub(/\r/, "", barcode)
-            gsub(/ /, "_", name)
-            gsub(/[^a-zA-Z0-9_]/, "", name)
-            gsub(/A/, "X", barcode)
-            gsub(/T/, "A", barcode)
-            gsub(/X/, "T", barcode)
-            gsub(/C/, "Y", barcode)
-            gsub(/G/, "C", barcode)
-            gsub(/Y/, "G", barcode)
-            reversed = ""
-            for (i = length(barcode); i >= 1; i--) {{
-                reversed = reversed substr(barcode, i, 1)
-            }}
-            print ">" name
-            print "NNNNN" reversed "NNNN"
-        }}
-        ' {params.raw_barcodes_abs} > {params.barcodes_abs}
+        # If any assigned barcode falls below this many reads after the primary
+        # run, retry with the opposite index orientation and keep whichever
+        # orientation assigns the most reads overall.
+        retry_min_reads={params.retry_min_reads}
 
-        "$flexbar_cmd" -r {params.r1_abs} -b {params.barcodes_abs} \
-            --barcode-trim-end LTAIL \
-            --barcode-error-rate 0 \
-            --adapters {params.adapter_abs} \
-            --adapter-error-rate 0.1 \
-            --adapter-min-overlap 1 \
-            --adapter-trim-end RIGHT \
-            --zip-output GZ \
-            --barcode-unassigned \
-            --min-read-length 15 \
-            --umi-tags \
-            --target {params.outdir}/flexbarOut -n {threads}
+        # Build the barcode FASTA from the raw tab-delimited barcodes.
+        # $1 = orientation: "rc" reverse-complements each listed barcode
+        # (historical default), "fwd" uses each barcode as listed. $2 = output FASTA.
+        build_barcode_fasta() {{
+            awk -F'\t' -v orient="$1" '
+            NF >= 2 {{
+                name = $1
+                barcode = $2
+                gsub(/\r/, "", name)
+                gsub(/\r/, "", barcode)
+                gsub(/ /, "_", name)
+                gsub(/[^a-zA-Z0-9_]/, "", name)
+                if (orient == "rc") {{
+                    gsub(/A/, "X", barcode)
+                    gsub(/T/, "A", barcode)
+                    gsub(/X/, "T", barcode)
+                    gsub(/C/, "Y", barcode)
+                    gsub(/G/, "C", barcode)
+                    gsub(/Y/, "G", barcode)
+                    reversed = ""
+                    for (i = length(barcode); i >= 1; i--) {{
+                        reversed = reversed substr(barcode, i, 1)
+                    }}
+                    barcode = reversed
+                }}
+                print ">" name
+                print "NNNNN" barcode "NNNN"
+            }}
+            ' {params.raw_barcodes_abs} > "$2"
+        }}
+
+        # Run flexbar with the shared arguments. $1 = barcode FASTA, $2 = target prefix.
+        run_flexbar() {{
+            "$flexbar_cmd" -r {params.r1_abs} -b "$1" \
+                --barcode-trim-end LTAIL \
+                --barcode-error-rate 0 \
+                --adapters {params.adapter_abs} \
+                --adapter-error-rate 0.1 \
+                --adapter-min-overlap 1 \
+                --adapter-trim-end RIGHT \
+                --zip-output GZ \
+                --barcode-unassigned \
+                --min-read-length 15 \
+                --umi-tags \
+                --target "$2" -n {threads}
+        }}
+
+        # Emit "barcode<TAB>written_reads" for each assigned (non-unassigned)
+        # barcode parsed from a flexbar log. $1 = log path.
+        assigned_counts() {{
+            awk '
+            /Read file:/ {{
+                name=$NF
+                sub(/.*flexbarOut_barcode_/,"",name)
+                sub(/\.fastq\.gz$/,"",name)
+                if ($NF ~ /flexbarOut_barcode_/) cur=name; else cur=""
+                next
+            }}
+            /written reads/ {{
+                if (cur!="" && cur!="unassigned") print cur"\t"$3
+                cur=""
+            }}
+            ' "$1"
+        }}
+
+        # Summarize a flexbar log into globals TOTAL_ASSIGNED and MIN_ASSIGNED
+        # (MIN_ASSIGNED is empty when no assigned barcodes are present). $1 = log path.
+        summarize_log() {{
+            TOTAL_ASSIGNED=0
+            MIN_ASSIGNED=""
+            while IFS=$'\t' read -r _bc _cnt; do
+                [ -n "$_cnt" ] || continue
+                TOTAL_ASSIGNED=$((TOTAL_ASSIGNED + _cnt))
+                if [ -z "$MIN_ASSIGNED" ] || [ "$_cnt" -lt "$MIN_ASSIGNED" ]; then
+                    MIN_ASSIGNED=$_cnt
+                fi
+            done < <(assigned_counts "$1")
+        }}
+
+        # --- Primary run: historical reverse-complement orientation ---
+        build_barcode_fasta rc {params.barcodes_abs}
+        run_flexbar {params.barcodes_abs} {params.outdir}/flexbarOut
+        summarize_log {params.outdir}/flexbarOut.log
+        primary_total=$TOTAL_ASSIGNED
+        primary_min=$MIN_ASSIGNED
+        echo "Primary (RC) orientation: total assigned=$primary_total, min per-barcode=${{primary_min:-NA}}"
+
+        # --- Conditional retry: opposite (as-listed) orientation ---
+        if [ -z "$primary_min" ] || [ "$primary_min" -lt "$retry_min_reads" ]; then
+            echo "An assigned barcode is below ${{retry_min_reads}} reads; retrying with the opposite index orientation."
+            alt_dir={params.outdir}/_rc_alt
+            alt_fasta={params.outdir}/flexbar_barcodes_alt.fasta
+            rm -rf "$alt_dir"
+            mkdir -p "$alt_dir"
+            build_barcode_fasta fwd "$alt_fasta"
+            run_flexbar "$alt_fasta" "$alt_dir"/flexbarOut
+            summarize_log "$alt_dir"/flexbarOut.log
+            alt_total=$TOTAL_ASSIGNED
+            echo "Alt (as-listed) orientation: total assigned=$alt_total"
+            if [ "$alt_total" -gt "$primary_total" ]; then
+                echo "Adopting alt orientation ($alt_total > $primary_total reads assigned)."
+                rm -f {params.outdir}/flexbarOut*.fastq.gz {params.outdir}/flexbarOut.log
+                mv "$alt_dir"/flexbarOut* {params.outdir}/
+                cp "$alt_fasta" {params.barcodes_abs}
+            else
+                echo "Retaining primary RC orientation ($primary_total >= $alt_total reads assigned)."
+            fi
+            rm -rf "$alt_dir" "$alt_fasta"
+        fi
 
         # Prepare headers and create each R2 with seqkit's internal threading.
         for r1_out in {params.outdir}/flexbarOut_barcode_*.fastq.gz; do
