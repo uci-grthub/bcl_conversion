@@ -1035,7 +1035,7 @@ rule flexbar_project_link:
 
                 while retry_count < max_retries and not share_url:
                     retry_count += 1
-                    wait_time = 3 * (2 ** (retry_count - 1))
+                    wait_time = min(3 * (2 ** (retry_count - 1)), 60)
                     if rate_limited: time.sleep(10)
                     try:
                         cmd = ['curl', '-s', '-w', '\nHTTP_CODE:%{http_code}',
@@ -1815,9 +1815,9 @@ rule flexbar_per_config:
 
         # Build processed FASTA from raw tab-delimited barcodes.
         awk -F'\t' '
-        NF >= 3 {{
+        NF >= 2 {{
             name = $1
-            barcode = $3
+            barcode = $2
             gsub(/\r/, "", name)
             gsub(/\r/, "", barcode)
             gsub(/ /, "_", name)
@@ -3470,7 +3470,7 @@ rule project_link:
                 
                 while retry_count < max_retries and not share_url:
                     retry_count += 1
-                    wait_time = 3 * (2 ** (retry_count - 1))
+                    wait_time = min(3 * (2 ** (retry_count - 1)), 60)
                     if rate_limited: time.sleep(10)
                     
                     try:
