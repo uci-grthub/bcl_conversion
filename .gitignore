@@ -34,3 +34,5 @@ scripts/parse-upload-1.2.1.sh
 scripts/parse-upload-1.2.1.py
 *.log
 .claude/
+recover_flexbar_r2.sh
+recover_lane6_r2.sh
