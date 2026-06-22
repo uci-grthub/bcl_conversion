@@ -1515,10 +1515,18 @@ rule compile_read_counts:
 
             config_id = os.path.basename(map_path).replace("renaming_map_", "").replace(".csv", "")
             
-            # Read Demultiplex_Stats.csv for this config_id
-            demux_stats_path = os.path.join("output", config_id, "Reports", "Demultiplex_Stats.csv")
-            if not os.path.exists(demux_stats_path):
-                print(f"Skipping missing Demultiplex_Stats.csv: {demux_stats_path}")
+            # Read Demultiplex_Stats.csv for this config_id.
+            # Prefer the renamed/organized copy under output/, but fall back to the
+            # raw DRAGEN output under .output/ — some lanes (e.g. per-group demultiplexed
+            # lanes) never get a Reports/ dir copied into output/, so the renamed copy is
+            # absent even though the raw stats exist and carry the same Sample_Project/SampleID.
+            demux_stats_candidates = [
+                os.path.join("output", config_id, "Reports", "Demultiplex_Stats.csv"),
+                os.path.join(".output", config_id, "Reports", "Demultiplex_Stats.csv"),
+            ]
+            demux_stats_path = next((p for p in demux_stats_candidates if os.path.exists(p)), None)
+            if demux_stats_path is None:
+                print(f"Skipping missing Demultiplex_Stats.csv: tried {', '.join(demux_stats_candidates)}")
                 continue
             
             try:
@@ -1791,7 +1799,9 @@ rule flexbar_per_config:
         barcodes_abs = lambda wildcards: os.path.abspath(f"metadata/flexbar_barcodes_{wildcards.config_id}.fasta"),
         adapter_abs = lambda wildcards, input: os.path.abspath(input.adapter),
         r1_abs = lambda wildcards, input: os.path.abspath(f".output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R1_001.fastq.gz"),
-        flexbar_bin = FLEXBAR_BIN
+        flexbar_bin = FLEXBAR_BIN,
+        retry_min_reads = config.get("flexbar_retry_min_reads", 1000000),
+        barcode_leader = config.get("flexbar_barcode_leader_n", 0)
     shell:
         """
         (
@@ -1813,42 +1823,153 @@ rule flexbar_per_config:
             fi
         fi
 
-        # Build processed FASTA from raw tab-delimited barcodes.
-        awk -F'\t' '
-        NF >= 2 {{
-            name = $1
-            barcode = $2
-            gsub(/\r/, "", name)
-            gsub(/\r/, "", barcode)
-            gsub(/ /, "_", name)
-            gsub(/[^a-zA-Z0-9_]/, "", name)
-            gsub(/A/, "X", barcode)
-            gsub(/T/, "A", barcode)
-            gsub(/X/, "T", barcode)
-            gsub(/C/, "Y", barcode)
-            gsub(/G/, "C", barcode)
-            gsub(/Y/, "G", barcode)
-            reversed = ""
-            for (i = length(barcode); i >= 1; i--) {{
-                reversed = reversed substr(barcode, i, 1)
-            }}
-            print ">" name
-            print "NNNNN" reversed "NNNN"
-        }}
-        ' {params.raw_barcodes_abs} > {params.barcodes_abs}
 
-        "$flexbar_cmd" -r {params.r1_abs} -b {params.barcodes_abs} \
-            --barcode-trim-end LTAIL \
-            --barcode-error-rate 0 \
-            --adapters {params.adapter_abs} \
-            --adapter-error-rate 0.1 \
-            --adapter-min-overlap 1 \
-            --adapter-trim-end RIGHT \
-            --zip-output GZ \
-            --barcode-unassigned \
-            --min-read-length 15 \
-            --umi-tags \
-            --target {params.outdir}/flexbarOut -n {threads}
+        # If any assigned barcode falls below this many reads after the primary
+        # run, retry with the opposite index orientation and keep whichever
+        # orientation assigns the most reads overall.
+        retry_min_reads={params.retry_min_reads}
+
+        # Build the barcode FASTA from the raw tab-delimited barcodes.
+        # $1 = orientation: "rc" reverse-complements each listed barcode
+        # (historical default), "fwd" uses each barcode as listed. $2 = output FASTA.
+        #
+        # The pattern is "<lead N's><barcode>", matched at the read start (LTAIL).
+        # `lead` is the number of leading bases (e.g. a UMI) before the inline
+        # barcode; it comes from config.flexbar_barcode_leader_n and defaults to 0
+        # because the active KY26SPI libraries carry the 6 bp index at R1 position 1
+        # with no leader. A non-zero leader was only correct for the PAREseq (U5I6)
+        # libraries, which have since moved to BCL Convert inline extraction.
+        build_barcode_fasta() {{
+            awk -F'\t' -v orient="$1" -v lead="{params.barcode_leader}" '
+            NF >= 2 {{
+                name = $1
+                barcode = $2
+                gsub(/\r/, "", name)
+                gsub(/\r/, "", barcode)
+                gsub(/ /, "_", name)
+                gsub(/[^a-zA-Z0-9_]/, "", name)
+                if (orient == "rc") {{
+                    gsub(/A/, "X", barcode)
+                    gsub(/T/, "A", barcode)
+                    gsub(/X/, "T", barcode)
+                    gsub(/C/, "Y", barcode)
+                    gsub(/G/, "C", barcode)
+                    gsub(/Y/, "G", barcode)
+                    reversed = ""
+                    for (i = length(barcode); i >= 1; i--) {{
+                        reversed = reversed substr(barcode, i, 1)
+                    }}
+                    barcode = reversed
+                }}
+                leader = ""
+                for (i = 0; i < lead + 0; i++) leader = leader "N"
+                print ">" name
+                print leader barcode
+            }}
+            ' {params.raw_barcodes_abs} > "$2"
+        }}
+
+        # Run flexbar with the shared arguments. $1 = barcode FASTA, $2 = target prefix.
+        run_flexbar() {{
+            "$flexbar_cmd" -r {params.r1_abs} -b "$1" \
+                --barcode-trim-end LTAIL \
+                --barcode-error-rate 0 \
+                --adapters {params.adapter_abs} \
+                --adapter-error-rate 0.1 \
+                --adapter-min-overlap 1 \
+                --adapter-trim-end RIGHT \
+                --zip-output GZ \
+                --barcode-unassigned \
+                --min-read-length 15 \
+                --umi-tags \
+                --target "$2" -n {threads}
+        }}
+
+        # Emit "barcode<TAB>written_reads" for each assigned (non-unassigned)
+        # barcode parsed from a flexbar log. $1 = log path.
+        assigned_counts() {{
+            awk '
+            /Read file:/ {{
+                name=$NF
+                sub(/.*flexbarOut_barcode_/,"",name)
+                sub(/\.fastq\.gz$/,"",name)
+                if ($NF ~ /flexbarOut_barcode_/) cur=name; else cur=""
+                next
+            }}
+            /written reads/ {{
+                if (cur!="" && cur!="unassigned") print cur"\t"$3
+                cur=""
+            }}
+            ' "$1"
+        }}
+
+        # Summarize a flexbar log into globals TOTAL_ASSIGNED and MAX_ASSIGNED
+        # (MAX_ASSIGNED is the highest per-barcode read count, empty when no
+        # assigned barcodes are present). $1 = log path.
+        summarize_log() {{
+            TOTAL_ASSIGNED=0
+            MAX_ASSIGNED=""
+            while IFS=$'\t' read -r _bc _cnt; do
+                [ -n "$_cnt" ] || continue
+                TOTAL_ASSIGNED=$((TOTAL_ASSIGNED + _cnt))
+                if [ -z "$MAX_ASSIGNED" ] || [ "$_cnt" -gt "$MAX_ASSIGNED" ]; then
+                    MAX_ASSIGNED=$_cnt
+                fi
+            done < <(assigned_counts "$1")
+        }}
+
+        # --- Primary run: forward (as-listed) orientation ---
+        build_barcode_fasta fwd {params.barcodes_abs}
+        run_flexbar {params.barcodes_abs} {params.outdir}/flexbarOut
+        summarize_log {params.outdir}/flexbarOut.log
+        primary_total=$TOTAL_ASSIGNED
+        primary_max=$MAX_ASSIGNED
+        echo "Primary (forward) orientation: total assigned=$primary_total, max per-barcode=${{primary_max:-NA}}"
+
+        # An orientation is "good" if at least one sample exceeds the threshold.
+        # If the primary orientation already has such a sample, proceed with it
+        # and skip the second flexbar pass. Otherwise try the opposite orientation
+        # and proceed with it if it has a sample above the threshold; if neither
+        # orientation qualifies, fall back to whichever assigned the most reads.
+        if [ -n "$primary_max" ] && [ "$primary_max" -gt "$retry_min_reads" ]; then
+            echo "Primary orientation has a sample above ${{retry_min_reads}} reads; proceeding with it."
+        else
+            echo "No primary sample exceeds ${{retry_min_reads}} reads; trying the opposite index orientation."
+            alt_dir={params.outdir}/_rc_alt
+            alt_fasta={params.outdir}/flexbar_barcodes_alt.fasta
+            rm -rf "$alt_dir"
+            mkdir -p "$alt_dir"
+            build_barcode_fasta rc "$alt_fasta"
+            run_flexbar "$alt_fasta" "$alt_dir"/flexbarOut
+            summarize_log "$alt_dir"/flexbarOut.log
+            alt_total=$TOTAL_ASSIGNED
+            alt_max=$MAX_ASSIGNED
+            echo "Alt (RC) orientation: total assigned=$alt_total, max per-barcode=${{alt_max:-NA}}"
+
+            adopt_alt=0
+            if [ -n "$alt_max" ] && [ "$alt_max" -gt "$retry_min_reads" ]; then
+                echo "Alt orientation has a sample above ${{retry_min_reads}} reads; adopting it."
+                adopt_alt=1
+            elif [ "${{alt_total:-0}}" -gt "${{primary_total:-0}}" ]; then
+                echo "Neither orientation exceeds ${{retry_min_reads}} reads; adopting alt by higher total assigned ($alt_total > $primary_total)."
+                adopt_alt=1
+            else
+                echo "Neither orientation exceeds ${{retry_min_reads}} reads; retaining primary forward orientation ($primary_total >= $alt_total)."
+            fi
+
+            if [ "$adopt_alt" -eq 1 ]; then
+                rm -f {params.outdir}/flexbarOut*.fastq.gz {params.outdir}/flexbarOut.log
+                mv "$alt_dir"/flexbarOut* {params.outdir}/
+                cp "$alt_fasta" {params.barcodes_abs}
+            fi
+            rm -rf "$alt_dir" "$alt_fasta"
+        fi
+
+        # Drop the large unassigned FASTQ now that orientation is settled. It is
+        # not needed downstream (read counts are read from the log, not the file)
+        # and mirrors fqtk_per_config's removal of unmatched reads. This keeps the
+        # scratch dir from accumulating tens of GB of unassigned reads.
+        rm -f {params.outdir}/flexbarOut_barcode_unassigned*.fastq.gz
 
         # Prepare headers and create each R2 with seqkit's internal threading.
         for r1_out in {params.outdir}/flexbarOut_barcode_*.fastq.gz; do
@@ -1956,6 +2077,28 @@ rule flexbar_stage_project:
                 dst_r2 = os.path.abspath(f"{proj_dir}/{stem}-R2.fastq.gz")
                 if os.path.exists(src_r2):
                     _move_fastq(src_r2, dst_r2)
+
+        # Sweep the flexbar scratch dir of any remaining FASTQs so demuxed reads
+        # live only in the project dir. This removes the unassigned file (if the
+        # demux rule kept one) and any orphans left by an interrupted or re-run
+        # flexbar pass (e.g. stranded _rc_alt scratch from the orientation retry).
+        # Logs and metadata (flexbarOut.log, size.txt, md5sum.txt) are preserved
+        # for the report rules.
+        flex_dir = os.path.abspath(f"output/{config_id}/flexbar")
+        alt_dir  = os.path.join(flex_dir, "_rc_alt")
+        if os.path.isdir(alt_dir):
+            shutil.rmtree(alt_dir, ignore_errors=True)
+            log_lines.append(f"Removed stale scratch dir {alt_dir}\n")
+        if os.path.isdir(flex_dir):
+            for fname in os.listdir(flex_dir):
+                if fname.endswith(".fastq.gz"):
+                    fpath = os.path.join(flex_dir, fname)
+                    try:
+                        os.remove(fpath)
+                        log_lines.append(f"Removed leftover scratch FASTQ {fpath}\n")
+                    except OSError as exc:
+                        log_lines.append(f"Could not remove {fpath}: {exc}\n")
+
         with open(log[0], 'w') as lf:
             lf.writelines(log_lines)
         with open(output.project_done, 'w') as f:
@@ -2641,8 +2784,14 @@ rule bcl_project_done:
     wildcard_constraints:
         config_id = "[^/]+",
         project = "[^/]+"
+    log:
+        "logs/{config_id}/bcl_project_done_{config_id}_{project}.log"
     run:
         import os, glob, shutil, json as json_mod
+
+        _logf = open(log[0], "w")
+        def _plog(msg):
+            print(msg, file=_logf, flush=True)
         config_id = wildcards.config_id
         new_project = wildcards.project
         old_project = PROJECT_RENAME_MAP_INV.get((config_id, new_project), new_project)
@@ -2681,26 +2830,39 @@ rule bcl_project_done:
         os.makedirs(new_dir, exist_ok=True)
 
         # Copy lane-level accessory files (Reports, Logs, dragen JSONs, etc.) to output.
-        # Only the first project (alphabetically) for this lane performs the copy to avoid
-        # concurrent bcl_project_done jobs racing to copy the same lane-level files.
-        # If any project on this lane selected RC orientation, prefer the RC lane-level
-        # reports so Demultiplex_Stats and related summaries reflect corrected counts.
-        # Skip old Sample_Project subdirectories — those are moved by their own bcl_project_done.
-        all_lane_projects = sorted([p for cid, p in CONFIG_PROJECT_PAIRS if cid == config_id])
-        if new_project == (all_lane_projects[0] if all_lane_projects else new_project):
-            accessory_base = ".output"
-            try:
-                if any(v.startswith("rc") for v in _dec.values()):
-                    accessory_base = ".output_rc"
-            except Exception:
-                pass
+        # Only the first project (alphabetically) performs the bulk copy to avoid concurrent
+        # bcl_project_done jobs racing on large lane-level dirs. The demultiplex Reports,
+        # however, are critical for read-count summaries, so EVERY project self-heals them
+        # if missing — this guards against the bulk copy having run before the RC pass
+        # populated its Reports/, or having failed silently (previously the .project_done
+        # sentinel was touched regardless, leaving empty read_counts for the whole lane).
+        dest_base = f"output/{config_id}"
+        dest_reports = os.path.join(dest_base, "Reports")
+        dest_stats = os.path.join(dest_reports, "Demultiplex_Stats.csv")
+        os.makedirs(dest_base, exist_ok=True)
 
-            staging = f"{accessory_base}/{config_id}"
-            if not os.path.isdir(staging):
-                staging = f".output/{config_id}"
-            dest_base = f"output/{config_id}"
-            os.makedirs(dest_base, exist_ok=True)
-            old_project_dirs = {p for cid, p in _CONFIG_PROJECT_PAIRS_RAW if cid == config_id}
+        # Choose the staging dir for the lane-level Reports. When any project on this lane
+        # selected RC orientation, the RC pass (which flips only the suspect projects'
+        # indexes) is authoritative for the WHOLE lane, so use .output_rc exclusively —
+        # falling back to .output here would republish the wrong-orientation zero counts
+        # that this hardening exists to prevent. The verification below turns a missing
+        # RC Reports into a retryable failure rather than silent bad data.
+        try:
+            _rc_won = any(v.startswith("rc") for v in _dec.values())
+        except Exception:
+            _rc_won = False
+        accessory_base = ".output_rc" if _rc_won else ".output"
+        staging = f"{accessory_base}/{config_id}"
+        _plog(f"RC won for lane: {_rc_won}; accessory source: {staging}")
+
+        old_project_dirs = {p for cid, p in _CONFIG_PROJECT_PAIRS_RAW if cid == config_id}
+        all_lane_projects = sorted([p for cid, p in CONFIG_PROJECT_PAIRS if cid == config_id])
+        is_primary_copier = new_project == (all_lane_projects[0] if all_lane_projects else new_project)
+
+        # Bulk accessory copy (primary project only). Skip old Sample_Project subdirs —
+        # those are moved by their own bcl_project_done.
+        if is_primary_copier and os.path.isdir(staging):
+            _plog(f"Primary copier for lane; copying accessory files from {staging}")
             for item in os.listdir(staging):
                 if item.startswith('.'):
                     continue
@@ -2709,14 +2871,38 @@ rule bcl_project_done:
                 if os.path.isdir(src_item) and item in old_project_dirs:
                     continue  # handled by that project's bcl_project_done
                 if os.path.isdir(src_item):
-                    if accessory_base == ".output_rc":
-                        # Force-overwrite so RC-corrected Demultiplex_Stats and summaries
-                        # replace any stale copy previously written from .output.
-                        shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
-                    else:
-                        shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
+                    # Force-overwrite so RC-corrected Demultiplex_Stats and summaries
+                    # replace any stale copy previously written from .output.
+                    shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
                 else:
                     shutil.copy2(src_item, dst_item)
+
+        # Self-heal: guarantee the demultiplex Reports landed regardless of which project
+        # ran the bulk copy or in what order. Idempotent; the critical stats file is written
+        # atomically (temp + os.replace) so concurrent self-healers never expose a torn file.
+        src_reports = os.path.join(staging, "Reports")
+        if not os.path.isfile(dest_stats) and os.path.isdir(src_reports):
+            _plog(f"Self-healing missing Reports for {config_id} from {src_reports}")
+            shutil.copytree(src_reports, dest_reports, dirs_exist_ok=True)
+            src_stats = os.path.join(src_reports, "Demultiplex_Stats.csv")
+            if os.path.isfile(src_stats):
+                _tmp = f"{dest_stats}.tmp.{os.getpid()}"
+                shutil.copy2(src_stats, _tmp)
+                os.replace(_tmp, dest_stats)
+
+        # Fail loudly instead of silently touching the .project_done sentinel: an empty
+        # demux stats file would otherwise yield zero read counts for every sample on the
+        # lane. Raising leaves the sentinel uncreated so the next run retries this rule.
+        if not os.path.isfile(dest_stats):
+            _plog(f"ERROR: {dest_stats} still missing after accessory copy")
+            _logf.close()
+            raise RuntimeError(
+                f"Demultiplex_Stats.csv missing for {config_id} after accessory copy "
+                f"(staging={staging}); refusing to mark {new_project} done. Verify that "
+                f"{staging}/Reports/Demultiplex_Stats.csv exists."
+            )
+        _plog(f"Verified {dest_stats} present.")
+        _logf.close()
 
         # Remove extraneous I1/I2 FASTQs for projects that don't need index reads.
         # CreateFastqForIndexReads is set globally per lane, so these files are produced
