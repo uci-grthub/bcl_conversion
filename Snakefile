@@ -1035,7 +1035,7 @@ rule flexbar_project_link:
 
                 while retry_count < max_retries and not share_url:
                     retry_count += 1
-                    wait_time = 3 * (2 ** (retry_count - 1))
+                    wait_time = min(3 * (2 ** (retry_count - 1)), 60)
                     if rate_limited: time.sleep(10)
                     try:
                         cmd = ['curl', '-s', '-w', '\nHTTP_CODE:%{http_code}',
@@ -1515,10 +1515,18 @@ rule compile_read_counts:
 
             config_id = os.path.basename(map_path).replace("renaming_map_", "").replace(".csv", "")
             
-            # Read Demultiplex_Stats.csv for this config_id
-            demux_stats_path = os.path.join("output", config_id, "Reports", "Demultiplex_Stats.csv")
-            if not os.path.exists(demux_stats_path):
-                print(f"Skipping missing Demultiplex_Stats.csv: {demux_stats_path}")
+            # Read Demultiplex_Stats.csv for this config_id.
+            # Prefer the renamed/organized copy under output/, but fall back to the
+            # raw DRAGEN output under .output/ — some lanes (e.g. per-group demultiplexed
+            # lanes) never get a Reports/ dir copied into output/, so the renamed copy is
+            # absent even though the raw stats exist and carry the same Sample_Project/SampleID.
+            demux_stats_candidates = [
+                os.path.join("output", config_id, "Reports", "Demultiplex_Stats.csv"),
+                os.path.join(".output", config_id, "Reports", "Demultiplex_Stats.csv"),
+            ]
+            demux_stats_path = next((p for p in demux_stats_candidates if os.path.exists(p)), None)
+            if demux_stats_path is None:
+                print(f"Skipping missing Demultiplex_Stats.csv: tried {', '.join(demux_stats_candidates)}")
                 continue
             
             try:
@@ -1815,9 +1823,9 @@ rule flexbar_per_config:
 
         # Build processed FASTA from raw tab-delimited barcodes.
         awk -F'\t' '
-        NF >= 3 {{
+        NF >= 2 {{
             name = $1
-            barcode = $3
+            barcode = $2
             gsub(/\r/, "", name)
             gsub(/\r/, "", barcode)
             gsub(/ /, "_", name)
@@ -2641,8 +2649,14 @@ rule bcl_project_done:
     wildcard_constraints:
         config_id = "[^/]+",
         project = "[^/]+"
+    log:
+        "logs/{config_id}/bcl_project_done_{config_id}_{project}.log"
     run:
         import os, glob, shutil, json as json_mod
+
+        _logf = open(log[0], "w")
+        def _plog(msg):
+            print(msg, file=_logf, flush=True)
         config_id = wildcards.config_id
         new_project = wildcards.project
         old_project = PROJECT_RENAME_MAP_INV.get((config_id, new_project), new_project)
@@ -2681,26 +2695,39 @@ rule bcl_project_done:
         os.makedirs(new_dir, exist_ok=True)
 
         # Copy lane-level accessory files (Reports, Logs, dragen JSONs, etc.) to output.
-        # Only the first project (alphabetically) for this lane performs the copy to avoid
-        # concurrent bcl_project_done jobs racing to copy the same lane-level files.
-        # If any project on this lane selected RC orientation, prefer the RC lane-level
-        # reports so Demultiplex_Stats and related summaries reflect corrected counts.
-        # Skip old Sample_Project subdirectories — those are moved by their own bcl_project_done.
-        all_lane_projects = sorted([p for cid, p in CONFIG_PROJECT_PAIRS if cid == config_id])
-        if new_project == (all_lane_projects[0] if all_lane_projects else new_project):
-            accessory_base = ".output"
-            try:
-                if any(v.startswith("rc") for v in _dec.values()):
-                    accessory_base = ".output_rc"
-            except Exception:
-                pass
+        # Only the first project (alphabetically) performs the bulk copy to avoid concurrent
+        # bcl_project_done jobs racing on large lane-level dirs. The demultiplex Reports,
+        # however, are critical for read-count summaries, so EVERY project self-heals them
+        # if missing — this guards against the bulk copy having run before the RC pass
+        # populated its Reports/, or having failed silently (previously the .project_done
+        # sentinel was touched regardless, leaving empty read_counts for the whole lane).
+        dest_base = f"output/{config_id}"
+        dest_reports = os.path.join(dest_base, "Reports")
+        dest_stats = os.path.join(dest_reports, "Demultiplex_Stats.csv")
+        os.makedirs(dest_base, exist_ok=True)
 
-            staging = f"{accessory_base}/{config_id}"
-            if not os.path.isdir(staging):
-                staging = f".output/{config_id}"
-            dest_base = f"output/{config_id}"
-            os.makedirs(dest_base, exist_ok=True)
-            old_project_dirs = {p for cid, p in _CONFIG_PROJECT_PAIRS_RAW if cid == config_id}
+        # Choose the staging dir for the lane-level Reports. When any project on this lane
+        # selected RC orientation, the RC pass (which flips only the suspect projects'
+        # indexes) is authoritative for the WHOLE lane, so use .output_rc exclusively —
+        # falling back to .output here would republish the wrong-orientation zero counts
+        # that this hardening exists to prevent. The verification below turns a missing
+        # RC Reports into a retryable failure rather than silent bad data.
+        try:
+            _rc_won = any(v.startswith("rc") for v in _dec.values())
+        except Exception:
+            _rc_won = False
+        accessory_base = ".output_rc" if _rc_won else ".output"
+        staging = f"{accessory_base}/{config_id}"
+        _plog(f"RC won for lane: {_rc_won}; accessory source: {staging}")
+
+        old_project_dirs = {p for cid, p in _CONFIG_PROJECT_PAIRS_RAW if cid == config_id}
+        all_lane_projects = sorted([p for cid, p in CONFIG_PROJECT_PAIRS if cid == config_id])
+        is_primary_copier = new_project == (all_lane_projects[0] if all_lane_projects else new_project)
+
+        # Bulk accessory copy (primary project only). Skip old Sample_Project subdirs —
+        # those are moved by their own bcl_project_done.
+        if is_primary_copier and os.path.isdir(staging):
+            _plog(f"Primary copier for lane; copying accessory files from {staging}")
             for item in os.listdir(staging):
                 if item.startswith('.'):
                     continue
@@ -2709,14 +2736,38 @@ rule bcl_project_done:
                 if os.path.isdir(src_item) and item in old_project_dirs:
                     continue  # handled by that project's bcl_project_done
                 if os.path.isdir(src_item):
-                    if accessory_base == ".output_rc":
-                        # Force-overwrite so RC-corrected Demultiplex_Stats and summaries
-                        # replace any stale copy previously written from .output.
-                        shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
-                    else:
-                        shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
+                    # Force-overwrite so RC-corrected Demultiplex_Stats and summaries
+                    # replace any stale copy previously written from .output.
+                    shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
                 else:
                     shutil.copy2(src_item, dst_item)
+
+        # Self-heal: guarantee the demultiplex Reports landed regardless of which project
+        # ran the bulk copy or in what order. Idempotent; the critical stats file is written
+        # atomically (temp + os.replace) so concurrent self-healers never expose a torn file.
+        src_reports = os.path.join(staging, "Reports")
+        if not os.path.isfile(dest_stats) and os.path.isdir(src_reports):
+            _plog(f"Self-healing missing Reports for {config_id} from {src_reports}")
+            shutil.copytree(src_reports, dest_reports, dirs_exist_ok=True)
+            src_stats = os.path.join(src_reports, "Demultiplex_Stats.csv")
+            if os.path.isfile(src_stats):
+                _tmp = f"{dest_stats}.tmp.{os.getpid()}"
+                shutil.copy2(src_stats, _tmp)
+                os.replace(_tmp, dest_stats)
+
+        # Fail loudly instead of silently touching the .project_done sentinel: an empty
+        # demux stats file would otherwise yield zero read counts for every sample on the
+        # lane. Raising leaves the sentinel uncreated so the next run retries this rule.
+        if not os.path.isfile(dest_stats):
+            _plog(f"ERROR: {dest_stats} still missing after accessory copy")
+            _logf.close()
+            raise RuntimeError(
+                f"Demultiplex_Stats.csv missing for {config_id} after accessory copy "
+                f"(staging={staging}); refusing to mark {new_project} done. Verify that "
+                f"{staging}/Reports/Demultiplex_Stats.csv exists."
+            )
+        _plog(f"Verified {dest_stats} present.")
+        _logf.close()
 
         # Remove extraneous I1/I2 FASTQs for projects that don't need index reads.
         # CreateFastqForIndexReads is set globally per lane, so these files are produced
@@ -3470,7 +3521,7 @@ rule project_link:
                 
                 while retry_count < max_retries and not share_url:
                     retry_count += 1
-                    wait_time = 3 * (2 ** (retry_count - 1))
+                    wait_time = min(3 * (2 ** (retry_count - 1)), 60)
                     if rate_limited: time.sleep(10)
                     
                     try:
