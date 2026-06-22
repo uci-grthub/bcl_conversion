@@ -1800,7 +1800,8 @@ rule flexbar_per_config:
         adapter_abs = lambda wildcards, input: os.path.abspath(input.adapter),
         r1_abs = lambda wildcards, input: os.path.abspath(f".output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R1_001.fastq.gz"),
         flexbar_bin = FLEXBAR_BIN,
-        retry_min_reads = config.get("flexbar_retry_min_reads", 1000000)
+        retry_min_reads = config.get("flexbar_retry_min_reads", 1000000),
+        barcode_leader = config.get("flexbar_barcode_leader_n", 0)
     shell:
         """
         (
@@ -1830,8 +1831,15 @@ rule flexbar_per_config:
         # Build the barcode FASTA from the raw tab-delimited barcodes.
         # $1 = orientation: "rc" reverse-complements each listed barcode
         # (historical default), "fwd" uses each barcode as listed. $2 = output FASTA.
+        #
+        # The pattern is "<lead N's><barcode>", matched at the read start (LTAIL).
+        # `lead` is the number of leading bases (e.g. a UMI) before the inline
+        # barcode; it comes from config.flexbar_barcode_leader_n and defaults to 0
+        # because the active KY26SPI libraries carry the 6 bp index at R1 position 1
+        # with no leader. A non-zero leader was only correct for the PAREseq (U5I6)
+        # libraries, which have since moved to BCL Convert inline extraction.
         build_barcode_fasta() {{
-            awk -F'\t' -v orient="$1" '
+            awk -F'\t' -v orient="$1" -v lead="{params.barcode_leader}" '
             NF >= 2 {{
                 name = $1
                 barcode = $2
@@ -1852,8 +1860,10 @@ rule flexbar_per_config:
                     }}
                     barcode = reversed
                 }}
+                leader = ""
+                for (i = 0; i < lead + 0; i++) leader = leader "N"
                 print ">" name
-                print "NNNNN" barcode "NNNN"
+                print leader barcode
             }}
             ' {params.raw_barcodes_abs} > "$2"
         }}
@@ -1953,6 +1963,12 @@ rule flexbar_per_config:
             fi
             rm -rf "$alt_dir" "$alt_fasta"
         fi
+
+        # Drop the large unassigned FASTQ now that orientation is settled. It is
+        # not needed downstream (read counts are read from the log, not the file)
+        # and mirrors fqtk_per_config's removal of unmatched reads. This keeps the
+        # scratch dir from accumulating tens of GB of unassigned reads.
+        rm -f {params.outdir}/flexbarOut_barcode_unassigned*.fastq.gz
 
         # Prepare headers and create each R2 with seqkit's internal threading.
         for r1_out in {params.outdir}/flexbarOut_barcode_*.fastq.gz; do
@@ -2060,6 +2076,28 @@ rule flexbar_stage_project:
                 dst_r2 = os.path.abspath(f"{proj_dir}/{stem}-R2.fastq.gz")
                 if os.path.exists(src_r2):
                     _move_fastq(src_r2, dst_r2)
+
+        # Sweep the flexbar scratch dir of any remaining FASTQs so demuxed reads
+        # live only in the project dir. This removes the unassigned file (if the
+        # demux rule kept one) and any orphans left by an interrupted or re-run
+        # flexbar pass (e.g. stranded _rc_alt scratch from the orientation retry).
+        # Logs and metadata (flexbarOut.log, size.txt, md5sum.txt) are preserved
+        # for the report rules.
+        flex_dir = os.path.abspath(f"output/{config_id}/flexbar")
+        alt_dir  = os.path.join(flex_dir, "_rc_alt")
+        if os.path.isdir(alt_dir):
+            shutil.rmtree(alt_dir, ignore_errors=True)
+            log_lines.append(f"Removed stale scratch dir {alt_dir}\n")
+        if os.path.isdir(flex_dir):
+            for fname in os.listdir(flex_dir):
+                if fname.endswith(".fastq.gz"):
+                    fpath = os.path.join(flex_dir, fname)
+                    try:
+                        os.remove(fpath)
+                        log_lines.append(f"Removed leftover scratch FASTQ {fpath}\n")
+                    except OSError as exc:
+                        log_lines.append(f"Could not remove {fpath}: {exc}\n")
+
         with open(log[0], 'w') as lf:
             lf.writelines(log_lines)
         with open(output.project_done, 'w') as f:
