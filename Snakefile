@@ -1892,47 +1892,64 @@ rule flexbar_per_config:
             ' "$1"
         }}
 
-        # Summarize a flexbar log into globals TOTAL_ASSIGNED and MIN_ASSIGNED
-        # (MIN_ASSIGNED is empty when no assigned barcodes are present). $1 = log path.
+        # Summarize a flexbar log into globals TOTAL_ASSIGNED and MAX_ASSIGNED
+        # (MAX_ASSIGNED is the highest per-barcode read count, empty when no
+        # assigned barcodes are present). $1 = log path.
         summarize_log() {{
             TOTAL_ASSIGNED=0
-            MIN_ASSIGNED=""
+            MAX_ASSIGNED=""
             while IFS=$'\t' read -r _bc _cnt; do
                 [ -n "$_cnt" ] || continue
                 TOTAL_ASSIGNED=$((TOTAL_ASSIGNED + _cnt))
-                if [ -z "$MIN_ASSIGNED" ] || [ "$_cnt" -lt "$MIN_ASSIGNED" ]; then
-                    MIN_ASSIGNED=$_cnt
+                if [ -z "$MAX_ASSIGNED" ] || [ "$_cnt" -gt "$MAX_ASSIGNED" ]; then
+                    MAX_ASSIGNED=$_cnt
                 fi
             done < <(assigned_counts "$1")
         }}
 
-        # --- Primary run: historical reverse-complement orientation ---
-        build_barcode_fasta rc {params.barcodes_abs}
+        # --- Primary run: forward (as-listed) orientation ---
+        build_barcode_fasta fwd {params.barcodes_abs}
         run_flexbar {params.barcodes_abs} {params.outdir}/flexbarOut
         summarize_log {params.outdir}/flexbarOut.log
         primary_total=$TOTAL_ASSIGNED
-        primary_min=$MIN_ASSIGNED
-        echo "Primary (RC) orientation: total assigned=$primary_total, min per-barcode=${{primary_min:-NA}}"
+        primary_max=$MAX_ASSIGNED
+        echo "Primary (forward) orientation: total assigned=$primary_total, max per-barcode=${{primary_max:-NA}}"
 
-        # --- Conditional retry: opposite (as-listed) orientation ---
-        if [ -z "$primary_min" ] || [ "$primary_min" -lt "$retry_min_reads" ]; then
-            echo "An assigned barcode is below ${{retry_min_reads}} reads; retrying with the opposite index orientation."
+        # An orientation is "good" if at least one sample exceeds the threshold.
+        # If the primary orientation already has such a sample, proceed with it
+        # and skip the second flexbar pass. Otherwise try the opposite orientation
+        # and proceed with it if it has a sample above the threshold; if neither
+        # orientation qualifies, fall back to whichever assigned the most reads.
+        if [ -n "$primary_max" ] && [ "$primary_max" -gt "$retry_min_reads" ]; then
+            echo "Primary orientation has a sample above ${{retry_min_reads}} reads; proceeding with it."
+        else
+            echo "No primary sample exceeds ${{retry_min_reads}} reads; trying the opposite index orientation."
             alt_dir={params.outdir}/_rc_alt
             alt_fasta={params.outdir}/flexbar_barcodes_alt.fasta
             rm -rf "$alt_dir"
             mkdir -p "$alt_dir"
-            build_barcode_fasta fwd "$alt_fasta"
+            build_barcode_fasta rc "$alt_fasta"
             run_flexbar "$alt_fasta" "$alt_dir"/flexbarOut
             summarize_log "$alt_dir"/flexbarOut.log
             alt_total=$TOTAL_ASSIGNED
-            echo "Alt (as-listed) orientation: total assigned=$alt_total"
-            if [ "$alt_total" -gt "$primary_total" ]; then
-                echo "Adopting alt orientation ($alt_total > $primary_total reads assigned)."
+            alt_max=$MAX_ASSIGNED
+            echo "Alt (RC) orientation: total assigned=$alt_total, max per-barcode=${{alt_max:-NA}}"
+
+            adopt_alt=0
+            if [ -n "$alt_max" ] && [ "$alt_max" -gt "$retry_min_reads" ]; then
+                echo "Alt orientation has a sample above ${{retry_min_reads}} reads; adopting it."
+                adopt_alt=1
+            elif [ "${{alt_total:-0}}" -gt "${{primary_total:-0}}" ]; then
+                echo "Neither orientation exceeds ${{retry_min_reads}} reads; adopting alt by higher total assigned ($alt_total > $primary_total)."
+                adopt_alt=1
+            else
+                echo "Neither orientation exceeds ${{retry_min_reads}} reads; retaining primary forward orientation ($primary_total >= $alt_total)."
+            fi
+
+            if [ "$adopt_alt" -eq 1 ]; then
                 rm -f {params.outdir}/flexbarOut*.fastq.gz {params.outdir}/flexbarOut.log
                 mv "$alt_dir"/flexbarOut* {params.outdir}/
                 cp "$alt_fasta" {params.barcodes_abs}
-            else
-                echo "Retaining primary RC orientation ($primary_total >= $alt_total reads assigned)."
             fi
             rm -rf "$alt_dir" "$alt_fasta"
         fi
