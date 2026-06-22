@@ -713,6 +713,7 @@ rule all:
         f"Reports/{LIBRARY}_read_counts_email.done",
         expand("Reports/order_{order_id}/email_sent.done", order_id=ACTIVE_ORDER_IDS + FLEXBAR_ACTIVE_ORDER_IDS),
         expand("output/{config_id}/{project}/.low_reads_checked", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
+        expand("output/{config_id}/{project}/.plots_copied", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         expand("logs/{config_id}/verify_project_link_{config_id}---{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         ([VALIDATION_XLSX] if VALIDATION_XLSX else []),
         expand("results/{config_id}/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
@@ -1822,6 +1823,7 @@ rule flexbar_per_config:
                 exit 1
             fi
         fi
+
 
         # If any assigned barcode falls below this many reads after the primary
         # run, retry with the opposite index orientation and keep whichever
@@ -3061,6 +3063,39 @@ rule calculate_md5sums:
         fi
         ) > {log} 2>&1
         """
+
+rule copy_plots_to_output:
+    """Copy the fastp plots embedded in the order reports (results/{config_id}/{project}/*.png)
+    into a 'plots' subdirectory of the corresponding output project directory."""
+    input:
+        plots_done   = "results/{config_id}/fastp_plots_{config_id}.done",
+        project_done = "output/{config_id}/{project}/.project_done"
+    output:
+        sentinel = touch("output/{config_id}/{project}/.plots_copied")
+    log:
+        "logs/{config_id}/copy_plots_to_output_{config_id}_{project}.log"
+    benchmark:
+        "benchmarks/copy_plots_to_output_{config_id}_{project}.bench"
+    wildcard_constraints:
+        config_id = "[^/]+",
+        project = ".+"
+    run:
+        import glob, os, shutil
+
+        src_dir  = f"results/{wildcards.config_id}/{wildcards.project}"
+        dest_dir = f"output/{wildcards.config_id}/{wildcards.project}/plots"
+        os.makedirs(dest_dir, exist_ok=True)
+
+        pngs = sorted(glob.glob(os.path.join(src_dir, "*.png")))
+        copied = []
+        with open(log[0], 'w') as lf:
+            lf.write(f"Source: {src_dir}\nDest: {dest_dir}\n")
+            if not pngs:
+                lf.write("No PNG plots found to copy.\n")
+            for png in pngs:
+                shutil.copy2(png, os.path.join(dest_dir, os.path.basename(png)))
+                copied.append(os.path.basename(png))
+            lf.write(f"Copied {len(copied)} plot(s): {copied}\n")
 
 # Rule: generate exclude-indexes file for each config_id
 rule generate_exclude_indexes:
