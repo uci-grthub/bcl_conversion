@@ -1974,14 +1974,20 @@ rule flexbar_per_config:
         for r1_out in {params.outdir}/flexbarOut_barcode_*.fastq.gz; do
             [ -e "$r1_out" ] || continue
             base_name=$(basename "$r1_out" .fastq.gz)
-            # Skip R2 conversion for unassigned reads
-            if [[ "$base_name" == *"unassigned"* ]]; then
-                echo "Skipping R2 conversion for unassigned: $base_name"
-                continue
-            fi
+            # Skip our own R2 outputs (the glob above matches them too) and
+            # unassigned reads. Reprocessing an _R2 file as if it were R1 makes
+            # the grep below match nothing, which aborts the rule under pipefail.
+            case "$base_name" in
+                *_R2)
+                    continue ;;
+                *unassigned*)
+                    echo "Skipping R2 conversion for unassigned: $base_name"
+                    continue ;;
+            esac
 
             echo "Preparing headers for $base_name"
-            zcat "$r1_out" | grep " 1:N" | sed 's/^@//' | cut -d ' ' -f1 | sed 's/_[ATGCN]*$//' > "{params.outdir}/${{base_name}}_headers.txt"
+            # `|| true` so a barcode with zero "1:N" reads doesn't kill the rule under pipefail.
+            zcat "$r1_out" | grep " 1:N" | sed 's/^@//' | cut -d ' ' -f1 | sed 's/_[ATGCN]*$//' > "{params.outdir}/${{base_name}}_headers.txt" || true
 
             if [ -s "{params.outdir}/${{base_name}}_headers.txt" ]; then
                 seqkit grep -j {threads} -f "{params.outdir}/${{base_name}}_headers.txt" "{params.r2}" -o "{params.outdir}/${{base_name}}_R2.fastq.gz"
