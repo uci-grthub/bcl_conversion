@@ -94,6 +94,29 @@ def rename_fastqs(config_id, output_dir, map_file):
                 print(f"Project directory {project_dir} not found.")
                 continue
             
+        # Undetermined pseudo-sample: its FASTQs are written by DRAGEN at the lane
+        # root as Undetermined_S0_L00<lane>_R{1,2}_001.fastq.gz (not in a project
+        # subdir). Move + rename them into the project dir with the standard stem so
+        # they flow through fastp, md5sums, read counts, and the report like a
+        # normal sample. Only present when the lane is in report_undetermined_configs.
+        if sample_name == "Undetermined":
+            stem = f"{run}-L{lane}-G{group}-{position}-{barcode}"
+            for read_type in ['R1', 'R2']:
+                src = os.path.join(output_dir, f"Undetermined_S0_L{lane:03d}_{read_type}_001.fastq.gz")
+                dst = os.path.join(project_dir, f"{stem}-{read_type}.fastq.gz")
+                if os.path.exists(dst):
+                    continue
+                if not os.path.exists(src):
+                    if read_type == 'R1':
+                        print(f"Undetermined source not found: {src}")
+                    continue
+                print(f"Moving undetermined {os.path.basename(src)} -> {os.path.basename(dst)}")
+                try:
+                    os.replace(src, dst)
+                except Exception as e:
+                    print(f"Error moving {src}: {e}")
+            continue
+
         # For 10x, Parse, and BD projects: ensure files are in Illumina default naming
         # Check if files are already in Illumina format, or if they're in stem format and need reverse-renaming
         if is_parse_or_10x(project):

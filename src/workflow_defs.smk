@@ -232,6 +232,37 @@ def write_renaming_map(map_df, map_file):
                     positions.append(map_df["Position"].iloc[i])
             map_df["Position"] = positions
 
+    # Treat the lane's Undetermined reads as a normal sample when this lane is
+    # listed in report_undetermined_configs. The row is attached to the lane's
+    # first (alphabetical) real project so it flows through fastp, read counts,
+    # md5sums, nextcloud links, and the per-order report. This is the single
+    # source of truth for the renaming map, so injecting here keeps the row
+    # present across every rewrite (including the parse-time regeneration).
+    # Gated by REPORT_UNDETERMINED_CONFIGS; default runs are unaffected.
+    _report_undet = globals().get("REPORT_UNDETERMINED_CONFIGS", [])
+    _cfg_id = os.path.basename(os.path.dirname(map_file))
+    if _cfg_id in _report_undet and len(map_df) > 0:
+        _names = map_df["Sample_Name"].astype(str).str.strip()
+        if not (_names == "Undetermined").any():
+            _proj = map_df["Sample_Project"].astype(str).str.strip()
+            _real = map_df[_proj.ne("") & _proj.str.lower().ne("nan")]
+            if len(_real) > 0:
+                _first = sorted(_real["Sample_Project"].astype(str).str.strip().unique())[0]
+                _owner = _real[_real["Sample_Project"].astype(str).str.strip() == _first].iloc[0]
+                _run = str(_owner.get("Run", "")).strip() or globals().get("LIBRARY", "")
+                _new = {
+                    "Sample_ID": "Undetermined",
+                    "Sample_Name": "Undetermined",
+                    "Sample_Project": _first,
+                    "Lane": _owner.get("Lane", ""),
+                    "index": "Undetermined",
+                    "index2": "",
+                    "Run": _run,
+                    "Group": _owner.get("Group", ""),
+                    "Position": f"P{len(map_df) + 1:03d}",
+                }
+                map_df = pd.concat([map_df, pd.DataFrame([_new])], ignore_index=True)
+
     map_df = map_df[required_cols]
     map_df.to_csv(map_file, index=False, quoting=csv.QUOTE_MINIMAL)
 

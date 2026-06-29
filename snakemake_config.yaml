@@ -37,6 +37,15 @@ use_ancient: true  # Whether to use ancient files for bcl-convert outputs if ava
 # Note: Undetermined reads are automatically kept if flexbar_barcodes_{config_id}.txt exists.
 keep_undetermined_configs: []
 
+# Which configs (lanes) should treat Undetermined reads as a normal sample?
+# For each listed lane the Undetermined FASTQs are kept, renamed into the lane's
+# first project directory (output/{config_id}/{project}/), and flow through the
+# standard pipeline: fastp QC, read counts, md5sums, nextcloud links, and the
+# per-order HTML report. Membership in this list is the on/off switch per lane.
+# Configs listed here are automatically added to keep_undetermined_configs.
+# Example: report_undetermined_configs: ["lane1"]
+report_undetermined_configs: []
+
 # Order IDs whose projects should be excluded from rule all (e.g. skip processing for a specific order).
 # Also excludes the order-level reports and emails for those order IDs.
 # Example: exclude_order_ids: ["0326I-13", "0326I-14"]

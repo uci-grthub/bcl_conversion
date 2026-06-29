@@ -646,6 +646,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
     
     samples = {} # stem -> { config_id: { info... } }
     demux_stats_cache = {}  # config_id -> {(orig_project, index): num_reads}
+    undetermined_reads_cache = {}  # config_id -> num_reads for the lane's Undetermined row
     fqtk_counts_cache = {}   # config_id -> {sample_name: num_reads}
     flexbar_counts_cache = {}  # config_id -> {barcode_name: {'r1': int|None, 'r2': int|None}}
     flexbar_label_cache = {}   # config_id -> {barcode_label: sample_name}
@@ -667,6 +668,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
         if config_id not in demux_stats_cache:
             demux_csv = os.path.join(output_base_dir, config_id, "Reports", "Demultiplex_Stats.csv")
             demux_stats_cache[config_id] = {}
+            undetermined_reads_cache[config_id] = None
             if os.path.exists(demux_csv):
                 try:
                     import csv as _csv
@@ -675,6 +677,17 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                             _proj = _row.get('Sample_Project', '').strip()
                             _idx = _row.get('Index', '').strip().rstrip('-')
                             _reads = _row.get('# Reads', '').strip()
+                            _sid = _row.get('SampleID', _row.get('Sample_ID', '')).strip()
+                            # The Undetermined row has an empty Index, so it isn't
+                            # stored in the (project, index) cache below; capture it
+                            # separately so an Undetermined pseudo-sample can resolve
+                            # its read count (gated: only injected when the lane is in
+                            # report_undetermined_configs).
+                            if _sid.lower() == 'undetermined' and _reads:
+                                try:
+                                    undetermined_reads_cache[config_id] = int(_reads)
+                                except ValueError:
+                                    pass
                             if _proj and _idx and _reads:
                                 try:
                                     demux_stats_cache[config_id][(_proj, _idx)] = int(_reads)
@@ -777,6 +790,11 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 
             _cache = demux_stats_cache.get(config_id, {})
             demux_reads = _cache.get((fastp_lookup_name, barcode)) or _cache.get((fastp_lookup_name, rc_index2(barcode)))
+            # Undetermined pseudo-sample: its barcode token is "Undetermined" and its
+            # count lives in the lane's Undetermined demux row (empty Index), so fall
+            # back to the dedicated cache.
+            if (demux_reads is None or demux_reads == 0) and barcode == "Undetermined":
+                demux_reads = undetermined_reads_cache.get(config_id)
             paired_reads = demux_reads if (demux_reads is not None and demux_reads > 0) else "N/A"
 
             # Fallback: for fqtk-staged reads, derive paired reads from fqtk demux-metrics.

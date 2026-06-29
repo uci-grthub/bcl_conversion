@@ -56,7 +56,12 @@ DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20260115_LH00626_
 TILES = config.get("tiles", "1_1101")
 FLEXBAR_BIN = config.get("flexbar_bin", "")
 USE_ANCIENT = config.get("use_ancient", True)
-KEEP_UNDETERMINED_CONFIGS = " ".join(config.get("keep_undetermined_configs", []))
+REPORT_UNDETERMINED_CONFIGS = config.get("report_undetermined_configs", [])
+_effective_keep = list(config.get("keep_undetermined_configs", []))
+for _c in REPORT_UNDETERMINED_CONFIGS:
+    if _c not in _effective_keep:
+        _effective_keep.append(_c)
+KEEP_UNDETERMINED_CONFIGS = " ".join(_effective_keep)
 
 def maybe_ancient(path):
     return ancient(path) if USE_ANCIENT else path
@@ -705,7 +710,6 @@ rule all:
         ORDER_ID_MD5S,
         expand("results/lane{lane}/fastp_plots_summary_lane{lane}.done", lane=detected_lanes),
         expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
-        expand("results/undetermined_indices/{config_id}_rc.csv", config_id=CONFIG_IDS),
         expand("results/{config_id}/{project}/read_counts_{project}.csv", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         # expand("logs/{config_id}/project_link_{config_id}_{project}.log", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         expand("logs/{config_id}/project_links_{config_id}---{project}.yaml", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
@@ -1473,6 +1477,34 @@ rule summarize_project_reads:
                         'Total_Reads': read_pairs,
                         'Passed_Reads': read_pairs,
                     })
+
+                # If this project owns the lane's Undetermined pseudo-sample
+                # (report_undetermined_configs), include its count too. The
+                # Undetermined demux row has Sample_Project='Undetermined', so it
+                # isn't captured by the project filter above.
+                if wildcards.config_id in REPORT_UNDETERMINED_CONFIGS:
+                    map_path = f"results/{wildcards.config_id}/renaming_map_{wildcards.config_id}.csv"
+                    owns_undetermined = False
+                    if os.path.exists(map_path):
+                        try:
+                            _m = pd.read_csv(map_path)
+                            owns_undetermined = (
+                                (_m['Sample_Name'].astype(str).str.strip() == 'Undetermined')
+                                & (_m['Sample_Project'].astype(str).str.strip() == wildcards.project)
+                            ).any()
+                        except Exception as e:
+                            print(f"Could not check undetermined ownership in {map_path}: {e}")
+                    if owns_undetermined:
+                        u_rows = demux_df[demux_df['SampleID'].astype(str).str.strip() == 'Undetermined']
+                        for _, row in u_rows.iterrows():
+                            read_pairs = int(row.get('# Reads', 0))
+                            data.append({
+                                'Config': wildcards.config_id,
+                                'Project': wildcards.project,
+                                'Sample': 'Undetermined',
+                                'Total_Reads': read_pairs,
+                                'Passed_Reads': read_pairs,
+                            })
             else:
                 print(f"Missing Sample_Project column in {demux_path}")
 
@@ -1582,13 +1614,22 @@ rule compile_read_counts:
                 # Match by Lane, Sample_Project, and SampleID
                 read_pairs = 0
                 try:
-                    # Filter by lane and project
-                    matches = demux_df[
-                        (demux_df['Lane'] == lane) & 
-                        (demux_df['Sample_Project'] == project) &
-                        (demux_df['SampleID'] == sample_name)
-                    ]
-                    
+                    if sample_name == "Undetermined":
+                        # Undetermined is its own SampleID/Sample_Project in
+                        # Demultiplex_Stats even though we attach it to a real
+                        # project directory; match on the lane's Undetermined row.
+                        matches = demux_df[
+                            (demux_df['Lane'] == lane) &
+                            (demux_df['SampleID'] == 'Undetermined')
+                        ]
+                    else:
+                        # Filter by lane and project
+                        matches = demux_df[
+                            (demux_df['Lane'] == lane) &
+                            (demux_df['Sample_Project'] == project) &
+                            (demux_df['SampleID'] == sample_name)
+                        ]
+
                     if len(matches) > 0:
                         # BCL Convert reports '# Reads' as read pairs (clusters), not individual reads
                         read_pairs = int(matches.iloc[0]['# Reads'])
@@ -2565,9 +2606,63 @@ rule generate_renaming_map:
             print(f"Generated fallback renaming map from SampleSheet: {out_path}")
             return True
 
+        def _finish():
+            """If this lane is flagged in report_undetermined_configs, append an
+            'Undetermined' pseudo-sample row so the lane's Undetermined reads flow
+            through the standard pipeline (fastp, read counts, md5sums, report) as
+            a normal sample. Attached to the lane's first (alphabetical) project.
+            Idempotent and gated by REPORT_UNDETERMINED_CONFIGS, so default runs
+            are unaffected.
+            """
+            if wildcards.config_id not in REPORT_UNDETERMINED_CONFIGS:
+                return
+            if not os.path.exists(output.map):
+                return
+            try:
+                cur = pd.read_csv(output.map)
+            except Exception as e:
+                print(f"Undetermined injection: could not read {output.map}: {e}")
+                return
+
+            _names = cur.get("Sample_Name")
+            if _names is not None and (_names.astype(str).str.strip() == "Undetermined").any():
+                print("Undetermined row already present; skipping injection.")
+                return
+
+            _proj_col = cur["Sample_Project"].astype(str).str.strip()
+            _real = cur[_proj_col.ne("") & _proj_col.str.lower().ne("nan")]
+            if _real.empty:
+                print("No real project rows; skipping Undetermined injection.")
+                return
+
+            first_project = sorted(_real["Sample_Project"].astype(str).str.strip().unique())[0]
+            owner = _real[_real["Sample_Project"].astype(str).str.strip() == first_project].iloc[0]
+
+            new_row = {col: "" for col in cur.columns}
+            new_row.update({
+                "Sample_Name": "Undetermined",
+                "Sample_Project": first_project,
+                "Lane": owner.get("Lane", ""),
+                "index": "Undetermined",
+                "index2": "",
+                "Run": params.library,
+                "Group": owner.get("Group", ""),
+                "Position": f"P{len(cur) + 1:03d}",
+            })
+            if "Sample_ID" in cur.columns:
+                new_row["Sample_ID"] = "Undetermined"
+
+            cur = pd.concat([cur, pd.DataFrame([new_row])], ignore_index=True)
+            cur.to_csv(output.map, index=False)
+            print(
+                f"Injected Undetermined row into {output.map} "
+                f"(project={first_project}, lane={owner.get('Lane')}, group={owner.get('Group')})"
+            )
+
         # If map already exists and looks valid, keep it
         if has_required_columns(output.map):
             print(f"Renaming map already valid: {output.map}")
+            _finish()
             return
 
         # Attempt to regenerate via metadata-driven function (preferred)
@@ -2584,12 +2679,14 @@ rule generate_renaming_map:
                 )
                 if has_required_columns(output.map):
                     print(f"Regenerated renaming map using metadata: {output.map}")
+                    _finish()
                     return
             except Exception as e:
                 print(f"Error regenerating renaming map from metadata: {e}")
 
         # Fallback: derive from SampleSheet data section
         build_map_from_samplesheet(input.sample_sheet, output.map, params.library)
+        _finish()
 
 rule validate_barcode_hamming_distances:
     """Pre-flight validation: check barcode Hamming distances for a single config_id.
@@ -3152,54 +3249,6 @@ rule analyze_undetermined:
 
             logf.write(f"Converted {len(rows)} barcodes from {params.barcodes}\n")
 
-rule analyze_undetermined_rc:
-    """Convert RC-pass Top_Unknown_Barcodes to the same CSV format as analyze_undetermined.
-    Runs after pick_orientation so the RC pass is guaranteed to exist (or was skipped).
-    Writes an empty file if no RC pass was run for this config_id.
-    """
-    input:
-        decision = "logs/{config_id}/orientation_decision_{config_id}.json",
-        done_rc = ".output_rc/{config_id}/.done"
-    output:
-        csv = "results/undetermined_indices/{config_id}_rc.csv"
-    log:
-        "logs/{config_id}/analyze_undetermined_rc_{config_id}.log"
-    benchmark:
-        "benchmarks/analyze_undetermined_rc_{config_id}.bench"
-    wildcard_constraints:
-        config_id = "[^/]+"
-    run:
-        import csv as csv_mod
-        import os
-
-        barcodes_path = f".output_rc/{wildcards.config_id}/Reports/Top_Unknown_Barcodes.csv"
-        os.makedirs(os.path.dirname(output.csv), exist_ok=True)
-        with open(log[0], 'w') as logf:
-            if not os.path.exists(barcodes_path):
-                logf.write(f"No RC pass barcodes file at {barcodes_path}; writing empty CSV.\n")
-                with open(output.csv, 'w', newline='') as f:
-                    csv_mod.writer(f).writerow(['Count', 'Type', 'Index Sequence'])
-                return
-
-            rows = []
-            with open(barcodes_path) as f:
-                reader = csv_mod.DictReader(f)
-                for r in reader:
-                    idx1 = r.get('index', '').strip()
-                    idx2 = r.get('index2', '').strip()
-                    count = int(r.get('# Reads', '0'))
-                    seq = f"{idx1}+{idx2}" if idx2 else idx1
-                    index_type = "Dual" if idx2 else "Single"
-                    rows.append((count, index_type, seq))
-
-            with open(output.csv, 'w', newline='') as f:
-                writer = csv_mod.writer(f)
-                writer.writerow(['Count', 'Type', 'Index Sequence'])
-                for count, itype, seq in rows:
-                    writer.writerow([count, itype, seq])
-
-            logf.write(f"Converted {len(rows)} barcodes from {barcodes_path}\n")
-
 rule detect_rc_candidates:
     """Detect projects with likely i7 reverse-complement orientation issues
     for a single config_id by comparing undetermined barcodes to expected indexes.
@@ -3442,10 +3491,12 @@ rule pick_orientation:
         with open(input.candidates) as f:
             suspects = json_mod.load(f)
 
-        # Keep Undetermined FASTQs for lanes configured for flexbar demux.
-        # Match bcl_convert behavior to avoid deleting inputs needed by flexbar_per_config.
-        preserve_undetermined = os_mod.path.isfile(
-            f"metadata/flexbar_barcodes_{wildcards.config_id}.txt"
+        # Keep Undetermined FASTQs for lanes configured for flexbar demux, or for
+        # lanes explicitly listed in keep_undetermined_configs / report_undetermined_configs.
+        # Match bcl_convert behavior to avoid deleting reads it was told to keep.
+        preserve_undetermined = (
+            os_mod.path.isfile(f"metadata/flexbar_barcodes_{wildcards.config_id}.txt")
+            or wildcards.config_id in _effective_keep
         )
 
         # Build fix_type lookup: project -> label (rc_i7 / rc_i5 / rc_both)
