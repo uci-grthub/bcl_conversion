@@ -1095,8 +1095,10 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                         u_html = u.replace('&', '&amp;')
                         label = _plot_label(c)
                         html_content += (
-                            "<div style='margin-bottom: 8px;'>"
-                            f"<a href='{u_html}' style='color: #0066cc; font-weight: bold; text-decoration: none;'>{label} &rarr;</a>"
+                            "<div style='margin-bottom: 12px;'>"
+                            f"<a href='{u_html}' style='color: #0066cc; font-weight: bold; text-decoration: none;'>"
+                            f"<img src='{u_html}' alt='{label}' style='display: block; width: 50%; max-width: 50%; height: auto; border: 1px solid #dddddd; margin-bottom: 4px;'>"
+                            f"{label} &rarr;</a>"
                             "</div>"
                         )
                 else:
