@@ -1084,7 +1084,11 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
         pdf_path = os.path.join(report_dir, "Download_Instructions.pdf")
         pdf_script = os.path.join(os.path.dirname(__file__), "generate_download_instructions_pdf.py")
         try:
-            subprocess.run(["python3", pdf_script, pdf_path], check=True, capture_output=True, text=True)
+            pdf_cmd = ["python3", pdf_script, pdf_path]
+            if order_id or display_project:
+                pdf_cmd.append(str(order_id or ""))
+                pdf_cmd.append(str(display_project or ""))
+            subprocess.run(pdf_cmd, check=True, capture_output=True, text=True)
             print(f"Download instructions PDF generated: {pdf_path}")
         except subprocess.CalledProcessError as e:
             print(f"Warning: Could not generate download instructions PDF: {e.stderr}")
