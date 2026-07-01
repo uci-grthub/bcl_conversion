@@ -942,7 +942,52 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
             print(f"Error processing {json_file}: {e}")
             
     sorted_stems = sorted(samples.keys())
-    
+
+    # Resolve the Nextcloud public-share link for a given lane/config so plot
+    # images can be referenced by URL (publicpreview endpoint) instead of being
+    # embedded as base64. Inline binary parts are stripped by the outbound mail
+    # filter, so hosted links are the reliable way to get plots into the email.
+    def _share_link_for_config(config_id):
+        target_lane = parse_lane_from_config(config_id)
+        for pname in (display_project, orig_project_name, project):
+            cfgmap = existing_project_links.get(pname) if pname else None
+            if not cfgmap:
+                continue
+            for lane_config, data in cfgmap.items():
+                lk = data.get('link') if isinstance(data, dict) else data
+                if not lk:
+                    continue
+                if lane_config == config_id or (
+                    target_lane is not None
+                    and parse_lane_from_config(lane_config) == target_lane
+                ):
+                    return lk
+        # Fallback: if the project has exactly one download link, use it.
+        uniq = list(dict.fromkeys(project_fastq_links))
+        if len(uniq) == 1:
+            return uniq[0]
+        return None
+
+    def _publicpreview_url(share_link, plot_path):
+        """Anonymous Nextcloud public-preview URL for a plot that lives under
+        <shared folder>/plots/. Returns None if the share token can't be parsed."""
+        m = re.search(r'(https?://[^/]+)/s/([A-Za-z0-9]+)', share_link or "")
+        if not m:
+            return None
+        base, token = m.group(1), m.group(2)
+        rel = "/plots/" + os.path.basename(plot_path)
+        from urllib.parse import quote
+        return (f"{base}/apps/files_sharing/publicpreview/{token}"
+                f"?file={quote(rel)}&x=1600&y=1600&a=true")
+
+    def _plot_label(plot_path):
+        n = os.path.basename(plot_path).lower()
+        if "mean_phred" in n:
+            return "Mean PHRED quality"
+        if "base_comp" in n:
+            return "Base composition"
+        return os.path.basename(plot_path)
+
     for stem in sorted_stems:
         # Sample Section
         html_content += f"""
@@ -1028,16 +1073,44 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                 html_content += f"<p style='font-weight: bold; margin: 10px 0 5px 0;'>{config_id}</p>"
                 html_content += "<div style='margin-bottom: 12px;'>"
 
-                # Compose up to three plots into one image
-                composed_b64 = compose_plots_base64(candidates, total_width=plots_total_width, quality=plots_quality)
-                if composed_b64:
-                    html_content += f"<img src='data:image/jpeg;base64,{composed_b64}' alt='Quality plots' style='width: 100%; max-width: 100%; height: auto; border: 1px solid #dddddd;'>"
-                else:
-                    # Fallback: embed individually (compressed)
+                # Prefer hosting the plots on the existing Nextcloud share and
+                # referencing them by URL. Inline base64 images are stripped by
+                # the outbound mail filter, so links are the reliable path.
+                share_link = _share_link_for_config(config_id)
+                plot_items = []
+                if share_link:
                     for c in candidates:
-                        b64 = get_image_base64(c)
-                        if b64:
-                            html_content += f"<img src='data:image/jpeg;base64,{b64}' alt='Plot' style='width: 32%; max-width: 32%; margin-right: 1%; height: auto; border: 1px solid #dddddd;'>"
+                        u = _publicpreview_url(share_link, c)
+                        if u:
+                            plot_items.append((u, c))
+
+                if plot_items:
+                    # Plain text links only. Embedded images are stripped by the
+                    # outbound mail filter, and Gmail's proxy won't render the
+                    # Nextcloud preview URLs (served Cache-Control: private), so a
+                    # broken <img> would just show duplicate/blank content. A link
+                    # always renders and opens the plot in the browser.
+                    for u, c in plot_items:
+                        # Escape & as &amp; so mail-client HTML sanitizers keep the query string intact.
+                        u_html = u.replace('&', '&amp;')
+                        label = _plot_label(c)
+                        html_content += (
+                            "<div style='margin-bottom: 8px;'>"
+                            f"<a href='{u_html}' style='color: #0066cc; font-weight: bold; text-decoration: none;'>{label} &rarr;</a>"
+                            "</div>"
+                        )
+                else:
+                    # Fallback: compose up to three plots into one image and embed
+                    # as base64 (used only when no share link can be resolved).
+                    composed_b64 = compose_plots_base64(candidates, total_width=plots_total_width, quality=plots_quality)
+                    if composed_b64:
+                        html_content += f"<img src='data:image/jpeg;base64,{composed_b64}' alt='Quality plots' style='width: 100%; max-width: 100%; height: auto; border: 1px solid #dddddd;'>"
+                    else:
+                        # Fallback: embed individually (compressed)
+                        for c in candidates:
+                            b64 = get_image_base64(c)
+                            if b64:
+                                html_content += f"<img src='data:image/jpeg;base64,{b64}' alt='Plot' style='width: 32%; max-width: 32%; margin-right: 1%; height: auto; border: 1px solid #dddddd;'>"
 
                 html_content += "</div>"
         
