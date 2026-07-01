@@ -31,6 +31,10 @@ scratch_dir: ""
 
 use_ancient: true  # Whether to use ancient files for bcl-convert outputs if available (default: true). Set to false to always re-run bcl-convert.
 
+# Force CreateFastqForIndexReads=1 in every generated SampleSheet so DRAGEN emits index
+# reads as FASTQs (i.e. no index-based demultiplexing). Default: false.
+no_demux: false
+
 # Which configs (lanes) should keep Undetermined reads? Others will have them deleted.
 # Default is empty list (delete all Undetermined reads).
 # Example: keep_undetermined_configs: ["lane1", "lane3"]

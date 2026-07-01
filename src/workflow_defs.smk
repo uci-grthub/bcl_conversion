@@ -486,14 +486,15 @@ def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name)
         f.write("\n")
         
         f.write("[BCLConvert_Settings]\n")
-        # BD_Rhapsody_ATACseq / 10xMultiomeATACseq special settings
+        # BD_Rhapsody_ATACseq / 10xMultiomeATACseq special settings.
+        # The global NO_DEMUX config flag also forces index-read FASTQs.
         special_atac_index_reads = False
         if 'Sample_Project' in df_samples.columns:
             for proj in df_samples['Sample_Project'].unique():
                 if is_special_atac_project_or_sheet(proj):
                     special_atac_index_reads = True
                     break
-        if special_atac_index_reads:
+        if special_atac_index_reads or NO_DEMUX:
             f.write("CreateFastqForIndexReads,1\n")
         else:
             f.write("CreateFastqForIndexReads,0\n")
@@ -1330,7 +1331,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             # (DRAGEN 4.x does not support CreateFastqForIndexReads as a per-sample column.)
             _INDEX_READ_KEYWORDS = ["10x", "BD", "parse", "Parse", "SMK", "smk", "CITE", "cite", "Hashtag", "hashtag"]
             create_fastq_for_index = "0"
-            if special_atac_index_reads:
+            if special_atac_index_reads or NO_DEMUX:
                 f.write("CreateFastqForIndexReads,1\n")
             else:
                 # Check both Project Name and Sample Sheet tab columns for index-read keywords

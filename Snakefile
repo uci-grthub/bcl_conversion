@@ -68,6 +68,10 @@ def maybe_ancient(path):
 
 SCRATCH_DIR = config.get("scratch_dir", "")
 
+# When true, force CreateFastqForIndexReads=1 in every generated SampleSheet so DRAGEN
+# emits index reads as FASTQs (no index-based demultiplexing). Default: false.
+NO_DEMUX = bool(config.get("no_demux", False))
+
 NEXTCLOUD_DIR_NAME = config.get("nextcloud_dir_name", "DragenExt3")
 NEXTCLOUD_DIR_PATH = config.get("nextcloud_dir_path", "nextcloud3")
 
