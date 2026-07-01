@@ -14,6 +14,7 @@ environments:
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/bioconda/linux-64/flexbar-3.5.0-hdfd68b8_12.tar.bz2
+      - conda: https://conda.anaconda.org/bioconda/linux-64/fqtk-0.3.1-ha6fb395_3.tar.bz2
       - conda: https://conda.anaconda.org/bioconda/linux-64/seqtk-1.5-h577a1d6_1.tar.bz2
       - conda: https://conda.anaconda.org/bioconda/noarch/fastqc-0.12.1-hdfd78af_0.tar.bz2
       - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-interface-common-1.23.0-pyhdfd78af_1.conda
@@ -211,6 +212,21 @@ packages:
     - flexbar >=3.5.0,<4.0a0
   size: 426764
   timestamp: 1750920217822
+- conda: https://conda.anaconda.org/bioconda/linux-64/fqtk-0.3.1-ha6fb395_3.tar.bz2
+  sha256: ed86a75cb8dafeae10164011135c42ce9a67a5151b2a1c783bf79ab9723a4406
+  md5: 65d2b9b824df9fdd8b2315de65d5dc5d
+  depends:
+  - libgcc >=13
+  - libstdcxx >=13
+  constrains:
+  - __glibc >=2.17
+  license: MIT
+  license_family: MIT
+  run_exports:
+    weak:
+    - fqtk >=0.3.1,<0.4.0a0
+  size: 1214602
+  timestamp: 1741997083501
 - conda: https://conda.anaconda.org/bioconda/linux-64/seqtk-1.5-h577a1d6_1.tar.bz2
   sha256: f265fe676118d9d45fde040cc8354fc96ca18c45ed2410854c06c143e823258b
   md5: 0bc157aea007a7895e6f2e8f44a0b407

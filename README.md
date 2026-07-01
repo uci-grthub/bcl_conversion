@@ -37,8 +37,8 @@ pixi run convert output/lane1
 ```
 
 pixi manages Python (pandas, openpyxl, numpy, matplotlib, pillow, pyyaml, reportlab),
-Snakemake, and the bioconda CLIs (`fastqc`, `flexbar`, `seqtk`). Two dependencies remain
-**system-level** and are not installed by pixi:
+Snakemake, and the bioconda CLIs (`fastqc`, `flexbar`, `seqtk`, `fqtk`). Two dependencies
+remain **system-level** and are not installed by pixi:
 
 - **DRAGEN** (`/opt/dragen/<ver>/bin/dragen`) — licensed, FPGA-tied; must be on `PATH`.
 - An **optional custom `flexbar` build** referenced by `flexbar_bin` in the config. A

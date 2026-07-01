@@ -1,21 +1,25 @@
-To set up a cron job to monitor for CopyComplete.txt and trigger Snakemake in a new tmux session named with the library from config.yaml:
+Set up a cron job to monitor for CopyComplete.txt and trigger Snakemake (via pixi) in a
+new tmux session named after the run's library.
 
-1. Ensure you have 'data_dir' and 'library_name' set in your snakemake_config.yaml, e.g.:
-   data_dir: /path/to/monitored/directory
-   library_name: xR081
+The monitor_and_run_snakemake.sh script already handles everything: it reads data_dir and
+library_name from snakemake_config_project.yaml, waits for CopyComplete.txt in data_dir,
+and launches `pixi run snakemake --profile default -p` inside a tmux session.
 
-2. Make the script executable:
-   chmod +x /staging/nextcloud/testing_illumina/xR081/monitor_and_run_snakemake.sh
+1. Ensure 'data_dir' and 'library_name' are set in snakemake_config_project.yaml, e.g.:
+     data_dir: /staging/nextcloud/Miseqi100/20260626_SH00564_0020_ASC2231455-SC3
+     library_name: iR011
 
-3. Edit the script /staging/nextcloud/testing_illumina/xR081/monitor_and_run_snakemake.sh so that, instead of running snakemake directly, it launches snakemake in a new tmux session named after the library:
+2. Provision the environment once (creates .pixi/ from pixi.toml / pixi.lock):
+     pixi install
 
-   Replace the line:
-     snakemake --cores 8
-   with:
-     LIBRARY=$(python3 -c "import yaml; print(yaml.safe_load(open('snakemake_config.yaml')).get('library_name', 'snakemake'))")
-     tmux new-session -d -s "$LIBRARY" "snakemake --cores 8 -np"
+3. Make the script executable:
+     chmod +x /staging/nextcloud/testing_illumina/MiSeqi100/iR011/monitor_and_run_snakemake.sh
 
-4. Add the following line to your crontab (edit with 'crontab -e') to check every hour:
-   0 * * * * /staging/nextcloud/testing_illumina/xR081/monitor_and_run_snakemake.sh >> /staging/nextcloud/testing_illumina/xR081/monitor_and_run_snakemake.log 2>&1
+4. Add the following line to your crontab ('crontab -e') to check every hour:
+     0 * * * * /staging/nextcloud/testing_illumina/MiSeqi100/iR011/monitor_and_run_snakemake.sh >> /staging/nextcloud/testing_illumina/MiSeqi100/iR011/monitor_and_run_snakemake.log 2>&1
 
-This will check for the existence of CopyComplete.txt in the monitored directory every hour and, if found, start the Snakemake workflow in a new tmux session named after the library.
+Notes:
+- cron runs with a minimal PATH. The script resolves pixi automatically, falling back to
+  $HOME/.pixi/bin/pixi when pixi is not on PATH, so no PATH edits are required in crontab.
+- DRAGEN must be available on the system PATH for the cron user (bcl-convert is not
+  provisioned by pixi).

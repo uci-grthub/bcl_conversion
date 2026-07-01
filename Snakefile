@@ -2217,7 +2217,7 @@ rule fqtk_per_config:
         fi
         echo "I1 read length: ${{I1_LEN}}bp -> read structure: $I1_READ_STRUCT"
 
-        conda run -n bcl_convert fqtk demux \
+        fqtk demux \
             --inputs "$R1" "$I1" "$R2" \
             --read-structures "151T" "$I1_READ_STRUCT" "151T" \
             --sample-metadata {input.barcode_tsv} \
