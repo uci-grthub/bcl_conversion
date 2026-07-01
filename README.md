@@ -1,6 +1,6 @@
 # Snakemake BCL Conversion Pipeline
 
-Automated workflow for NovaSeqX data processing, quality control, and report generation.
+Automated workflow for Illumina (MiSeq i100 / NovaSeqX) sequencing data processing, quality control, and report generation.
 
 ## Workflow Diagram
 
@@ -17,29 +17,89 @@ This Snakemake pipeline handles the complete sequencing data processing workflow
 6. **Read Count Compilation** - Lane-level read counts formatted as CSV, aggregated per library
 7. **Email Notifications** - Automated email delivery of reports and read counts
 
+## Environment
+
+Python and the bioinformatics CLIs are provisioned with [pixi](https://pixi.sh) from
+`pixi.toml` (locked in `pixi.lock`). Install pixi once, then let it build the environment:
+
+```bash
+curl -fsSL https://pixi.sh/install.sh | bash   # one-time install
+pixi install                                    # solve/create env from pixi.lock
+```
+
+Run any command inside the environment with `pixi run`, or use the predefined tasks:
+
+```bash
+pixi run snakemake -n        # dry run
+pixi run all                 # full workflow (snakemake --cores 8)
+pixi run dry-run             # preview
+pixi run convert output/lane1
+```
+
+pixi manages Python (pandas, openpyxl, numpy, matplotlib, pillow, pyyaml, reportlab),
+Snakemake, and the bioconda CLIs (`fastqc`, `flexbar`, `seqtk`). Two dependencies remain
+**system-level** and are not installed by pixi:
+
+- **DRAGEN** (`/opt/dragen/<ver>/bin/dragen`) — licensed, FPGA-tied; must be on `PATH`.
+- An **optional custom `flexbar` build** referenced by `flexbar_bin` in the config. A
+  bioconda `flexbar` is provided by pixi; point `flexbar_bin` at it to drop the custom build.
+
+> The legacy `bcl_convert` mamba/conda environment is being retired in favor of pixi.
+
 ## Key Files
 
-- **`Snakefile`** - Main workflow definition with all rules
+- **`Snakefile`** - Main workflow definition; imports rules from `src/workflow_defs.smk`
 - **`snakemake_config.yaml`** - Base configuration (paths, threads, email settings)
 - **`snakemake_config_project.yaml`** - Project-specific configuration (overrides base settings)
 - **`metadata/*.xlsx`** - Excel metadata with Summary sheet and per-project sheets
 - **`src/RunInfo_nn.xml`** - Normalized run configuration (auto-generated)
 
+## Platforms & Auto-Detection
+
+This pipeline supports two Illumina platforms/configurations. The platform is
+**auto-detected from the metadata workbook** at workflow start (no config flag needed):
+
+| Aspect | MiSeq i100 | NovaSeqX |
+|--------|-----------|----------|
+| Detection | Has a `Barcode Entries` sheet, no `Summary` sheet | Has a `Summary` sheet |
+| Lanes | Single lane (`lane1`) | Up to 8 lanes (`lane1`…`lane8`) |
+| Groups | Single group per lane | Multiple groups per lane |
+| Order IDs | Inferred from `Lab ID` column of the first sheet | Read from the `Summary` sheet |
+| Example `data_dir` | `/staging/nextcloud/Miseqi100/<run>` | `/staging/nextcloud/NovaseqX/<run>` |
+
+The workflow prints `Detected MiSeq metadata format` (or proceeds with the NovaSeqX
+Summary-sheet path) so you can confirm which mode is active. This run (`iR011`) is a
+**MiSeq i100** run.
+
 ## Configuration
 
-Edit `snakemake_config.yaml` to customize:
+Edit `snakemake_config_project.yaml` (project overrides layered over `snakemake_config.yaml`).
+
+**MiSeq i100 example** (this run):
+
+```yaml
+library_name: "iR011"                    # Run identifier
+metadata: "metadata/06262026_BXA66618-2426_iR011.xlsx"
+data_dir: "/staging/nextcloud/Miseqi100/20260626_SH00564_0020_ASC2231455-SC3"
+lanes: [1,2,3,4,5,6,7,8]                 # Superset; only lane1 is used for MiSeq
+email_sender: "kstachel@uci.edu"
+email_recipient: "kstachel@uci.edu"
+```
+
+**NovaSeqX example**:
 
 ```yaml
 library_name: "xR077"                    # Run identifier
 metadata: "metadata/251219_23G5F2LT3_10B_PE151_xR077.xlsx"
-data_dir: "/staging/nextcloud/NovaseqX/..." # BCL data location
+data_dir: "/staging/nextcloud/NovaseqX/20260115_LH00626_0088_A233NM2LT4"
+lanes: [1,2,3,4,5,6,7,8]                 # Lanes to process (auto-detected from BaseCalls)
 email_sender: "kstachel@uci.edu"
 email_recipient: "kstachel@uci.edu"
 ```
 
 ## Metadata Format
 
-The Excel metadata file must contain:
+### NovaSeqX (Summary-sheet format)
 - **Summary sheet** (header at row 3):
   - `Lane`, `Gr` (Group), `Project Name`, `Masking`, `Fastq Link`
 - **Per-project sheets** with sample details:
@@ -47,40 +107,50 @@ The Excel metadata file must contain:
 
 **Masking format**: `R1:151, I1:8, I2:8, R2:151` → generates OverrideCycles
 
+### MiSeq i100 (simple format)
+- A **`Barcode Entries`** sheet with per-sample barcodes (no `Summary` sheet)
+- The first sheet's **`Lab ID`** column supplies both project labels (e.g. `PaegB`)
+  and Order IDs (e.g. `0626I-08`); order IDs match the pattern `\d+I-\d+`
+- All samples are assigned to a single lane (`lane1`) and single group
+
 ## Workflow Steps
+
+Configs are identified per lane as `lane{N}` (e.g. `lane1`). MiSeq i100 runs use only
+`lane1`; NovaSeqX runs may use `lane1` through `lane8`. Generated sample sheets, renaming
+maps, and per-lane artifacts live under `results/lane{N}/`.
 
 ### 1. Sample Sheet Generation (automatic)
 - Parses metadata Excel file
-- Generates per-lane/masking sample sheets in `src/SampleSheet_lane{N}_{masking}.csv`
-- Creates renaming maps in `src/renaming_map_lane{N}_{masking}.csv`
+- Generates per-lane sample sheets in `results/lane{N}/SampleSheet_lane{N}.csv`
+- Creates renaming maps in `results/lane{N}/renaming_map_lane{N}.csv`
 - Produces Flexbar barcode files for Flexbar-tagged projects
 
 ### 2. BCL Conversion
 ```bash
-snakemake --cores 8 output/lane1_R1-151_I1-8_I2-8_R2-151
+snakemake --cores 8 output/lane1
 ```
-- Runs DRAGEN BCL Convert per lane/masking configuration
+- Runs DRAGEN BCL Convert per lane configuration
 - Applies OverrideCycles from metadata masking field
 - Creates project subdirectories
 - Renames FASTQ files using renaming map: `{Run}-L{Lane}-G{Group}-P{Position}-{Barcode}`
 
 ### 3. Quality Analysis (FastP)
 ```bash
-snakemake --cores 4 results/fastp_lane1_R1-151_I1-8_I2-8_R2-151.done
+snakemake --cores 4 results/fastp_lane1.done
 ```
 - Runs FastP on all samples per config
-- Outputs JSON stats to `results/fastp/{config_id}/{project}/{sample}.json`
+- Outputs JSON stats to `results/fastp/lane{N}/{project}/{sample}.json`
 
 ### 4. Quality Plots
 ```bash
-snakemake --cores 4 results/fastp_plots_lane1_R1-151_I1-8_I2-8_R2-151.done
+snakemake --cores 4 results/lane1/fastp_plots_lane1.done
 ```
 - Generates mean Phred and base composition plots
-- Outputs PNG files to `results/fastp_plots/{config_id}/{project}/{sample}-*.png`
+- Outputs PNG files to `results/fastp_plots/lane{N}/{project}/{sample}-*.png`
 
 ### 5. Project/Order Reports
 ```bash
-snakemake --cores 1 Reports/order_12345/index.html
+snakemake --cores 1 Reports/order_0626I-08/index.html
 ```
 - Creates comprehensive HTML reports grouped by `Order ID`
 - Includes summary of all projects associated with the order
@@ -94,15 +164,15 @@ snakemake --cores 1 Reports/order_12345/index.html
 
 ### 6. Read Count Compilation
 ```bash
-snakemake --cores 1 results/xR077-count.csv
+snakemake --cores 1 results/iR011-count.csv
 ```
 - Aggregates read counts across all lanes
-- Formats as CSV matching format: lane columns with sample names and counts
+- Formats as CSV with lane/group/sample/counts columns
 - Sorted by read count (descending) per lane
 
 ### 7. Email Delivery
 ```bash
-snakemake --cores 1 Reports/xR077_read_counts_email.done
+snakemake --cores 1 Reports/iR011_read_counts_email.done
 ```
 - Sends read count CSV as attachment
 - Uses SMTP (smtp.uci.edu:25)
@@ -126,7 +196,7 @@ snakemake --cores 4 Reports/MyProject/index.html
 
 **Analyze undetermined indices:**
 ```bash
-snakemake --cores 1 results/undetermined_indices/lane1_R1-151_I1-8_I2-8_R2-151.csv
+snakemake --cores 1 results/undetermined_indices/lane1.csv
 ```
 
 **Force re-run a specific rule:**
@@ -148,19 +218,22 @@ snakemake --dag | dot -Tpdf > dag.pdf
 
 ```
 output/
-  lane{N}_{masking}/
+  lane{N}/
     {project}/
       {Run}-L{Lane}-G{Group}-P{Position}-{Barcode}-R1.fastq.gz
       {Run}-L{Lane}-G{Group}-P{Position}-{Barcode}-R2.fastq.gz
 
 results/
+  lane{N}/
+    SampleSheet_lane{N}.csv
+    renaming_map_lane{N}.csv
   fastp/
-    lane{N}_{masking}/{project}/{sample}.json
+    lane{N}/{project}/{sample}.json
   fastp_plots/
-    lane{N}_{masking}/{project}/{sample}-mean_phred.png
-    lane{N}_{masking}/{project}/{sample}-base_comp.png
+    lane{N}/{project}/{sample}-mean_phred.png
+    lane{N}/{project}/{sample}-base_comp.png
   undetermined_indices/
-    lane{N}_{masking}.csv
+    lane{N}.csv
   {library}-count.csv
 
 Reports/
@@ -175,6 +248,21 @@ Reports/
       md5sums.txt
   {library}_read_counts_email.done
 ```
+
+## Undetermined Reads
+
+Two config options control how Undetermined (unassigned) reads are handled per lane:
+
+- **`keep_undetermined_configs`** - lanes whose Undetermined FASTQs are retained
+  instead of deleted after conversion. Example: `keep_undetermined_configs: ['lane1']`
+- **`report_undetermined_configs`** - lanes where Undetermined reads are treated as a
+  normal sample: renamed into the lane's first project directory and flowed through the
+  full pipeline (fastp QC, read counts, md5sums, nextcloud links, and the per-order HTML
+  report). Lanes listed here are automatically added to `keep_undetermined_configs`.
+  Example: `report_undetermined_configs: ['lane1']`
+
+Undetermined reads are also kept automatically when a
+`flexbar_barcodes_{config_id}.txt` file exists for the lane.
 
 ## Email Configuration
 
@@ -193,7 +281,7 @@ For OAuth2 (Gmail):
 
 **Missing lanes in workflow:**
 - Check `detected_lanes` output at workflow start
-- Verify `basecalls_path` in config points to correct BaseCalls directory
+- Verify `data_dir` in config points to the correct run directory (with `Data/Intensities/BaseCalls`)
 
 **BCL conversion fails:**
 - Verify `data_dir` and `run_info_path` are correct
@@ -211,21 +299,29 @@ For OAuth2 (Gmail):
 
 ## Advanced Features
 
-**Flexbar demultiplexing** (for Flexbar-tagged projects):
-- Enable by uncommenting flexbar rule in Snakefile
+**Flexbar / inline demultiplexing** (for Flexbar-tagged projects):
 - Requires barcode FASTA files (auto-generated from metadata)
+- `flexbar_barcode_leader_n` sets leading bases (e.g. a UMI) before the inline barcode
+  in R1 (0 = barcode at position 1; 5 for PAREseq-style U5I6 libraries)
+- `flexbar_retry_min_reads` triggers a reverse-complement retry pass if no sample
+  exceeds the threshold after the forward pass
 - Processes undetermined reads
+
+**Excluding orders:**
+- Set `exclude_order_ids: ["0626I-08"]` to skip processing, reports, and emails for
+  specific Order IDs
+
+**Scratch space for conversion:**
+- Set `scratch_dir` to fast local NVMe; DRAGEN writes FASTQs there first, then moves
+  them to `output/` (avoids writing directly to slow JBOD/network storage)
 
 **Tile-specific processing:**
 - Set `tiles: "1_1101"` in config for subset processing
 - Useful for test runs or debugging
 
-**Custom naming schemes:**
-- Modify renaming map generation in Snakefile
-- Update `src/run_rename.sh` script
-
 ## Notes
 
+- Run commands via `pixi run` (environment provisioned from `pixi.toml` / `pixi.lock`)
 - The workflow auto-detects lanes from the BaseCalls directory
 - Sample sheets are generated once at workflow start from metadata
 - md5 checksums are sorted by position number (P001, P002, ...)
