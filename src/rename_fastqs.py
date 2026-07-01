@@ -101,7 +101,11 @@ def rename_fastqs(config_id, output_dir, map_file):
         # normal sample. Only present when the lane is in report_undetermined_configs.
         if sample_name == "Undetermined":
             stem = f"{run}-L{lane}-G{group}-{position}-{barcode}"
-            for read_type in ['R1', 'R2']:
+            # R1/R2 are always present. I1/I2 are only emitted by DRAGEN when
+            # CreateFastqForIndexReads=1 (config no_demux); move them too when
+            # present so index reads survive into the project. A missing I1/I2 is
+            # normal (non-no_demux runs) and is skipped silently.
+            for read_type in ['R1', 'R2', 'I1', 'I2']:
                 src = os.path.join(output_dir, f"Undetermined_S0_L{lane:03d}_{read_type}_001.fastq.gz")
                 dst = os.path.join(project_dir, f"{stem}-{read_type}.fastq.gz")
                 if os.path.exists(dst):

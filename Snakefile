@@ -3015,9 +3015,12 @@ rule bcl_project_done:
         # Remove extraneous I1/I2 FASTQs for projects that don't need index reads.
         # CreateFastqForIndexReads is set globally per lane, so these files are produced
         # for all projects whenever any project on the lane (e.g. SMK) requires them.
+        # When no_demux is set the index reads are the point of the run (DRAGEN emits
+        # them as FASTQs instead of index-based demultiplexing), so keep them for every
+        # project rather than stripping them here.
         _INDEX_READ_KEYWORDS = ["10x", "BD", "parse", "Parse", "SMK", "smk", "CITE", "cite", "Hashtag", "hashtag"]
         check_name = old_project if old_project else new_project
-        if not any(kw in check_name for kw in _INDEX_READ_KEYWORDS):
+        if not NO_DEMUX and not any(kw in check_name for kw in _INDEX_READ_KEYWORDS):
             proj_dir = f"output/{config_id}/{new_project}"
             removed = 0
             for pattern in ["**/*-I1.fastq.gz", "**/*-I2.fastq.gz"]:
