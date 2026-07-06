@@ -94,7 +94,7 @@ def generate_download_instructions_pdf(output_path, order_id=None, project_name=
     elements.append(Paragraph("<b>Note:</b> The share token is the trailing string in the project link (the part after <code>/s/</code>). For example, in https://precision.biochem.uci.edu/s/eXampLeToKEN the share token is <b>eXampLeToKEN</b>.", body_style))
     elements.append(Paragraph("<b>Step 1 &mdash; Create the WebDAV remote (one-time setup).</b> Replace &lt;share-token&gt; with your token. The endpoint is the public share's WebDAV URL, the username is the share token, and the password is left blank:", body_style))
     rclone_config_cmds = (
-        "rclone config create {remote} webdav \\\n"
+        "rclone config create {remote} \\\n"
         "    url=https://precision.biochem.uci.edu/public.php/webdav/ \\\n"
         "    vendor=owncloud \\\n"
         "    user=<share-token> \\\n"
