@@ -67,6 +67,11 @@ def generate_download_instructions_pdf(output_path, order_id=None, project_name=
     elements.append(Paragraph("<b>Note:</b> The share token is the trailing string in the project link (the part after <code>/s/</code>). For example, in https://precision.biochem.uci.edu/s/eXampLeToKEN the share token is <b>eXampLeToKEN</b>.", body_style))
     elements.append(Spacer(1, 0.1*inch))
 
+    elements.append(Paragraph("<b>FileZilla Pro (Windows, macOS & Linux)</b>", body_style))
+    elements.append(Paragraph("1. Download and install FileZilla Pro from filezilla-project.org (WebDAV support requires the Pro edition).<br/>2. Open <b>Site Manager</b> (File &rarr; Site Manager) and click <b>New site</b>.<br/>3. Set <b>Protocol</b> to <b>WebDAV</b> and encryption to <b>Require implicit FTP over TLS / HTTPS</b>.<br/>4. Host: precision.biochem.uci.edu &nbsp; Path: /public.php/webdav/<br/>5. Set <b>Logon Type</b> to <b>Normal</b>, enter your share token as the username, and leave the password blank.<br/>6. Click <b>Connect</b> and drag files to your local machine.", body_style))
+    elements.append(Paragraph("<b>Note:</b> The share token is the trailing string in the project link (the part after <code>/s/</code>). For example, in https://precision.biochem.uci.edu/s/eXampLeToKEN the share token is <b>eXampLeToKEN</b>.", body_style))
+    elements.append(Spacer(1, 0.1*inch))
+
     # Method 2: Mounting as a Network Drive
     elements.append(Paragraph("🔗 Method 2: OS Network Mounting", heading_style))
     elements.append(Paragraph("You can mount the server as a local folder. For large transfers, use <b>rsync</b> from the mount to your destination to ensure integrity.", body_style))
