@@ -17,6 +17,13 @@ This Snakemake pipeline handles the complete sequencing data processing workflow
 6. **Read Count Compilation** - Lane-level read counts formatted as CSV, aggregated per library
 7. **Email Notifications** - Automated email delivery of reports and read counts
 
+## Installation
+
+```bash
+git clone https://github.com/uci-grthub/bcl_conversion.git
+cd bcl_conversion
+```
+
 ## Environment
 
 Python and the bioinformatics CLIs are provisioned with [pixi](https://pixi.sh) from
