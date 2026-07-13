@@ -10,7 +10,7 @@ flexbar_bin: "/home/kstachel/TOOLS/flexbar-speedup/build_parasail/src/flexbar"
 # barcode FASTA is built as "<this many N's><barcode>" and matched at the read
 # start (LTAIL). 0 = barcode at R1 position 1 (KY26SPI inline libraries). Set to
 # 5 for PAREseq-style U5I6 libraries.
-flexbar_barcode_leader_n: 0
+flexbar_barcode_leader_n: 5
 # If no sample exceeds this many assigned reads after the forward-orientation
 # pass, flexbar retries with the reverse-complement indices.
 flexbar_retry_min_reads: 1000000

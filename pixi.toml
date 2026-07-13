@@ -25,6 +25,7 @@ fastqc = "0.12.*"
 flexbar = "3.5.*"
 seqtk = "1.5.*"
 fqtk = "0.3.*"
+seqkit = ">=2.13.0,<3"
 
 [tasks]
 # Full workflow

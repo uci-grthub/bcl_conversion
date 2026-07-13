@@ -457,21 +457,24 @@ PROJECT_LANES = get_project_lane_pairs(SAMPLE_SHEETS_DICT)
 PROJECT_LANE_REPORTS = [f"Reports/{p}/lane{l}/index.html" for p, l in PROJECT_LANES]
 PROJECT_LANE_MD5S = [f"Reports/{p}/lane{l}/md5sums.txt" for p, l in PROJECT_LANES]
 
+# NOTE: do not name the loop variable `config` here. Python leaks loop variables into
+# the enclosing scope, so that would rebind Snakemake's global `config` dict to the last
+# lane dict and make every later config.get(...) silently fall back to its default.
 FLEXBAR_CONFIGS = []
-for config in LANE_CONFIGS:
-    if config['id'] not in CONFIG_IDS:
+for _lane_cfg in LANE_CONFIGS:
+    if _lane_cfg['id'] not in CONFIG_IDS:
         continue
-    barcode_path = os.path.join("metadata", f"flexbar_barcodes_{config['id']}.txt")
+    barcode_path = os.path.join("metadata", f"flexbar_barcodes_{_lane_cfg['id']}.txt")
     if os.path.exists(barcode_path):
-        FLEXBAR_CONFIGS.append(config['id'])
+        FLEXBAR_CONFIGS.append(_lane_cfg['id'])
 
 FQTK_CONFIGS = []
-for config in LANE_CONFIGS:
-    if config['id'] not in CONFIG_IDS:
+for _lane_cfg in LANE_CONFIGS:
+    if _lane_cfg['id'] not in CONFIG_IDS:
         continue
-    fqtk_tsv = os.path.join("metadata", f"fqtk_barcodes_{config['id']}.tsv")
+    fqtk_tsv = os.path.join("metadata", f"fqtk_barcodes_{_lane_cfg['id']}.tsv")
     if os.path.exists(fqtk_tsv):
-        FQTK_CONFIGS.append(config['id'])
+        FQTK_CONFIGS.append(_lane_cfg['id'])
 
 # _CONFIG_PROJECT_PAIRS_RAW keeps the *original* Sample_Project names from the
 # renaming-map CSVs.  These are the names under which fastp JSONs and BCL
@@ -1828,10 +1831,10 @@ rule flexbar_per_config:
         bcl_done = ".output/{config_id}/.done",
         raw_barcodes = "metadata/flexbar_barcodes_{config_id}.txt",
         adapter = "src/flexbar/adapter.3.fa"
-    threads: 16
+    threads: 32
     priority: 99
     output:
-        touch("results/{config_id}/flexbar_{config_id}.done")
+        touch("results/{config_id}/flexbar_demux_{config_id}.done")
     log:
         "logs/{config_id}/flexbar_{config_id}.log"
     benchmark:
@@ -2016,7 +2019,36 @@ rule flexbar_per_config:
         # and mirrors fqtk_per_config's removal of unmatched reads. This keeps the
         # scratch dir from accumulating tens of GB of unassigned reads.
         rm -f {params.outdir}/flexbarOut_barcode_unassigned*.fastq.gz
+        ) > {log} 2>&1
 
+        touch {output}
+        """
+
+
+rule flexbar_pair_r2:
+    """Pull the R2 mates for each flexbar-assigned R1 and checksum the results.
+
+    Split out of flexbar_per_config so that a failure here (e.g. a missing seqkit,
+    or an OOM on the read-ID list) does not discard the hours-long demultiplexing
+    pass. The R1 FASTQs and the settled orientation are already committed by the
+    flexbar_demux sentinel; this rule only adds the paired R2 files.
+    """
+    input:
+        demux_done = "results/{config_id}/flexbar_demux_{config_id}.done"
+    threads: 32
+    priority: 99
+    output:
+        touch("results/{config_id}/flexbar_{config_id}.done")
+    log:
+        "logs/{config_id}/flexbar_pair_r2_{config_id}.log"
+    benchmark:
+        "benchmarks/flexbar_pair_r2_{config_id}.bench"
+    params:
+        outdir = "output/{config_id}/flexbar",
+        r2 = lambda wildcards: f".output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R2_001.fastq.gz"
+    shell:
+        """
+        (
         # Prepare headers and create each R2 with seqkit's internal threading.
         for r1_out in {params.outdir}/flexbarOut_barcode_*.fastq.gz; do
             [ -e "$r1_out" ] || continue
@@ -2886,7 +2918,11 @@ rule bcl_project_done:
     """
     input:
         done = maybe_ancient(".output/{config_id}/.done"),
-        decision = maybe_ancient("logs/{config_id}/orientation_decision_{config_id}.json")
+        decision = maybe_ancient("logs/{config_id}/orientation_decision_{config_id}.json"),
+        # CONFIG_PROJECT_PAIRS is derived from this map at Snakefile parse time, and each
+        # job is parsed fresh in its own spawned subprocess. Without this dependency the
+        # rule can run before the map exists, leaving the lane's project list empty.
+        renaming_map = maybe_ancient("results/{config_id}/renaming_map_{config_id}.csv")
     output:
         sentinel = touch("output/{config_id}/{project}/.project_done")
     wildcard_constraints:
@@ -2965,7 +3001,24 @@ rule bcl_project_done:
 
         old_project_dirs = {p for cid, p in _CONFIG_PROJECT_PAIRS_RAW if cid == config_id}
         all_lane_projects = sorted([p for cid, p in CONFIG_PROJECT_PAIRS if cid == config_id])
-        is_primary_copier = new_project == (all_lane_projects[0] if all_lane_projects else new_project)
+
+        # Fail closed. Electing every project primary when the lane list is unavailable
+        # makes all of the lane's concurrent bcl_project_done jobs bulk-copy the same
+        # staging dir while each moves its own project dir out of it, and the copiers
+        # crash on the vanishing directories.
+        if new_project not in all_lane_projects:
+            _plog(
+                f"ERROR: {new_project} not in project list for {config_id} "
+                f"(found {all_lane_projects})"
+            )
+            _logf.close()
+            raise RuntimeError(
+                f"Cannot determine the primary accessory copier for {config_id}: "
+                f"{new_project} is absent from the lane's project list "
+                f"({all_lane_projects or 'empty'}). Verify that "
+                f"results/{config_id}/renaming_map_{config_id}.csv exists and lists it."
+            )
+        is_primary_copier = new_project == all_lane_projects[0]
 
         # Bulk accessory copy (primary project only). Skip old Sample_Project subdirs —
         # those are moved by their own bcl_project_done.
