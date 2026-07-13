@@ -1,0 +1,38 @@
+[workspace]
+name = "bcl-convert-pipeline"
+description = "Snakemake BCL conversion pipeline for Illumina MiSeq i100 / NovaSeqX runs"
+channels = ["conda-forge", "bioconda"]
+platforms = ["linux-64"]
+
+# NOTE: two dependencies are NOT managed by pixi and must be present on the system:
+#   1. DRAGEN  (/opt/dragen/<ver>/bin/dragen) - licensed, FPGA-tied; not on any conda channel.
+#   2. Optional custom flexbar build referenced by `flexbar_bin` in snakemake_config.yaml.
+#      A bioconda flexbar is provided below; point `flexbar_bin` at it to drop the custom build.
+
+[dependencies]
+python = "3.12.*"
+snakemake-minimal = ">=9.14,<9.15"
+pandas = "2.3.*"
+numpy = "2.3.*"
+openpyxl = "3.1.*"
+matplotlib-base = "3.10.*"
+pillow = "12.*"
+pyyaml = "6.*"
+reportlab = "4.*"
+
+# Bioinformatics CLIs invoked by the workflow (bioconda)
+fastqc = "0.12.*"
+flexbar = "3.5.*"
+seqtk = "1.5.*"
+fqtk = "0.3.*"
+
+[tasks]
+# Full workflow
+all = "snakemake --cores 8"
+# Preview what would run
+dry-run = "snakemake -n"
+# BCL conversion for a single lane, e.g. `pixi run convert output/lane1`
+convert = "snakemake --cores 8"
+# Rule/dependency graphs
+rulegraph = "snakemake --rulegraph | dot -Tpng > rulegraph.png"
+dag = "snakemake --dag | dot -Tpdf > dag.pdf"

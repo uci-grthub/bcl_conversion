@@ -4,6 +4,7 @@ Generate a PDF with download instructions for sequencing data.
 Updated with WebDAV best practices: Resumable clients over Zip downloads.
 """
 import os
+import re
 import sys
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -13,9 +14,25 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib import colors
 from reportlab.lib.colors import HexColor
 
-def generate_download_instructions_pdf(output_path):
+def build_remote_name(order_id=None, project_name=None):
+    """Build a unique, meaningful rclone remote name from order_id and project_name.
+
+    Combines the two identifiers and sanitizes the result so it is a valid rclone
+    remote name (only alphanumerics, underscores, and hyphens are kept). Falls back
+    to 'nextcloud' if neither identifier is provided.
+    """
+    parts = [str(p).strip() for p in (order_id, project_name) if p and str(p).strip()]
+    raw = "_".join(parts)
+    # Replace any run of disallowed characters with a single underscore.
+    name = re.sub(r"[^0-9A-Za-z_-]+", "_", raw).strip("_-")
+    return name or "nextcloud"
+
+
+def generate_download_instructions_pdf(output_path, order_id=None, project_name=None):
     """Generate a PDF with download instructions."""
-    
+
+    remote_name = build_remote_name(order_id, project_name)
+
     doc = SimpleDocTemplate(
         output_path,
         pagesize=letter,
@@ -50,6 +67,11 @@ def generate_download_instructions_pdf(output_path):
     elements.append(Paragraph("<b>Note:</b> The share token is the trailing string in the project link (the part after <code>/s/</code>). For example, in https://precision.biochem.uci.edu/s/eXampLeToKEN the share token is <b>eXampLeToKEN</b>.", body_style))
     elements.append(Spacer(1, 0.1*inch))
 
+    elements.append(Paragraph("<b>FileZilla Pro (Windows, macOS & Linux)</b>", body_style))
+    elements.append(Paragraph("1. Download and install FileZilla Pro from filezilla-project.org (WebDAV support requires the Pro edition).<br/>2. Open <b>Site Manager</b> (File &rarr; Site Manager) and click <b>New site</b>.<br/>3. Set <b>Protocol</b> to <b>WebDAV</b> and encryption to <b>Require implicit FTP over TLS / HTTPS</b>.<br/>4. Host: precision.biochem.uci.edu &nbsp; Path: /public.php/webdav/<br/>5. Set <b>Logon Type</b> to <b>Normal</b>, enter your share token as the username, and leave the password blank.<br/>6. Click <b>Connect</b> and drag files to your local machine.", body_style))
+    elements.append(Paragraph("<b>Note:</b> The share token is the trailing string in the project link (the part after <code>/s/</code>). For example, in https://precision.biochem.uci.edu/s/eXampLeToKEN the share token is <b>eXampLeToKEN</b>.", body_style))
+    elements.append(Spacer(1, 0.1*inch))
+
     # Method 2: Mounting as a Network Drive
     elements.append(Paragraph("🔗 Method 2: OS Network Mounting", heading_style))
     elements.append(Paragraph("You can mount the server as a local folder. For large transfers, use <b>rsync</b> from the mount to your destination to ensure integrity.", body_style))
@@ -73,10 +95,27 @@ def generate_download_instructions_pdf(output_path):
 
     # Method 3: HPC / rclone
     elements.append(Paragraph("Method 3: HPC / Remote Servers (rclone)", heading_style))
-    elements.append(Paragraph("For cluster environments, rclone is a good choice for high-performance WebDAV transfers.", body_style))
+    elements.append(Paragraph("For cluster environments, rclone is a good choice for high-performance, resumable WebDAV transfers.", body_style))
     elements.append(Paragraph("<b>Note:</b> The share token is the trailing string in the project link (the part after <code>/s/</code>). For example, in https://precision.biochem.uci.edu/s/eXampLeToKEN the share token is <b>eXampLeToKEN</b>.", body_style))
-    rclone_cmds = "rclone config  # Create a WebDAV remote\nrclone copy -P myremote:project_folder ./local_folder"
-    elements.append(Preformatted(rclone_cmds, code_style))
+    elements.append(Paragraph("<b>Step 1 &mdash; Create the WebDAV remote (one-time setup).</b> Replace &lt;share-token&gt; with your token. The endpoint is the public share's WebDAV URL, the username is the share token, and the password is left blank:", body_style))
+    rclone_config_cmds = (
+        "rclone config create {remote} \\\n"
+        "    url=https://precision.biochem.uci.edu/public.php/webdav/ \\\n"
+        "    vendor=owncloud \\\n"
+        "    user=<share-token> \\\n"
+        "    pass="
+    ).format(remote=remote_name)
+    elements.append(Preformatted(rclone_config_cmds, code_style))
+    elements.append(Paragraph("<b>Step 2 &mdash; List the contents</b> to confirm the connection works:", body_style))
+    elements.append(Preformatted("rclone lsd {remote}:".format(remote=remote_name), code_style))
+    elements.append(Paragraph("<b>Step 3 &mdash; Download</b> (the <code>-P</code> flag shows live progress; transfers resume automatically if re-run after an interruption):", body_style))
+    rclone_copy_cmds = (
+        "# Download everything in the share:\n"
+        "rclone copy -P {remote}: ./local_folder\n\n"
+        "# Or download a single subfolder within the share:\n"
+        "rclone copy -P {remote}:<subfolder> ./local_folder"
+    ).format(remote=remote_name)
+    elements.append(Preformatted(rclone_copy_cmds, code_style))
     elements.append(Spacer(1, 0.1*inch))
 
     # Integrity Check
@@ -93,4 +132,6 @@ def generate_download_instructions_pdf(output_path):
 
 if __name__ == "__main__":
     output = sys.argv[1] if len(sys.argv) > 1 else "Download_Instructions.pdf"
-    generate_download_instructions_pdf(output)
+    order_id = sys.argv[2] if len(sys.argv) > 2 else None
+    project_name = sys.argv[3] if len(sys.argv) > 3 else None
+    generate_download_instructions_pdf(output, order_id, project_name)

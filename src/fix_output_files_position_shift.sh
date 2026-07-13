@@ -91,10 +91,13 @@ fi
 echo "Running position shift fixer..."
 echo ""
 
-# Use mamba env if available (per CLAUDE.md: use bcl_convert mamba env, don't use venv)
-if command -v mamba &> /dev/null; then
-    echo "Using mamba environment: bcl_convert"
-    mamba run -n bcl_convert python3 src/fix_output_files_position_shift.py "$@"
+# Prefer the pixi-provisioned environment; fall back to system Python.
+# Resolve pixi even under a minimal PATH (e.g. cron) via the default install location.
+PIXI="$(command -v pixi 2>/dev/null || true)"
+[ -z "$PIXI" ] && [ -x "$HOME/.pixi/bin/pixi" ] && PIXI="$HOME/.pixi/bin/pixi"
+if [ -n "$PIXI" ]; then
+    echo "Using pixi environment"
+    "$PIXI" run python3 src/fix_output_files_position_shift.py "$@"
 else
     echo "Using system Python"
     python3 src/fix_output_files_position_shift.py "$@"

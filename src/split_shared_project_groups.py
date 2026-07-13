@@ -13,7 +13,7 @@ submitted under the same Sample_Project name).  For each such project:
     downstream rules (calculate_md5sums, project_link, report_order_id) can run.
 
 Usage:
-    conda run -n bcl_convert python3 split_shared_project_groups.py \\
+    pixi run python3 src/split_shared_project_groups.py \\
         --metadata metadata/260401_23N3TKLT4_25B_PE151_xR087.xlsx \\
         --library xR087 \\
         [--dry-run]

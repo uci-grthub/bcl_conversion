@@ -52,7 +52,7 @@ trap 'rm -f "$METADATA"' EXIT
 printf "sample_id\tbarcode\nSMK_L1\tCGAGGCTG\nSMK_L2\tGTAGAGGA\n" > "$METADATA"
 
 echo "Running fqtk demux..."
-conda run -n bcl_convert fqtk demux \
+fqtk demux \
     --inputs "$R1" "$I1" "$R2" \
     --read-structures "151T" "$I1_READ_STRUCT" "151T" \
     --sample-metadata "$METADATA" \

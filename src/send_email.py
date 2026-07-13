@@ -203,10 +203,11 @@ if use_zip:
 
 else:
     # ── Inline CID path ───────────────────────────────────────────────────────
-    if html_content:
-        message = MIMEMultipart('related')
-    else:
-        message = MIMEMultipart()
+    # Top-level container is multipart/mixed and carries the file attachments.
+    # The HTML body and its inline cid: images live in a nested multipart/related
+    # so clients (notably Gmail) bind the cid refs and render the plots inline
+    # instead of demoting them to attachments.
+    message = MIMEMultipart('mixed')
     message["Subject"] = subject
     message["From"] = sender_email
     message["To"] = receiver_email
@@ -216,12 +217,14 @@ else:
         message.attach(MIMEText(text_content, "plain"))
 
     if html_content:
+        related = MIMEMultipart('related')
+
         modified_html = html_content
         for i, (img_bytes, fmt, old_src, _) in image_data_map.items():
             cid = f"image_{i}@grtHub"
             modified_html = modified_html.replace(old_src, f'src="cid:{cid}"', 1)
 
-        message.attach(MIMEText(modified_html, "html"))
+        related.attach(MIMEText(modified_html, "html"))
 
         for i, (img_bytes, fmt, _, _) in image_data_map.items():
             cid = f"image_{i}@grtHub"
@@ -229,9 +232,11 @@ else:
                 img = MIMEImage(img_bytes, fmt)
                 img.add_header('Content-ID', f'<{cid}>')
                 img.add_header('Content-Disposition', 'inline')
-                message.attach(img)
+                related.attach(img)
             except Exception as e:
                 print(f"Warning: Failed to attach image {i}: {e}")
+
+        message.attach(related)
 
 # ── Attachments ───────────────────────────────────────────────────────────────
 for attachment_path in attachment_list:

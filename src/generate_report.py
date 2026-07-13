@@ -646,6 +646,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
     
     samples = {} # stem -> { config_id: { info... } }
     demux_stats_cache = {}  # config_id -> {(orig_project, index): num_reads}
+    undetermined_reads_cache = {}  # config_id -> num_reads for the lane's Undetermined row
     fqtk_counts_cache = {}   # config_id -> {sample_name: num_reads}
     flexbar_counts_cache = {}  # config_id -> {barcode_name: {'r1': int|None, 'r2': int|None}}
     flexbar_label_cache = {}   # config_id -> {barcode_label: sample_name}
@@ -667,6 +668,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
         if config_id not in demux_stats_cache:
             demux_csv = os.path.join(output_base_dir, config_id, "Reports", "Demultiplex_Stats.csv")
             demux_stats_cache[config_id] = {}
+            undetermined_reads_cache[config_id] = None
             if os.path.exists(demux_csv):
                 try:
                     import csv as _csv
@@ -675,6 +677,17 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                             _proj = _row.get('Sample_Project', '').strip()
                             _idx = _row.get('Index', '').strip().rstrip('-')
                             _reads = _row.get('# Reads', '').strip()
+                            _sid = _row.get('SampleID', _row.get('Sample_ID', '')).strip()
+                            # The Undetermined row has an empty Index, so it isn't
+                            # stored in the (project, index) cache below; capture it
+                            # separately so an Undetermined pseudo-sample can resolve
+                            # its read count (gated: only injected when the lane is in
+                            # report_undetermined_configs).
+                            if _sid.lower() == 'undetermined' and _reads:
+                                try:
+                                    undetermined_reads_cache[config_id] = int(_reads)
+                                except ValueError:
+                                    pass
                             if _proj and _idx and _reads:
                                 try:
                                     demux_stats_cache[config_id][(_proj, _idx)] = int(_reads)
@@ -777,6 +790,11 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
 
             _cache = demux_stats_cache.get(config_id, {})
             demux_reads = _cache.get((fastp_lookup_name, barcode)) or _cache.get((fastp_lookup_name, rc_index2(barcode)))
+            # Undetermined pseudo-sample: its barcode token is "Undetermined" and its
+            # count lives in the lane's Undetermined demux row (empty Index), so fall
+            # back to the dedicated cache.
+            if (demux_reads is None or demux_reads == 0) and barcode == "Undetermined":
+                demux_reads = undetermined_reads_cache.get(config_id)
             paired_reads = demux_reads if (demux_reads is not None and demux_reads > 0) else "N/A"
 
             # Fallback: for fqtk-staged reads, derive paired reads from fqtk demux-metrics.
@@ -924,7 +942,52 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
             print(f"Error processing {json_file}: {e}")
             
     sorted_stems = sorted(samples.keys())
-    
+
+    # Resolve the Nextcloud public-share link for a given lane/config so plot
+    # images can be referenced by URL (publicpreview endpoint) instead of being
+    # embedded as base64. Inline binary parts are stripped by the outbound mail
+    # filter, so hosted links are the reliable way to get plots into the email.
+    def _share_link_for_config(config_id):
+        target_lane = parse_lane_from_config(config_id)
+        for pname in (display_project, orig_project_name, project):
+            cfgmap = existing_project_links.get(pname) if pname else None
+            if not cfgmap:
+                continue
+            for lane_config, data in cfgmap.items():
+                lk = data.get('link') if isinstance(data, dict) else data
+                if not lk:
+                    continue
+                if lane_config == config_id or (
+                    target_lane is not None
+                    and parse_lane_from_config(lane_config) == target_lane
+                ):
+                    return lk
+        # Fallback: if the project has exactly one download link, use it.
+        uniq = list(dict.fromkeys(project_fastq_links))
+        if len(uniq) == 1:
+            return uniq[0]
+        return None
+
+    def _publicpreview_url(share_link, plot_path):
+        """Anonymous Nextcloud public-preview URL for a plot that lives under
+        <shared folder>/plots/. Returns None if the share token can't be parsed."""
+        m = re.search(r'(https?://[^/]+)/s/([A-Za-z0-9]+)', share_link or "")
+        if not m:
+            return None
+        base, token = m.group(1), m.group(2)
+        rel = "/plots/" + os.path.basename(plot_path)
+        from urllib.parse import quote
+        return (f"{base}/apps/files_sharing/publicpreview/{token}"
+                f"?file={quote(rel)}&x=1600&y=1600&a=true")
+
+    def _plot_label(plot_path):
+        n = os.path.basename(plot_path).lower()
+        if "mean_phred" in n:
+            return "Mean PHRED quality"
+        if "base_comp" in n:
+            return "Base composition"
+        return os.path.basename(plot_path)
+
     for stem in sorted_stems:
         # Sample Section
         html_content += f"""
@@ -1010,16 +1073,46 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                 html_content += f"<p style='font-weight: bold; margin: 10px 0 5px 0;'>{config_id}</p>"
                 html_content += "<div style='margin-bottom: 12px;'>"
 
-                # Compose up to three plots into one image
-                composed_b64 = compose_plots_base64(candidates, total_width=plots_total_width, quality=plots_quality)
-                if composed_b64:
-                    html_content += f"<img src='data:image/jpeg;base64,{composed_b64}' alt='Quality plots' style='width: 100%; max-width: 100%; height: auto; border: 1px solid #dddddd;'>"
-                else:
-                    # Fallback: embed individually (compressed)
+                # Prefer hosting the plots on the existing Nextcloud share and
+                # referencing them by URL. Inline base64 images are stripped by
+                # the outbound mail filter, so links are the reliable path.
+                share_link = _share_link_for_config(config_id)
+                plot_items = []
+                if share_link:
                     for c in candidates:
-                        b64 = get_image_base64(c)
-                        if b64:
-                            html_content += f"<img src='data:image/jpeg;base64,{b64}' alt='Plot' style='width: 32%; max-width: 32%; margin-right: 1%; height: auto; border: 1px solid #dddddd;'>"
+                        u = _publicpreview_url(share_link, c)
+                        if u:
+                            plot_items.append((u, c))
+
+                if plot_items:
+                    # Plain text links only. Embedded images are stripped by the
+                    # outbound mail filter, and Gmail's proxy won't render the
+                    # Nextcloud preview URLs (served Cache-Control: private), so a
+                    # broken <img> would just show duplicate/blank content. A link
+                    # always renders and opens the plot in the browser.
+                    for u, c in plot_items:
+                        # Escape & as &amp; so mail-client HTML sanitizers keep the query string intact.
+                        u_html = u.replace('&', '&amp;')
+                        label = _plot_label(c)
+                        html_content += (
+                            "<div style='margin-bottom: 12px;'>"
+                            f"<a href='{u_html}' style='color: #0066cc; font-weight: bold; text-decoration: none;'>"
+                            f"<img src='{u_html}' alt='{label}' width='430' style='display: block; width: 100%; max-width: 430px; height: auto; border: 1px solid #dddddd; margin-bottom: 4px;'>"
+                            f"{label} &rarr;</a>"
+                            "</div>"
+                        )
+                else:
+                    # Fallback: compose up to three plots into one image and embed
+                    # as base64 (used only when no share link can be resolved).
+                    composed_b64 = compose_plots_base64(candidates, total_width=plots_total_width, quality=plots_quality)
+                    if composed_b64:
+                        html_content += f"<img src='data:image/jpeg;base64,{composed_b64}' alt='Quality plots' style='width: 100%; max-width: 100%; height: auto; border: 1px solid #dddddd;'>"
+                    else:
+                        # Fallback: embed individually (compressed)
+                        for c in candidates:
+                            b64 = get_image_base64(c)
+                            if b64:
+                                html_content += f"<img src='data:image/jpeg;base64,{b64}' alt='Plot' style='width: 32%; max-width: 32%; margin-right: 1%; height: auto; border: 1px solid #dddddd;'>"
 
                 html_content += "</div>"
         
@@ -1066,7 +1159,11 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
         pdf_path = os.path.join(report_dir, "Download_Instructions.pdf")
         pdf_script = os.path.join(os.path.dirname(__file__), "generate_download_instructions_pdf.py")
         try:
-            subprocess.run(["python3", pdf_script, pdf_path], check=True, capture_output=True, text=True)
+            pdf_cmd = ["python3", pdf_script, pdf_path]
+            if order_id or display_project:
+                pdf_cmd.append(str(order_id or ""))
+                pdf_cmd.append(str(display_project or ""))
+            subprocess.run(pdf_cmd, check=True, capture_output=True, text=True)
             print(f"Download instructions PDF generated: {pdf_path}")
         except subprocess.CalledProcessError as e:
             print(f"Warning: Could not generate download instructions PDF: {e.stderr}")

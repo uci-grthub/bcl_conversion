@@ -1,119 +1,138 @@
-# SOP: Run the NovaSeqX Snakemake Workflow
+# SOP: Run the Illumina BCL Conversion Snakemake Workflow
 
-This SOP provides clear, human‑readable steps to execute the NovaSeqX BCL conversion pipeline from start to finish.
+This SOP provides clear, human‑readable steps to execute the BCL conversion pipeline from
+start to finish. It supports both **MiSeq i100** and **NovaSeqX** runs — the platform is
+auto-detected from the metadata workbook (see step 5).
 
 ## 1) Verify prerequisites
 
-- You have access to the run directory where bcl data is stored on dragen.
-- The run has finished copying (there is a CopyComplete.txt file in the run directory)
-- You have a SampleSheet (.xslx) Excel file from the lab.
-- Conda/mamba is installed, otherwise: 
+- You have access to the run directory where BCL data is stored on dragen.
+- The run has finished copying (there is a `CopyComplete.txt` file in the run directory).
+- You have a SampleSheet (`.xlsx`) Excel file from the lab.
+- **DRAGEN** is available on the system (`which dragen` → `/opt/dragen/<ver>/bin/dragen`).
+  DRAGEN is licensed/FPGA-tied and is installed at the system level, not by pixi.
+- **pixi** is installed, otherwise install it once:
 
+    ```bash
+    curl -fsSL https://pixi.sh/install.sh | bash
     ```
-    curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
-    bash Miniforge3-$(uname)-$(uname -m).sh
-    ```
 
-## 1) Copy the project template.
+## 2) Copy the project template
 
-- Navigate to the processing directory on dragen 
-`cd /staging/nextcloud/testing_illumina/NovaseqX`
-- Clone the github repository
-`git clone https://github.com/whtns/igb_transition {RUN_NAME}`
-- Enter the project directory
-`/staging/nextcloud/testing_illumina/NovaSeqX/{RUN_NAME}` 
+- Navigate to the processing directory on dragen (choose the platform folder), e.g.:
+  - MiSeq i100: `cd /staging/nextcloud/testing_illumina/MiSeqi100`
+  - NovaSeqX:   `cd /staging/nextcloud/testing_illumina/NovaseqX`
+- Clone the github repository into a run-named directory:
+  `git clone https://github.com/whtns/igb_transition {RUN_NAME}`
+- Enter the project directory:
+  `cd {RUN_NAME}`
 
-## 2) Activate the conda environment.
+## 3) Provision the environment with pixi
 
-- Install the `bcl_convert` conda environment
-  - The `bcl_convert` conda env needs to be installed only once per user
-  - it needs to be activated every time the workflow is executed 
-  `mamba activate bcl_convert`
+The Python tools and bioinformatics CLIs are provisioned from `pixi.toml` (locked in
+`pixi.lock`). This creates a per-project environment under `.pixi/` — no global env to
+activate.
 
-## 3) Copy the SampleSheet into the new project
+```bash
+pixi install
+```
 
-- Upload the excel SampleSheet {SampleSheet.xlsx} into the `metadata` directory 
-`/staging/nextcloud/testing_illumina/NovaseqX/{RUN_NAME}/metadata`
+This installs Python, Snakemake, and the bioconda CLIs (`fastqc`, `flexbar`, `seqtk`,
+`fqtk`). Run every subsequent command with `pixi run ...` (no activation step needed).
 
-## 4) Review and update configuration
+> The legacy `bcl_convert` mamba/conda environment is retired in favor of pixi.
+> DRAGEN remains a system-level tool (see step 1) and is not installed by pixi.
 
-Open and update the project settings:
+## 4) Copy the SampleSheet into the new project
 
-- `snakemake_config.yaml`
+- Upload the Excel SampleSheet into the `metadata` directory:
+  `{RUN_NAME}/metadata/{SampleSheet.xlsx}`
 
-Key fields to update: {example values}
+## 5) Review and update configuration
 
-- `library_name`: {xR083} (the name of the run)
-- `metadata`: {`metadata/SampleSheet.xlsx`} (path to the Excel file)
-- `data_dir`: {`/staging/nextcloud/NovaseqX/20260129_LH00626_0090_B233NGJLT4`} (BCL run directory)
-- `email_sender`: {kstachel@uci.edu} (the sender of email reports)
-- `email_recipient`: {kstachel@uci.edu} (the recipient of email reports)
-- `external_drive_path`: {`/mnt/extusb3/nextcloud3/`} (the mount point of the external usb connected to dragen for rsync)
+Open and update the project overrides in `snakemake_config_project.yaml` (these are layered
+over the base `snakemake_config.yaml`).
 
-## 3) Validate metadata
-The Excel metadata file must contain:
+Key fields to update (example values):
 
-- **Summary sheet** (header at row 3):
-  - `Lane`, `Gr` (Group), `Project Name`, `Masking`, `Fastq Link`
-- **Per-project sheets** with sample details:
-  - `Lane`, `Group`, `Sample Name`, `i7 Barcode Sequence`, `i5 Barcode Sequence`
-- Ensure Masking strings match run cycle structure in RunInfo.xml
+- `library_name`: `iR011` (the name of the run)
+- `metadata`: `metadata/SampleSheet.xlsx` (path to the Excel file)
+- `data_dir`: the BCL run directory, e.g.
+  - MiSeq i100: `/staging/nextcloud/Miseqi100/20260626_SH00564_0020_ASC2231455-SC3`
+  - NovaSeqX:   `/staging/nextcloud/NovaseqX/20260129_LH00626_0090_B233NGJLT4`
+- `email_sender`: `kstachel@uci.edu` (sender of email reports)
+- `email_recipient`: `kstachel@uci.edu` (recipient of email reports)
+- `external_drive_path`: mount point of the external USB drive for rsync
 
-## 4) Dry run (recommended)
+## 6) Validate metadata
 
-Run a dry run to validate the workflow plan before any processing:
+The workflow auto-detects the platform from the workbook:
 
-- `snakemake -n`
+- **NovaSeqX** (has a `Summary` sheet):
+  - **Summary sheet** (header at row 3): `Lane`, `Gr` (Group), `Project Name`, `Masking`, `Fastq Link`
+  - **Per-project sheets**: `Lane`, `Group`, `Sample Name`, `i7 Barcode Sequence`, `i5 Barcode Sequence`
+  - Ensure Masking strings match the run cycle structure in `RunInfo.xml`
+- **MiSeq i100** (has a `Barcode Entries` sheet, no `Summary` sheet):
+  - Simple per-sample barcodes; Order IDs inferred from the `Lab ID` column
+  - All samples assigned to a single lane (`lane1`) and single group
 
-If the dry run shows missing files or configuration errors, fix those before proceeding.
+## 7) Dry run (recommended)
 
-## 5) Run the full workflow
+Validate the workflow plan before any processing:
 
-Execute the entire pipeline:
+```bash
+pixi run snakemake -n
+```
 
-- `snakemake --cores 8`
+The output prints the detected metadata format. Fix any missing-file or configuration
+errors before proceeding.
 
-Adjust `--cores` based on system resources (max 32).
+## 8) Run the full workflow
 
-## 6) Run specific workflow stages (optional)
+Execute the entire pipeline (adjust `--cores` to system resources, max 32):
 
-If you only need certain outputs, you can run specific targets:
+```bash
+pixi run snakemake --cores 8
+```
 
-- BCL conversion for a lane/masking:
-`snakemake --cores 8 output/lane1_R1-151_I1-8_I2-8_R2-151`
+## 9) Run specific workflow stages (optional)
 
-- FastP analysis for a lane/masking:
-`snakemake --cores 4 results/fastp_lane1_R1-151_I1-8_I2-8_R2-151.done`
+Configs are identified per lane as `lane{N}` (MiSeq uses only `lane1`; NovaSeqX may use
+`lane1`…`lane8`). Run individual targets, e.g.:
 
-- FastP plots for a lane/masking:
-`snakemake --cores 4 results/fastp_plots_lane1_R1-151_I1-8_I2-8_R2-151.done`
-
+- BCL conversion for a lane:
+  `pixi run snakemake --cores 8 output/lane1`
+- FastP analysis for a lane:
+  `pixi run snakemake --cores 4 results/fastp_lane1.done`
+- FastP plots for a lane:
+  `pixi run snakemake --cores 4 results/lane1/fastp_plots_lane1.done`
 - Project or Order report:
-`snakemake --cores 1 Reports/order_12345/index.html`
-
+  `pixi run snakemake --cores 1 Reports/order_0626I-08/index.html`
 - Read count CSV:
-     `snakemake --cores 1 results/xR083-count.csv`
+  `pixi run snakemake --cores 1 results/iR011-count.csv`
 
-## 7) Validate outputs
+## 10) Validate outputs
 
 Check that outputs are generated and complete:
 
-- `output/` contains lane and project FASTQ files.
+- `output/lane{N}/` contains project FASTQ files.
 - `results/fastp/` has JSON stats.
 - `results/fastp_plots/` has PNG plots.
 - `Reports/` contains order and project HTML reports plus md5sums and PDFs.
 - `results/{library}-count.csv` exists and looks correct.
 
-## 8) Re-run or update specific steps (if needed)
+## 11) Re-run or update specific steps (if needed)
 
 If you need to re-run a specific rule (e.g., read counts):
 
-- `snakemake --cores 4 -R compile_read_counts`
+```bash
+pixi run snakemake --cores 4 -R compile_read_counts
+```
 
-## 9) Troubleshooting quick checks
+## 12) Troubleshooting quick checks
 
-- Missing lanes: confirm `basecalls_path` and detected lanes.
-- BCL conversion failures: verify DRAGEN availability and run paths.
+- Missing lanes: confirm `data_dir` and the detected lanes at workflow start.
+- BCL conversion failures: verify DRAGEN availability (`which dragen`) and run paths.
 - Empty reports: verify metadata sheet names and headers.
 - md5 mismatch: regenerate the specific project report outputs.
 
@@ -134,17 +153,18 @@ For OAuth2 (Gmail):
 
 **View rule graph:**
 ```bash
-snakemake --rulegraph | dot -Tpdf > rulegraph.pdf
+pixi run snakemake --rulegraph | dot -Tpdf > rulegraph.pdf
 ```
 
 **View complete dependency graph:**
 ```bash
-snakemake --dag | dot -Tpdf > dag.pdf
+pixi run snakemake --dag | dot -Tpdf > dag.pdf
 ```
 
-**Flexbar demultiplexing** (for Flexbar-tagged projects):
-- Enable by uncommenting flexbar rule in Snakefile
+**Flexbar / inline demultiplexing** (for Flexbar-tagged projects):
 - Requires barcode FASTA files (auto-generated from metadata)
+- `flexbar_barcode_leader_n` / `flexbar_retry_min_reads` tune inline-barcode matching
+- A bioconda `flexbar` is provided by pixi; point `flexbar_bin` at it to drop the custom build
 - Processes undetermined reads
 
 **Tile-specific processing:**

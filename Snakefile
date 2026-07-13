@@ -56,12 +56,21 @@ DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20260115_LH00626_
 TILES = config.get("tiles", "1_1101")
 FLEXBAR_BIN = config.get("flexbar_bin", "")
 USE_ANCIENT = config.get("use_ancient", True)
-KEEP_UNDETERMINED_CONFIGS = " ".join(config.get("keep_undetermined_configs", []))
+REPORT_UNDETERMINED_CONFIGS = config.get("report_undetermined_configs", [])
+_effective_keep = list(config.get("keep_undetermined_configs", []))
+for _c in REPORT_UNDETERMINED_CONFIGS:
+    if _c not in _effective_keep:
+        _effective_keep.append(_c)
+KEEP_UNDETERMINED_CONFIGS = " ".join(_effective_keep)
 
 def maybe_ancient(path):
     return ancient(path) if USE_ANCIENT else path
 
 SCRATCH_DIR = config.get("scratch_dir", "")
+
+# When true, force CreateFastqForIndexReads=1 in every generated SampleSheet so DRAGEN
+# emits index reads as FASTQs (no index-based demultiplexing). Default: false.
+NO_DEMUX = bool(config.get("no_demux", False))
 
 NEXTCLOUD_DIR_NAME = config.get("nextcloud_dir_name", "DragenExt3")
 NEXTCLOUD_DIR_PATH = config.get("nextcloud_dir_path", "nextcloud3")
@@ -681,7 +690,6 @@ rule all:
         ORDER_ID_MD5S,
         expand("results/lane{lane}/fastp_plots_summary_lane{lane}.done", lane=detected_lanes),
         expand("results/undetermined_indices/{config_id}.csv", config_id=CONFIG_IDS),
-        expand("results/undetermined_indices/{config_id}_rc.csv", config_id=CONFIG_IDS),
         expand("results/{config_id}/{project}/read_counts_{project}.csv", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         # expand("logs/{config_id}/project_link_{config_id}_{project}.log", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         expand("logs/{config_id}/project_links_{config_id}---{project}.yaml", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
@@ -689,6 +697,7 @@ rule all:
         f"Reports/{LIBRARY}_read_counts_email.done",
         expand("Reports/order_{order_id}/email_sent.done", order_id=ACTIVE_ORDER_IDS + FLEXBAR_ACTIVE_ORDER_IDS),
         expand("output/{config_id}/{project}/.low_reads_checked", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
+        expand("output/{config_id}/{project}/.plots_copied", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         expand("logs/{config_id}/verify_project_link_{config_id}---{project}.txt", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         ([VALIDATION_XLSX] if VALIDATION_XLSX else []),
         expand("results/{config_id}/flexbar_{config_id}.done", config_id=FLEXBAR_CONFIGS),
@@ -1011,7 +1020,7 @@ rule flexbar_project_link:
 
                 while retry_count < max_retries and not share_url:
                     retry_count += 1
-                    wait_time = 3 * (2 ** (retry_count - 1))
+                    wait_time = min(3 * (2 ** (retry_count - 1)), 60)
                     if rate_limited: time.sleep(10)
                     try:
                         cmd = ['curl', '-s', '-w', '\nHTTP_CODE:%{http_code}',
@@ -1448,6 +1457,34 @@ rule summarize_project_reads:
                         'Total_Reads': read_pairs,
                         'Passed_Reads': read_pairs,
                     })
+
+                # If this project owns the lane's Undetermined pseudo-sample
+                # (report_undetermined_configs), include its count too. The
+                # Undetermined demux row has Sample_Project='Undetermined', so it
+                # isn't captured by the project filter above.
+                if wildcards.config_id in REPORT_UNDETERMINED_CONFIGS:
+                    map_path = f"results/{wildcards.config_id}/renaming_map_{wildcards.config_id}.csv"
+                    owns_undetermined = False
+                    if os.path.exists(map_path):
+                        try:
+                            _m = pd.read_csv(map_path)
+                            owns_undetermined = (
+                                (_m['Sample_Name'].astype(str).str.strip() == 'Undetermined')
+                                & (_m['Sample_Project'].astype(str).str.strip() == wildcards.project)
+                            ).any()
+                        except Exception as e:
+                            print(f"Could not check undetermined ownership in {map_path}: {e}")
+                    if owns_undetermined:
+                        u_rows = demux_df[demux_df['SampleID'].astype(str).str.strip() == 'Undetermined']
+                        for _, row in u_rows.iterrows():
+                            read_pairs = int(row.get('# Reads', 0))
+                            data.append({
+                                'Config': wildcards.config_id,
+                                'Project': wildcards.project,
+                                'Sample': 'Undetermined',
+                                'Total_Reads': read_pairs,
+                                'Passed_Reads': read_pairs,
+                            })
             else:
                 print(f"Missing Sample_Project column in {demux_path}")
 
@@ -1491,10 +1528,18 @@ rule compile_read_counts:
 
             config_id = os.path.basename(map_path).replace("renaming_map_", "").replace(".csv", "")
             
-            # Read Demultiplex_Stats.csv for this config_id
-            demux_stats_path = os.path.join("output", config_id, "Reports", "Demultiplex_Stats.csv")
-            if not os.path.exists(demux_stats_path):
-                print(f"Skipping missing Demultiplex_Stats.csv: {demux_stats_path}")
+            # Read Demultiplex_Stats.csv for this config_id.
+            # Prefer the renamed/organized copy under output/, but fall back to the
+            # raw DRAGEN output under .output/ — some lanes (e.g. per-group demultiplexed
+            # lanes) never get a Reports/ dir copied into output/, so the renamed copy is
+            # absent even though the raw stats exist and carry the same Sample_Project/SampleID.
+            demux_stats_candidates = [
+                os.path.join("output", config_id, "Reports", "Demultiplex_Stats.csv"),
+                os.path.join(".output", config_id, "Reports", "Demultiplex_Stats.csv"),
+            ]
+            demux_stats_path = next((p for p in demux_stats_candidates if os.path.exists(p)), None)
+            if demux_stats_path is None:
+                print(f"Skipping missing Demultiplex_Stats.csv: tried {', '.join(demux_stats_candidates)}")
                 continue
             
             try:
@@ -1549,13 +1594,22 @@ rule compile_read_counts:
                 # Match by Lane, Sample_Project, and SampleID
                 read_pairs = 0
                 try:
-                    # Filter by lane and project
-                    matches = demux_df[
-                        (demux_df['Lane'] == lane) & 
-                        (demux_df['Sample_Project'] == project) &
-                        (demux_df['SampleID'] == sample_name)
-                    ]
-                    
+                    if sample_name == "Undetermined":
+                        # Undetermined is its own SampleID/Sample_Project in
+                        # Demultiplex_Stats even though we attach it to a real
+                        # project directory; match on the lane's Undetermined row.
+                        matches = demux_df[
+                            (demux_df['Lane'] == lane) &
+                            (demux_df['SampleID'] == 'Undetermined')
+                        ]
+                    else:
+                        # Filter by lane and project
+                        matches = demux_df[
+                            (demux_df['Lane'] == lane) &
+                            (demux_df['Sample_Project'] == project) &
+                            (demux_df['SampleID'] == sample_name)
+                        ]
+
                     if len(matches) > 0:
                         # BCL Convert reports '# Reads' as read pairs (clusters), not individual reads
                         read_pairs = int(matches.iloc[0]['# Reads'])
@@ -1767,7 +1821,9 @@ rule flexbar_per_config:
         barcodes_abs = lambda wildcards: os.path.abspath(f"metadata/flexbar_barcodes_{wildcards.config_id}.fasta"),
         adapter_abs = lambda wildcards, input: os.path.abspath(input.adapter),
         r1_abs = lambda wildcards, input: os.path.abspath(f".output/{wildcards.config_id}/Undetermined_S0_L00{wildcards.config_id.split('_')[0].replace('lane', '')}_R1_001.fastq.gz"),
-        flexbar_bin = FLEXBAR_BIN
+        flexbar_bin = FLEXBAR_BIN,
+        retry_min_reads = config.get("flexbar_retry_min_reads", 1000000),
+        barcode_leader = config.get("flexbar_barcode_leader_n", 0)
     shell:
         """
         (
@@ -1789,55 +1845,172 @@ rule flexbar_per_config:
             fi
         fi
 
-        # Build processed FASTA from raw tab-delimited barcodes.
-        awk -F'\t' '
-        NF >= 3 {{
-            name = $1
-            barcode = $3
-            gsub(/\r/, "", name)
-            gsub(/\r/, "", barcode)
-            gsub(/ /, "_", name)
-            gsub(/[^a-zA-Z0-9_]/, "", name)
-            gsub(/A/, "X", barcode)
-            gsub(/T/, "A", barcode)
-            gsub(/X/, "T", barcode)
-            gsub(/C/, "Y", barcode)
-            gsub(/G/, "C", barcode)
-            gsub(/Y/, "G", barcode)
-            reversed = ""
-            for (i = length(barcode); i >= 1; i--) {{
-                reversed = reversed substr(barcode, i, 1)
-            }}
-            print ">" name
-            print "NNNNN" reversed "NNNN"
-        }}
-        ' {params.raw_barcodes_abs} > {params.barcodes_abs}
 
-        "$flexbar_cmd" -r {params.r1_abs} -b {params.barcodes_abs} \
-            --barcode-trim-end LTAIL \
-            --barcode-error-rate 0 \
-            --adapters {params.adapter_abs} \
-            --adapter-error-rate 0.1 \
-            --adapter-min-overlap 1 \
-            --adapter-trim-end RIGHT \
-            --zip-output GZ \
-            --barcode-unassigned \
-            --min-read-length 15 \
-            --umi-tags \
-            --target {params.outdir}/flexbarOut -n {threads}
+        # If any assigned barcode falls below this many reads after the primary
+        # run, retry with the opposite index orientation and keep whichever
+        # orientation assigns the most reads overall.
+        retry_min_reads={params.retry_min_reads}
+
+        # Build the barcode FASTA from the raw tab-delimited barcodes.
+        # $1 = orientation: "rc" reverse-complements each listed barcode
+        # (historical default), "fwd" uses each barcode as listed. $2 = output FASTA.
+        #
+        # The pattern is "<lead N's><barcode>", matched at the read start (LTAIL).
+        # `lead` is the number of leading bases (e.g. a UMI) before the inline
+        # barcode; it comes from config.flexbar_barcode_leader_n and defaults to 0
+        # because the active KY26SPI libraries carry the 6 bp index at R1 position 1
+        # with no leader. A non-zero leader was only correct for the PAREseq (U5I6)
+        # libraries, which have since moved to BCL Convert inline extraction.
+        build_barcode_fasta() {{
+            awk -F'\t' -v orient="$1" -v lead="{params.barcode_leader}" '
+            NF >= 2 {{
+                name = $1
+                barcode = $2
+                gsub(/\r/, "", name)
+                gsub(/\r/, "", barcode)
+                gsub(/ /, "_", name)
+                gsub(/[^a-zA-Z0-9_]/, "", name)
+                if (orient == "rc") {{
+                    gsub(/A/, "X", barcode)
+                    gsub(/T/, "A", barcode)
+                    gsub(/X/, "T", barcode)
+                    gsub(/C/, "Y", barcode)
+                    gsub(/G/, "C", barcode)
+                    gsub(/Y/, "G", barcode)
+                    reversed = ""
+                    for (i = length(barcode); i >= 1; i--) {{
+                        reversed = reversed substr(barcode, i, 1)
+                    }}
+                    barcode = reversed
+                }}
+                leader = ""
+                for (i = 0; i < lead + 0; i++) leader = leader "N"
+                print ">" name
+                print leader barcode
+            }}
+            ' {params.raw_barcodes_abs} > "$2"
+        }}
+
+        # Run flexbar with the shared arguments. $1 = barcode FASTA, $2 = target prefix.
+        run_flexbar() {{
+            "$flexbar_cmd" -r {params.r1_abs} -b "$1" \
+                --barcode-trim-end LTAIL \
+                --barcode-error-rate 0 \
+                --adapters {params.adapter_abs} \
+                --adapter-error-rate 0.1 \
+                --adapter-min-overlap 1 \
+                --adapter-trim-end RIGHT \
+                --zip-output GZ \
+                --barcode-unassigned \
+                --min-read-length 15 \
+                --umi-tags \
+                --target "$2" -n {threads}
+        }}
+
+        # Emit "barcode<TAB>written_reads" for each assigned (non-unassigned)
+        # barcode parsed from a flexbar log. $1 = log path.
+        assigned_counts() {{
+            awk '
+            /Read file:/ {{
+                name=$NF
+                sub(/.*flexbarOut_barcode_/,"",name)
+                sub(/\.fastq\.gz$/,"",name)
+                if ($NF ~ /flexbarOut_barcode_/) cur=name; else cur=""
+                next
+            }}
+            /written reads/ {{
+                if (cur!="" && cur!="unassigned") print cur"\t"$3
+                cur=""
+            }}
+            ' "$1"
+        }}
+
+        # Summarize a flexbar log into globals TOTAL_ASSIGNED and MAX_ASSIGNED
+        # (MAX_ASSIGNED is the highest per-barcode read count, empty when no
+        # assigned barcodes are present). $1 = log path.
+        summarize_log() {{
+            TOTAL_ASSIGNED=0
+            MAX_ASSIGNED=""
+            while IFS=$'\t' read -r _bc _cnt; do
+                [ -n "$_cnt" ] || continue
+                TOTAL_ASSIGNED=$((TOTAL_ASSIGNED + _cnt))
+                if [ -z "$MAX_ASSIGNED" ] || [ "$_cnt" -gt "$MAX_ASSIGNED" ]; then
+                    MAX_ASSIGNED=$_cnt
+                fi
+            done < <(assigned_counts "$1")
+        }}
+
+        # --- Primary run: forward (as-listed) orientation ---
+        build_barcode_fasta fwd {params.barcodes_abs}
+        run_flexbar {params.barcodes_abs} {params.outdir}/flexbarOut
+        summarize_log {params.outdir}/flexbarOut.log
+        primary_total=$TOTAL_ASSIGNED
+        primary_max=$MAX_ASSIGNED
+        echo "Primary (forward) orientation: total assigned=$primary_total, max per-barcode=${{primary_max:-NA}}"
+
+        # An orientation is "good" if at least one sample exceeds the threshold.
+        # If the primary orientation already has such a sample, proceed with it
+        # and skip the second flexbar pass. Otherwise try the opposite orientation
+        # and proceed with it if it has a sample above the threshold; if neither
+        # orientation qualifies, fall back to whichever assigned the most reads.
+        if [ -n "$primary_max" ] && [ "$primary_max" -gt "$retry_min_reads" ]; then
+            echo "Primary orientation has a sample above ${{retry_min_reads}} reads; proceeding with it."
+        else
+            echo "No primary sample exceeds ${{retry_min_reads}} reads; trying the opposite index orientation."
+            alt_dir={params.outdir}/_rc_alt
+            alt_fasta={params.outdir}/flexbar_barcodes_alt.fasta
+            rm -rf "$alt_dir"
+            mkdir -p "$alt_dir"
+            build_barcode_fasta rc "$alt_fasta"
+            run_flexbar "$alt_fasta" "$alt_dir"/flexbarOut
+            summarize_log "$alt_dir"/flexbarOut.log
+            alt_total=$TOTAL_ASSIGNED
+            alt_max=$MAX_ASSIGNED
+            echo "Alt (RC) orientation: total assigned=$alt_total, max per-barcode=${{alt_max:-NA}}"
+
+            adopt_alt=0
+            if [ -n "$alt_max" ] && [ "$alt_max" -gt "$retry_min_reads" ]; then
+                echo "Alt orientation has a sample above ${{retry_min_reads}} reads; adopting it."
+                adopt_alt=1
+            elif [ "${{alt_total:-0}}" -gt "${{primary_total:-0}}" ]; then
+                echo "Neither orientation exceeds ${{retry_min_reads}} reads; adopting alt by higher total assigned ($alt_total > $primary_total)."
+                adopt_alt=1
+            else
+                echo "Neither orientation exceeds ${{retry_min_reads}} reads; retaining primary forward orientation ($primary_total >= $alt_total)."
+            fi
+
+            if [ "$adopt_alt" -eq 1 ]; then
+                rm -f {params.outdir}/flexbarOut*.fastq.gz {params.outdir}/flexbarOut.log
+                mv "$alt_dir"/flexbarOut* {params.outdir}/
+                cp "$alt_fasta" {params.barcodes_abs}
+            fi
+            rm -rf "$alt_dir" "$alt_fasta"
+        fi
+
+        # Drop the large unassigned FASTQ now that orientation is settled. It is
+        # not needed downstream (read counts are read from the log, not the file)
+        # and mirrors fqtk_per_config's removal of unmatched reads. This keeps the
+        # scratch dir from accumulating tens of GB of unassigned reads.
+        rm -f {params.outdir}/flexbarOut_barcode_unassigned*.fastq.gz
 
         # Prepare headers and create each R2 with seqkit's internal threading.
         for r1_out in {params.outdir}/flexbarOut_barcode_*.fastq.gz; do
             [ -e "$r1_out" ] || continue
             base_name=$(basename "$r1_out" .fastq.gz)
-            # Skip R2 conversion for unassigned reads
-            if [[ "$base_name" == *"unassigned"* ]]; then
-                echo "Skipping R2 conversion for unassigned: $base_name"
-                continue
-            fi
+            # Skip our own R2 outputs (the glob above matches them too) and
+            # unassigned reads. Reprocessing an _R2 file as if it were R1 makes
+            # the grep below match nothing, which aborts the rule under pipefail.
+            case "$base_name" in
+                *_R2)
+                    continue ;;
+                *unassigned*)
+                    echo "Skipping R2 conversion for unassigned: $base_name"
+                    continue ;;
+            esac
 
             echo "Preparing headers for $base_name"
-            zcat "$r1_out" | grep " 1:N" | sed 's/^@//' | cut -d ' ' -f1 | sed 's/_[ATGCN]*$//' > "{params.outdir}/${{base_name}}_headers.txt"
+            # `|| true` so a barcode with zero "1:N" reads doesn't kill the rule under pipefail.
+            zcat "$r1_out" | grep " 1:N" | sed 's/^@//' | cut -d ' ' -f1 | sed 's/_[ATGCN]*$//' > "{params.outdir}/${{base_name}}_headers.txt" || true
 
             if [ -s "{params.outdir}/${{base_name}}_headers.txt" ]; then
                 seqkit grep -j {threads} -f "{params.outdir}/${{base_name}}_headers.txt" "{params.r2}" -o "{params.outdir}/${{base_name}}_R2.fastq.gz"
@@ -1932,6 +2105,28 @@ rule flexbar_stage_project:
                 dst_r2 = os.path.abspath(f"{proj_dir}/{stem}-R2.fastq.gz")
                 if os.path.exists(src_r2):
                     _move_fastq(src_r2, dst_r2)
+
+        # Sweep the flexbar scratch dir of any remaining FASTQs so demuxed reads
+        # live only in the project dir. This removes the unassigned file (if the
+        # demux rule kept one) and any orphans left by an interrupted or re-run
+        # flexbar pass (e.g. stranded _rc_alt scratch from the orientation retry).
+        # Logs and metadata (flexbarOut.log, size.txt, md5sum.txt) are preserved
+        # for the report rules.
+        flex_dir = os.path.abspath(f"output/{config_id}/flexbar")
+        alt_dir  = os.path.join(flex_dir, "_rc_alt")
+        if os.path.isdir(alt_dir):
+            shutil.rmtree(alt_dir, ignore_errors=True)
+            log_lines.append(f"Removed stale scratch dir {alt_dir}\n")
+        if os.path.isdir(flex_dir):
+            for fname in os.listdir(flex_dir):
+                if fname.endswith(".fastq.gz"):
+                    fpath = os.path.join(flex_dir, fname)
+                    try:
+                        os.remove(fpath)
+                        log_lines.append(f"Removed leftover scratch FASTQ {fpath}\n")
+                    except OSError as exc:
+                        log_lines.append(f"Could not remove {fpath}: {exc}\n")
+
         with open(log[0], 'w') as lf:
             lf.writelines(log_lines)
         with open(output.project_done, 'w') as f:
@@ -2002,7 +2197,7 @@ rule fqtk_per_config:
         fi
         echo "I1 read length: ${{I1_LEN}}bp -> read structure: $I1_READ_STRUCT"
 
-        conda run -n bcl_convert fqtk demux \
+        fqtk demux \
             --inputs "$R1" "$I1" "$R2" \
             --read-structures "151T" "$I1_READ_STRUCT" "151T" \
             --sample-metadata {input.barcode_tsv} \
@@ -2391,9 +2586,63 @@ rule generate_renaming_map:
             print(f"Generated fallback renaming map from SampleSheet: {out_path}")
             return True
 
+        def _finish():
+            """If this lane is flagged in report_undetermined_configs, append an
+            'Undetermined' pseudo-sample row so the lane's Undetermined reads flow
+            through the standard pipeline (fastp, read counts, md5sums, report) as
+            a normal sample. Attached to the lane's first (alphabetical) project.
+            Idempotent and gated by REPORT_UNDETERMINED_CONFIGS, so default runs
+            are unaffected.
+            """
+            if wildcards.config_id not in REPORT_UNDETERMINED_CONFIGS:
+                return
+            if not os.path.exists(output.map):
+                return
+            try:
+                cur = pd.read_csv(output.map)
+            except Exception as e:
+                print(f"Undetermined injection: could not read {output.map}: {e}")
+                return
+
+            _names = cur.get("Sample_Name")
+            if _names is not None and (_names.astype(str).str.strip() == "Undetermined").any():
+                print("Undetermined row already present; skipping injection.")
+                return
+
+            _proj_col = cur["Sample_Project"].astype(str).str.strip()
+            _real = cur[_proj_col.ne("") & _proj_col.str.lower().ne("nan")]
+            if _real.empty:
+                print("No real project rows; skipping Undetermined injection.")
+                return
+
+            first_project = sorted(_real["Sample_Project"].astype(str).str.strip().unique())[0]
+            owner = _real[_real["Sample_Project"].astype(str).str.strip() == first_project].iloc[0]
+
+            new_row = {col: "" for col in cur.columns}
+            new_row.update({
+                "Sample_Name": "Undetermined",
+                "Sample_Project": first_project,
+                "Lane": owner.get("Lane", ""),
+                "index": "Undetermined",
+                "index2": "",
+                "Run": params.library,
+                "Group": owner.get("Group", ""),
+                "Position": f"P{len(cur) + 1:03d}",
+            })
+            if "Sample_ID" in cur.columns:
+                new_row["Sample_ID"] = "Undetermined"
+
+            cur = pd.concat([cur, pd.DataFrame([new_row])], ignore_index=True)
+            cur.to_csv(output.map, index=False)
+            print(
+                f"Injected Undetermined row into {output.map} "
+                f"(project={first_project}, lane={owner.get('Lane')}, group={owner.get('Group')})"
+            )
+
         # If map already exists and looks valid, keep it
         if has_required_columns(output.map):
             print(f"Renaming map already valid: {output.map}")
+            _finish()
             return
 
         # Attempt to regenerate via metadata-driven function (preferred)
@@ -2410,12 +2659,14 @@ rule generate_renaming_map:
                 )
                 if has_required_columns(output.map):
                     print(f"Regenerated renaming map using metadata: {output.map}")
+                    _finish()
                     return
             except Exception as e:
                 print(f"Error regenerating renaming map from metadata: {e}")
 
         # Fallback: derive from SampleSheet data section
         build_map_from_samplesheet(input.sample_sheet, output.map, params.library)
+        _finish()
 
 rule validate_barcode_hamming_distances:
     """Pre-flight validation: check barcode Hamming distances for a single config_id.
@@ -2638,8 +2889,14 @@ rule bcl_project_done:
     wildcard_constraints:
         config_id = "[^/]+",
         project = "[^/]+"
+    log:
+        "logs/{config_id}/bcl_project_done_{config_id}_{project}.log"
     run:
         import os, glob, shutil, json as json_mod
+
+        _logf = open(log[0], "w")
+        def _plog(msg):
+            print(msg, file=_logf, flush=True)
         config_id = wildcards.config_id
         new_project = wildcards.project
         old_project = PROJECT_RENAME_MAP_INV.get((config_id, new_project), new_project)
@@ -2678,26 +2935,39 @@ rule bcl_project_done:
         os.makedirs(new_dir, exist_ok=True)
 
         # Copy lane-level accessory files (Reports, Logs, dragen JSONs, etc.) to output.
-        # Only the first project (alphabetically) for this lane performs the copy to avoid
-        # concurrent bcl_project_done jobs racing to copy the same lane-level files.
-        # If any project on this lane selected RC orientation, prefer the RC lane-level
-        # reports so Demultiplex_Stats and related summaries reflect corrected counts.
-        # Skip old Sample_Project subdirectories — those are moved by their own bcl_project_done.
-        all_lane_projects = sorted([p for cid, p in CONFIG_PROJECT_PAIRS if cid == config_id])
-        if new_project == (all_lane_projects[0] if all_lane_projects else new_project):
-            accessory_base = ".output"
-            try:
-                if any(v.startswith("rc") for v in _dec.values()):
-                    accessory_base = ".output_rc"
-            except Exception:
-                pass
+        # Only the first project (alphabetically) performs the bulk copy to avoid concurrent
+        # bcl_project_done jobs racing on large lane-level dirs. The demultiplex Reports,
+        # however, are critical for read-count summaries, so EVERY project self-heals them
+        # if missing — this guards against the bulk copy having run before the RC pass
+        # populated its Reports/, or having failed silently (previously the .project_done
+        # sentinel was touched regardless, leaving empty read_counts for the whole lane).
+        dest_base = f"output/{config_id}"
+        dest_reports = os.path.join(dest_base, "Reports")
+        dest_stats = os.path.join(dest_reports, "Demultiplex_Stats.csv")
+        os.makedirs(dest_base, exist_ok=True)
 
-            staging = f"{accessory_base}/{config_id}"
-            if not os.path.isdir(staging):
-                staging = f".output/{config_id}"
-            dest_base = f"output/{config_id}"
-            os.makedirs(dest_base, exist_ok=True)
-            old_project_dirs = {p for cid, p in _CONFIG_PROJECT_PAIRS_RAW if cid == config_id}
+        # Choose the staging dir for the lane-level Reports. When any project on this lane
+        # selected RC orientation, the RC pass (which flips only the suspect projects'
+        # indexes) is authoritative for the WHOLE lane, so use .output_rc exclusively —
+        # falling back to .output here would republish the wrong-orientation zero counts
+        # that this hardening exists to prevent. The verification below turns a missing
+        # RC Reports into a retryable failure rather than silent bad data.
+        try:
+            _rc_won = any(v.startswith("rc") for v in _dec.values())
+        except Exception:
+            _rc_won = False
+        accessory_base = ".output_rc" if _rc_won else ".output"
+        staging = f"{accessory_base}/{config_id}"
+        _plog(f"RC won for lane: {_rc_won}; accessory source: {staging}")
+
+        old_project_dirs = {p for cid, p in _CONFIG_PROJECT_PAIRS_RAW if cid == config_id}
+        all_lane_projects = sorted([p for cid, p in CONFIG_PROJECT_PAIRS if cid == config_id])
+        is_primary_copier = new_project == (all_lane_projects[0] if all_lane_projects else new_project)
+
+        # Bulk accessory copy (primary project only). Skip old Sample_Project subdirs —
+        # those are moved by their own bcl_project_done.
+        if is_primary_copier and os.path.isdir(staging):
+            _plog(f"Primary copier for lane; copying accessory files from {staging}")
             for item in os.listdir(staging):
                 if item.startswith('.'):
                     continue
@@ -2706,21 +2976,48 @@ rule bcl_project_done:
                 if os.path.isdir(src_item) and item in old_project_dirs:
                     continue  # handled by that project's bcl_project_done
                 if os.path.isdir(src_item):
-                    if accessory_base == ".output_rc":
-                        # Force-overwrite so RC-corrected Demultiplex_Stats and summaries
-                        # replace any stale copy previously written from .output.
-                        shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
-                    else:
-                        shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
+                    # Force-overwrite so RC-corrected Demultiplex_Stats and summaries
+                    # replace any stale copy previously written from .output.
+                    shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
                 else:
                     shutil.copy2(src_item, dst_item)
+
+        # Self-heal: guarantee the demultiplex Reports landed regardless of which project
+        # ran the bulk copy or in what order. Idempotent; the critical stats file is written
+        # atomically (temp + os.replace) so concurrent self-healers never expose a torn file.
+        src_reports = os.path.join(staging, "Reports")
+        if not os.path.isfile(dest_stats) and os.path.isdir(src_reports):
+            _plog(f"Self-healing missing Reports for {config_id} from {src_reports}")
+            shutil.copytree(src_reports, dest_reports, dirs_exist_ok=True)
+            src_stats = os.path.join(src_reports, "Demultiplex_Stats.csv")
+            if os.path.isfile(src_stats):
+                _tmp = f"{dest_stats}.tmp.{os.getpid()}"
+                shutil.copy2(src_stats, _tmp)
+                os.replace(_tmp, dest_stats)
+
+        # Fail loudly instead of silently touching the .project_done sentinel: an empty
+        # demux stats file would otherwise yield zero read counts for every sample on the
+        # lane. Raising leaves the sentinel uncreated so the next run retries this rule.
+        if not os.path.isfile(dest_stats):
+            _plog(f"ERROR: {dest_stats} still missing after accessory copy")
+            _logf.close()
+            raise RuntimeError(
+                f"Demultiplex_Stats.csv missing for {config_id} after accessory copy "
+                f"(staging={staging}); refusing to mark {new_project} done. Verify that "
+                f"{staging}/Reports/Demultiplex_Stats.csv exists."
+            )
+        _plog(f"Verified {dest_stats} present.")
+        _logf.close()
 
         # Remove extraneous I1/I2 FASTQs for projects that don't need index reads.
         # CreateFastqForIndexReads is set globally per lane, so these files are produced
         # for all projects whenever any project on the lane (e.g. SMK) requires them.
+        # When no_demux is set the index reads are the point of the run (DRAGEN emits
+        # them as FASTQs instead of index-based demultiplexing), so keep them for every
+        # project rather than stripping them here.
         _INDEX_READ_KEYWORDS = ["10x", "BD", "parse", "Parse", "SMK", "smk", "CITE", "cite", "Hashtag", "hashtag"]
         check_name = old_project if old_project else new_project
-        if not any(kw in check_name for kw in _INDEX_READ_KEYWORDS):
+        if not NO_DEMUX and not any(kw in check_name for kw in _INDEX_READ_KEYWORDS):
             proj_dir = f"output/{config_id}/{new_project}"
             removed = 0
             for pattern in ["**/*-I1.fastq.gz", "**/*-I2.fastq.gz"]:
@@ -2868,6 +3165,39 @@ rule calculate_md5sums:
         ) > {log} 2>&1
         """
 
+rule copy_plots_to_output:
+    """Copy the fastp plots embedded in the order reports (results/{config_id}/{project}/*.png)
+    into a 'plots' subdirectory of the corresponding output project directory."""
+    input:
+        plots_done   = "results/{config_id}/fastp_plots_{config_id}.done",
+        project_done = "output/{config_id}/{project}/.project_done"
+    output:
+        sentinel = touch("output/{config_id}/{project}/.plots_copied")
+    log:
+        "logs/{config_id}/copy_plots_to_output_{config_id}_{project}.log"
+    benchmark:
+        "benchmarks/copy_plots_to_output_{config_id}_{project}.bench"
+    wildcard_constraints:
+        config_id = "[^/]+",
+        project = ".+"
+    run:
+        import glob, os, shutil
+
+        src_dir  = f"results/{wildcards.config_id}/{wildcards.project}"
+        dest_dir = f"output/{wildcards.config_id}/{wildcards.project}/plots"
+        os.makedirs(dest_dir, exist_ok=True)
+
+        pngs = sorted(glob.glob(os.path.join(src_dir, "*.png")))
+        copied = []
+        with open(log[0], 'w') as lf:
+            lf.write(f"Source: {src_dir}\nDest: {dest_dir}\n")
+            if not pngs:
+                lf.write("No PNG plots found to copy.\n")
+            for png in pngs:
+                shutil.copy2(png, os.path.join(dest_dir, os.path.basename(png)))
+                copied.append(os.path.basename(png))
+            lf.write(f"Copied {len(copied)} plot(s): {copied}\n")
+
 # Rule: generate exclude-indexes file for each config_id
 rule generate_exclude_indexes:
     input:
@@ -2922,54 +3252,6 @@ rule analyze_undetermined:
                     writer.writerow([count, itype, seq])
 
             logf.write(f"Converted {len(rows)} barcodes from {params.barcodes}\n")
-
-rule analyze_undetermined_rc:
-    """Convert RC-pass Top_Unknown_Barcodes to the same CSV format as analyze_undetermined.
-    Runs after pick_orientation so the RC pass is guaranteed to exist (or was skipped).
-    Writes an empty file if no RC pass was run for this config_id.
-    """
-    input:
-        decision = "logs/{config_id}/orientation_decision_{config_id}.json",
-        done_rc = ".output_rc/{config_id}/.done"
-    output:
-        csv = "results/undetermined_indices/{config_id}_rc.csv"
-    log:
-        "logs/{config_id}/analyze_undetermined_rc_{config_id}.log"
-    benchmark:
-        "benchmarks/analyze_undetermined_rc_{config_id}.bench"
-    wildcard_constraints:
-        config_id = "[^/]+"
-    run:
-        import csv as csv_mod
-        import os
-
-        barcodes_path = f".output_rc/{wildcards.config_id}/Reports/Top_Unknown_Barcodes.csv"
-        os.makedirs(os.path.dirname(output.csv), exist_ok=True)
-        with open(log[0], 'w') as logf:
-            if not os.path.exists(barcodes_path):
-                logf.write(f"No RC pass barcodes file at {barcodes_path}; writing empty CSV.\n")
-                with open(output.csv, 'w', newline='') as f:
-                    csv_mod.writer(f).writerow(['Count', 'Type', 'Index Sequence'])
-                return
-
-            rows = []
-            with open(barcodes_path) as f:
-                reader = csv_mod.DictReader(f)
-                for r in reader:
-                    idx1 = r.get('index', '').strip()
-                    idx2 = r.get('index2', '').strip()
-                    count = int(r.get('# Reads', '0'))
-                    seq = f"{idx1}+{idx2}" if idx2 else idx1
-                    index_type = "Dual" if idx2 else "Single"
-                    rows.append((count, index_type, seq))
-
-            with open(output.csv, 'w', newline='') as f:
-                writer = csv_mod.writer(f)
-                writer.writerow(['Count', 'Type', 'Index Sequence'])
-                for count, itype, seq in rows:
-                    writer.writerow([count, itype, seq])
-
-            logf.write(f"Converted {len(rows)} barcodes from {barcodes_path}\n")
 
 rule detect_rc_candidates:
     """Detect projects with likely i7 reverse-complement orientation issues
@@ -3213,10 +3495,12 @@ rule pick_orientation:
         with open(input.candidates) as f:
             suspects = json_mod.load(f)
 
-        # Keep Undetermined FASTQs for lanes configured for flexbar demux.
-        # Match bcl_convert behavior to avoid deleting inputs needed by flexbar_per_config.
-        preserve_undetermined = os_mod.path.isfile(
-            f"metadata/flexbar_barcodes_{wildcards.config_id}.txt"
+        # Keep Undetermined FASTQs for lanes configured for flexbar demux, or for
+        # lanes explicitly listed in keep_undetermined_configs / report_undetermined_configs.
+        # Match bcl_convert behavior to avoid deleting reads it was told to keep.
+        preserve_undetermined = (
+            os_mod.path.isfile(f"metadata/flexbar_barcodes_{wildcards.config_id}.txt")
+            or wildcards.config_id in _effective_keep
         )
 
         # Build fix_type lookup: project -> label (rc_i7 / rc_i5 / rc_both)
@@ -3467,7 +3751,7 @@ rule project_link:
                 
                 while retry_count < max_retries and not share_url:
                     retry_count += 1
-                    wait_time = 3 * (2 ** (retry_count - 1))
+                    wait_time = min(3 * (2 ** (retry_count - 1)), 60)
                     if rate_limited: time.sleep(10)
                     
                     try:

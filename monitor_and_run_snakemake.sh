@@ -4,8 +4,10 @@
 
 set -e
 
-CONDA_BASE=/home/kstachel/miniforge3
-source "$CONDA_BASE/etc/profile.d/conda.sh"
+# Resolve the pixi binary. cron runs with a minimal PATH, so fall back to the
+# default install location under $HOME when pixi is not already on PATH.
+PIXI="$(command -v pixi 2>/dev/null || true)"
+[ -z "$PIXI" ] && PIXI="$HOME/.pixi/bin/pixi"
 
 cd "$(realpath "$(dirname "$0")")"
 
@@ -26,14 +28,10 @@ if [ -f "$TARGET_FILE" ]; then
   if tmux has-session -t "$LIBRARY" 2>/dev/null; then
     echo "tmux session $LIBRARY already exists. Not starting a new one."
   else
-    # Create a temporary rcfile that activates bcl_convert for the tmux shell
-    RCFILE=$(mktemp)
-    echo "source $CONDA_BASE/etc/profile.d/conda.sh && conda activate bcl_convert; rm -f \"$RCFILE\"" > "$RCFILE"
-    # Start tmux session: source .env, activate bcl_convert, run snakemake, then start bash with rcfile
-    tmux new-session -d -c "$(pwd)" -s "$LIBRARY" "if [ -f ../.env ]; then source ../.env; fi; source $CONDA_BASE/etc/profile.d/conda.sh && conda activate bcl_convert && snakemake --profile default -p; exec bash --rcfile $RCFILE"
+    # Start tmux session: source .env, run snakemake under pixi, then drop into an activated shell
+    tmux new-session -d -c "$(pwd)" -s "$LIBRARY" "if [ -f ../.env ]; then source ../.env; fi; $PIXI run snakemake --profile default -p; exec $PIXI run bash"
     if [ $? -ne 0 ]; then
       echo "Failed to start tmux session $LIBRARY."
-      rm -f "$RCFILE"
     else
       echo "Started tmux session $LIBRARY."
     fi
