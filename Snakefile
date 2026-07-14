@@ -2049,33 +2049,16 @@ rule flexbar_pair_r2:
     shell:
         """
         (
-        # Prepare headers and create each R2 with seqkit's internal threading.
-        for r1_out in {params.outdir}/flexbarOut_barcode_*.fastq.gz; do
-            [ -e "$r1_out" ] || continue
-            base_name=$(basename "$r1_out" .fastq.gz)
-            # Skip our own R2 outputs (the glob above matches them too) and
-            # unassigned reads. Reprocessing an _R2 file as if it were R1 makes
-            # the grep below match nothing, which aborts the rule under pipefail.
-            case "$base_name" in
-                *_R2)
-                    continue ;;
-                *unassigned*)
-                    echo "Skipping R2 conversion for unassigned: $base_name"
-                    continue ;;
-            esac
-
-            echo "Preparing headers for $base_name"
-            # `|| true` so a barcode with zero "1:N" reads doesn't kill the rule under pipefail.
-            zcat "$r1_out" | grep " 1:N" | sed 's/^@//' | cut -d ' ' -f1 | sed 's/_[ATGCN]*$//' > "{params.outdir}/${{base_name}}_headers.txt" || true
-
-            if [ -s "{params.outdir}/${{base_name}}_headers.txt" ]; then
-                seqkit grep -j {threads} -f "{params.outdir}/${{base_name}}_headers.txt" "{params.r2}" -o "{params.outdir}/${{base_name}}_R2.fastq.gz"
-            else
-                echo "No reads found for $base_name"
-            fi
-
-            rm -f "{params.outdir}/${{base_name}}_headers.txt"
-        done
+        # Recover the R2 mates in a single pass over R2. The previous approach ran
+        # `seqkit grep` once per barcode, re-reading the whole 32 GB / 417M-read R2
+        # file every time (6 passes) and holding a 40M+ entry ID hash in memory.
+        # pair_r2_stream.py exploits flexbar's order-preserving output to merge-walk
+        # R2 against the per-barcode R1 streams in one pass with O(1) memory, and
+        # produces byte-identical output.
+        python3 src/flexbar/pair_r2_stream.py \
+            --r2 "{params.r2}" \
+            --outdir "{params.outdir}" \
+            --threads {threads}
 
         curr_dir=$PWD
         cd {params.outdir}
