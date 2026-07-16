@@ -564,23 +564,68 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
     # (the RC_ORIENTATION sheet needs decision files that may not exist on first pass).
     out_xlsx = None
     try:
+        import fcntl
+        import tempfile
+
         _base = os.path.splitext(os.path.basename(metadata_file))[0]
         out_xlsx = os.path.join('metadata', f"metadata_validation_{_base}.xlsx")
-        _dec_files = glob.glob('logs/*/orientation_decision_*.json')
-        _needs_regen = (
-            not os.path.exists(out_xlsx)
-            or os.path.getmtime(metadata_file) > os.path.getmtime(out_xlsx)
-            or any(os.path.getmtime(d) > os.path.getmtime(out_xlsx) for d in _dec_files)
-        )
-        if _needs_regen:
-            validate_metadata_and_write_report(metadata_file, out_xlsx=out_xlsx)
+
+        def _regen_needed():
+            _dec_files = glob.glob('logs/*/orientation_decision_*.json')
+            if not os.path.exists(out_xlsx):
+                return True
+            _xlsx_mtime = os.path.getmtime(out_xlsx)
+            if os.path.getmtime(metadata_file) > _xlsx_mtime:
+                return True
+            return any(os.path.getmtime(d) > _xlsx_mtime for d in _dec_files)
+
+        # This function runs at parse time in every spawned --mode subprocess job.
+        # Concurrent parses would otherwise both rewrite out_xlsx while another reads
+        # it as the sample-sheet data source below, yielding a truncated/empty parse.
+        # Serialize on a lock file, re-check under the lock (another process may have
+        # just regenerated), and publish via an atomic temp-write + os.replace so a
+        # reader never sees a half-written workbook.
+        os.makedirs(os.path.dirname(out_xlsx) or '.', exist_ok=True)
+        _lock_path = out_xlsx + '.lock'
+        with open(_lock_path, 'w') as _lockf:
+            fcntl.flock(_lockf, fcntl.LOCK_EX)
+            if _regen_needed():
+                _tmp_fd, _tmp_path = tempfile.mkstemp(
+                    dir=os.path.dirname(out_xlsx) or '.',
+                    prefix='.metadata_validation_', suffix='.xlsx')
+                os.close(_tmp_fd)
+                try:
+                    validate_metadata_and_write_report(metadata_file, out_xlsx=_tmp_path)
+                    # validate_metadata_and_write_report has fallback paths that write a
+                    # .txt log and return WITHOUT producing the xlsx, leaving the 0-byte
+                    # mkstemp file. Only publish a genuine, readable workbook; otherwise
+                    # keep the existing out_xlsx (or none) rather than promoting garbage.
+                    _ok = os.path.getsize(_tmp_path) > 0
+                    if _ok:
+                        try:
+                            pd.ExcelFile(_tmp_path).close()
+                        except Exception:
+                            _ok = False
+                    if _ok:
+                        os.replace(_tmp_path, out_xlsx)
+                finally:
+                    if os.path.exists(_tmp_path):
+                        os.remove(_tmp_path)
     except Exception as e:
         print(f"Warning: metadata validation report generation failed: {e}")
 
     # Use validated xlsx as data source for sample sheet construction if available.
     # RECOMMENDED_CHANGES and RC_ORIENTATION sheets are retained in the xlsx for
     # inspection but skipped during sample iteration below.
-    _data_file = out_xlsx if (out_xlsx and os.path.exists(out_xlsx)) else metadata_file
+    # Fall back to the raw metadata if the validation workbook is absent, empty, or
+    # unreadable — a stray 0-byte workbook must never yield an empty sample-sheet parse.
+    _data_file = metadata_file
+    if out_xlsx and os.path.exists(out_xlsx) and os.path.getsize(out_xlsx) > 0:
+        try:
+            pd.ExcelFile(out_xlsx).close()
+            _data_file = out_xlsx
+        except Exception:
+            _data_file = metadata_file
     
     # Detect metadata format: MiSeq (simple) vs NovaSeqX (complex with Summary sheet)
     try:
