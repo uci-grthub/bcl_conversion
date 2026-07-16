@@ -30,6 +30,13 @@ NEXTCLOUD_PASSWORD = os.environ.get("NEXTCLOUD_PASSWORD")
 if not NEXTCLOUD_PASSWORD:
     raise SystemExit("Error: NEXTCLOUD_PASSWORD environment variable not set")
 
+# SSH target for `occ files:scan` on the Nextcloud host. Defaults to the same
+# user/host as NEXTCLOUD_URL; override via env for a different admin account.
+NEXTCLOUD_SSH_HOST = os.environ.get("NEXTCLOUD_SSH_HOST")
+if NEXTCLOUD_SSH_HOST is None:
+    from urllib.parse import urlparse as _urlparse
+    NEXTCLOUD_SSH_HOST = f"{NEXTCLOUD_USER}@{_urlparse(NEXTCLOUD_URL).hostname}"
+
 configfile: "snakemake_config.yaml"
 
 # Load project-specific config if it exists (higher priority than default)
@@ -3965,7 +3972,8 @@ rule rescan_nextcloud:
         config_id = "[^/]+",
         project = ".+"
     params:
-        nc_path = lambda wildcards: f"/{NEXTCLOUD_DIR_NAME}/{LIBRARY}/output/{wildcards.config_id}/{wildcards.project}"
+        nc_path = lambda wildcards: f"/{NEXTCLOUD_DIR_NAME}/{LIBRARY}/output/{wildcards.config_id}/{wildcards.project}",
+        ssh_host = NEXTCLOUD_SSH_HOST
     shell:
         """
         # Read NC_PATH from the project_link log (written by project_link rule) and use that for scanning.
@@ -3990,7 +3998,7 @@ rule rescan_nextcloud:
             exit 1
         fi
 
-        ssh kstachel@precision.biochem.uci.edu "docker exec --user www-data nextcloud-aio-nextcloud php occ files:scan --path='$occ_path'" > {log} 2>&1
+        ssh {params.ssh_host} "docker exec --user www-data nextcloud-aio-nextcloud php occ files:scan --path='$occ_path'" > {log} 2>&1
 
         # OCC can report malformed --path usage while still returning quickly.
         if grep -q "Unknown user" {log}; then
@@ -4069,10 +4077,10 @@ rule verify_project_links:
                     # Using curl to query the share with basic auth
                     cmd = [
                         'curl', '-s',
-                        '-u', 'kstachel:ucightf2025',
+                        '-u', f'{NEXTCLOUD_USER}:{NEXTCLOUD_PASSWORD}',
                         '-X', 'PROPFIND',
                         '-H', 'Depth: 1',
-                        f'https://precision.biochem.uci.edu/remote.php/dav/files/kstachel/{NEXTCLOUD_DIR_NAME}/{LIBRARY}/output/{config_id}/{project}/'
+                        f'{NEXTCLOUD_URL}/remote.php/dav/files/{NEXTCLOUD_USER}/{NEXTCLOUD_DIR_NAME}/{LIBRARY}/output/{config_id}/{project}/'
                     ]
                     
                     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)

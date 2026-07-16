@@ -22,19 +22,25 @@ reportlab = "4.*"
 
 # Bioinformatics CLIs invoked by the workflow (bioconda)
 fastqc = "0.12.*"
+fastp = "0.24.*"
 flexbar = "3.5.*"
 seqtk = "1.5.*"
 fqtk = "0.3.*"
 seqkit = ">=2.13.0,<3"
 pigz = ">=2.8,<3"
 
+# `dot` for the rulegraph/dag tasks below
+graphviz = ">=12,<15"
+
 [tasks]
+# All tasks pass --profile explicitly so they behave the same for every operator,
+# regardless of whether SNAKEMAKE_PROFILE is set in their shell. See profiles/default.
 # Full workflow
-all = "snakemake --cores 8"
+all = "snakemake --profile profiles/default --cores 8"
 # Preview what would run
-dry-run = "snakemake -n"
+dry-run = "snakemake --profile profiles/default -n"
 # BCL conversion for a single lane, e.g. `pixi run convert output/lane1`
-convert = "snakemake --cores 8"
+convert = "snakemake --profile profiles/default --cores 8"
 # Rule/dependency graphs
-rulegraph = "snakemake --rulegraph | dot -Tpng > rulegraph.png"
-dag = "snakemake --dag | dot -Tpdf > dag.pdf"
+rulegraph = "snakemake --profile profiles/default --rulegraph | dot -Tpng > rulegraph.png"
+dag = "snakemake --profile profiles/default --dag | dot -Tpdf > dag.pdf"

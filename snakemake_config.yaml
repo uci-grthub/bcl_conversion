@@ -5,7 +5,9 @@ library_name: ""
 start_s: 1
 lanes: [1,2,3,4,5,6,7,8]
 fastp_threads: 4
-flexbar_bin: "/home/kstachel/TOOLS/flexbar-speedup/build_parasail/src/flexbar"
+# flexbar from pixi (see pixi.toml). Override with an absolute path, or the
+# FLEXBAR_BIN env var, to use a local speedup build instead.
+flexbar_bin: "flexbar"
 # Number of leading bases (e.g. a UMI) before the inline barcode in R1. The
 # barcode FASTA is built as "<this many N's><barcode>" and matched at the read
 # start (LTAIL). 0 = barcode at R1 position 1 (KY26SPI inline libraries). Set to

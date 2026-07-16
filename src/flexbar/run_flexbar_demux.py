@@ -95,13 +95,8 @@ def resolve_flexbar_bin(explicit: str | None, repo_root: Path) -> Path:
     if env_bin:
         candidates.append(Path(env_bin).expanduser())
 
-    # Common local build locations used in this workflow.
-    candidates.extend(
-        [
-            repo_root / "build_parasail" / "src" / "flexbar",
-            Path("/home/kstachel/TOOLS/flexbar-speedup/build_parasail/src/flexbar"),
-        ]
-    )
+    # Local speedup build, if one was compiled in-tree.
+    candidates.append(repo_root / "build_parasail" / "src" / "flexbar")
 
     for candidate in candidates:
         resolved = candidate.resolve()
