@@ -8,11 +8,15 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from io import StringIO
 
-envvars: 
-    "GMAIL_APP_PASSWORD",
-    "NEXTCLOUD_URL",
-    "NEXTCLOUD_USER",
-    "NEXTCLOUD_PASSWORD"
+# NOTE: do NOT declare these as `envvars:`. Snakemake's envvars directive re-exports
+# the values inline into every spawned --mode subprocess command line and echoes that
+# command into .snakemake/log, leaking secrets. The values are read via os.environ
+# below and inherited by child processes from the launching shell, so the directive
+# is unnecessary. Ensure they are exported before invoking snakemake.
+_REQUIRED_ENV = ("GMAIL_APP_PASSWORD", "NEXTCLOUD_URL", "NEXTCLOUD_USER", "NEXTCLOUD_PASSWORD")
+_missing_env = [_v for _v in _REQUIRED_ENV if not os.environ.get(_v)]
+if _missing_env:
+    raise SystemExit(f"Error: required environment variable(s) not set: {', '.join(_missing_env)}")
 
 NEXTCLOUD_URL = os.environ.get("NEXTCLOUD_URL")
 if not NEXTCLOUD_URL:

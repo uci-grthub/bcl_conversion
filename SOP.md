@@ -23,7 +23,7 @@ auto-detected from the metadata workbook (see step 5).
   - MiSeq i100: `cd /staging/nextcloud/testing_illumina/MiSeqi100`
   - NovaSeqX:   `cd /staging/nextcloud/testing_illumina/NovaseqX`
 - Clone the github repository into a run-named directory:
-  `git clone https://github.com/whtns/igb_transition {RUN_NAME}`
+  `git clone https://github.com/uci-grthub/bcl_conversion {RUN_NAME}`
 - Enter the project directory:
   `cd {RUN_NAME}`
 
