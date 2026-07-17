@@ -12,18 +12,21 @@ cd /staging/nextcloud/testing_illumina/NovaseqX          # or .../MiSeqi100
 git clone https://github.com/uci-grthub/bcl_conversion {RUN_NAME}
 cd {RUN_NAME}
 
-# 2. Set up the run: builds the pixi env on first use, then creates
-#    snakemake_config_project.yaml and copies/prefills the samplesheet
+# 2. Copy the lab's SampleSheet .xlsx into metadata/ (REQUIRED before init)
+cp /path/to/SampleSheet.xlsx metadata/
+
+# 3. Set up the run: builds the pixi env on first use, then creates
+#    snakemake_config_project.yaml and prefills from the metadata .xlsx
 pixi run init                 # add --sequencer novaseqx|miseqi100 if the path is ambiguous
 
-# 3. Confirm the prefilled config (secrets come from the shared ../.env — no copy needed)
+# 4. Confirm the prefilled config (secrets come from the shared ../.env — no copy needed)
 $EDITOR snakemake_config_project.yaml         # confirm data_dir; set email_* to YOUR address
 
-# 4. Validate metadata + preview the plan (no processing happens)
+# 5. Validate metadata + preview the plan (no processing happens)
 pixi run validate
 pixi run dry-run
 
-# 5. Run the full workflow (adjust cores to the host, max 32)
+# 6. Run the full workflow (adjust cores to the host, max 32)
 pixi run all                                  # == snakemake --cores 8
 ```
 
@@ -33,8 +36,9 @@ That's the whole loop. No `--profile`, no `source .env` — `pixi run` handles b
 ### Prerequisites
 
 - Run has finished copying (a `CopyComplete.txt` exists in the run directory).
-- A SampleSheet `.xlsx` from the lab (dropped in `../SampleSheets`, or placed directly in
-  `metadata/`).
+- A SampleSheet `.xlsx` from the lab, **copied into `metadata/` before `pixi run init`**
+  (step 2). `init` also auto-copies the newest `.xlsx` from `../SampleSheets` if one is
+  there, but the copy into `metadata/` is what `init` reads — don't skip it.
 - **DRAGEN** on the system (`which dragen` → `/opt/dragen/<ver>/bin/dragen`). Licensed /
   FPGA-tied; not installed by pixi.
 - **pixi** installed once: `curl -fsSL https://pixi.sh/install.sh | bash`.
