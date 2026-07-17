@@ -1,83 +1,9 @@
 #!/bin/bash
-# Runs after git clone / git checkout.
-# Usage when running manually:
-#   bash .githooks/post-checkout --sequencer miseqi100
-#   bash .githooks/post-checkout --sequencer novaseqx
-
-# git passes 3 args; parse --sequencer from remaining args
-sequencer=""
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --sequencer) sequencer="$2"; shift 2 ;;
-        *) shift ;;
-    esac
-done
-
-# Infer sequencer from working directory path if not provided
-if [ -z "$sequencer" ]; then
-    case "$(pwd)" in
-        *MiSeqi100*|*Miseqi100*|*miseqi100*) sequencer="miseqi100" ;;
-        *NovaSeq*|*Novaseq*|*novaseq*)       sequencer="novaseqx" ;;
-    esac
-fi
-
-if [ -z "$sequencer" ]; then
-    echo "ERROR: Could not determine sequencer type from path. Run manually with:"
-    echo "  bash .githooks/post-checkout --sequencer miseqi100"
-    echo "  bash .githooks/post-checkout --sequencer novaseqx"
-    exit 1
-fi
-
-case "$sequencer" in
-    miseqi100) staging_dir="/staging/nextcloud/Miseqi100" ;;
-    novaseqx)  staging_dir="/staging/nextcloud/NovaseqX" ;;
-    *)
-        echo "ERROR: Unknown sequencer '$sequencer'. Use 'miseqi100' or 'novaseqx'."
-        exit 1
-        ;;
-esac
-
-# Copy newest .xlsx from ../SampleSheets into metadata/ (always)
-source_xlsx=$(find ../SampleSheets -maxdepth 1 -name "*.xlsx" -printf "%T@ %p\n" 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
-if [ -n "$source_xlsx" ]; then
-    mkdir -p metadata
-    cp "$source_xlsx" metadata/
-    echo "  Copied $source_xlsx --> metadata/"
-else
-    echo "  WARNING: No .xlsx found in ../SampleSheets"
-fi
-
-# Always update metadata and library_name in config if it exists
-metadata_file=$(find metadata/ -maxdepth 1 -name "*.xlsx" ! -name "metadata_validation*" | head -1)
-
-if [ ! -f snakemake_config_project.yaml ]; then
-    cp snakemake_config.yaml snakemake_config_project.yaml
-fi
-
-if [ -f snakemake_config_project.yaml ]; then
-    if [ -n "$metadata_file" ]; then
-        sed -i "s|^metadata:.*|metadata: \"$metadata_file\"|" snakemake_config_project.yaml
-        echo "  metadata --> $metadata_file"
-
-        library_name=$(basename "$metadata_file" .xlsx | grep -oE '[ix]R[0-9]+')
-        if [ -n "$library_name" ]; then
-            sed -i "s|^library_name:.*|library_name: \"$library_name\"|" snakemake_config_project.yaml
-            echo "  library_name --> $library_name"
-        else
-            echo "  WARNING: Could not infer library_name from $metadata_file — set it manually."
-        fi
-    else
-        echo "  WARNING: No .xlsx found in metadata/ — set metadata and library_name manually."
-    fi
-
-    # Infer data_dir from the newest directory in the staging path
-    data_dir=$(find "$staging_dir" -maxdepth 1 -mindepth 1 -type d -printf "%T@ %p\n" 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
-    if [ -n "$data_dir" ]; then
-        sed -i "s|^data_dir:.*|data_dir: \"$data_dir\"|" snakemake_config_project.yaml
-        echo "  data_dir --> $data_dir"
-    else
-        echo "  WARNING: Could not find newest dir in $staging_dir — set data_dir manually."
-    fi
-
-    echo "Created snakemake_config_project.yaml — review and adjust if needed."
-fi
+# Back-compat shim. Real setup logic lives in scripts/init_run.sh so it can be
+# run as a plain `pixi run init` (no git-hook wiring needed). This wrapper only
+# exists for anyone who still does `git config core.hooksPath .githooks`.
+#
+# git passes 3 positional args to post-checkout; init_run.sh ignores them and
+# reads only --sequencer, so forward everything through.
+here="$(cd "$(dirname "$0")/.." && pwd)"
+exec bash "$here/scripts/init_run.sh" "$@"

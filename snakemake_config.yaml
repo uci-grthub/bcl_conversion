@@ -1,5 +1,4 @@
 # Snakemake configuration for postprocess workflow
-sample_sheet: "src/SampleSheet_default.csv"
 num_reads: 2
 library_name: ""
 start_s: 1
@@ -19,9 +18,11 @@ flexbar_retry_min_reads: 1000000
 metadata: ""
 data_dir: ""
 tiles: ""
-email_sender: "kstachel@uci.edu"
-email_recipient: "kstachel@uci.edu"
-email_cc: "kstachel@uci.edu"
+# Set these per run in snakemake_config_project.yaml (see SOP). Left blank in the
+# base config so a fresh clone never silently emails the previous operator.
+email_sender: ""
+email_recipient: ""
+email_cc: ""
 nextcloud_dir_name: "dragenshare"
 nextcloud_dir_path: "nextcloud"
 external_drive_path: "/mnt/jbod_localdisk/nextshare/bcl_convert/NovaSeqX"

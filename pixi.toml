@@ -32,15 +32,31 @@ pigz = ">=2.8,<3"
 # `dot` for the rulegraph/dag tasks below
 graphviz = ">=12,<15"
 
+# Applied on every `pixi run` / `pixi shell`.
+[activation]
+# Source .env so the 4 required secrets are always in the environment — no
+# manual `set -a; source .env; set +a` before snakemake. See scripts/load_dotenv.sh.
+scripts = ["scripts/load_dotenv.sh"]
+
+[activation.env]
+# Snakemake reads SNAKEMAKE_PROFILE, so profiles/default applies to EVERY
+# invocation (even a bare `pixi run snakemake -n`) without passing --profile.
+# The profile is not optional: it serializes DRAGEN bcl-convert (FPGA contention)
+# and pins rerun-triggers. See profiles/default/config.yaml.
+SNAKEMAKE_PROFILE = "profiles/default"
+
 [tasks]
-# All tasks pass --profile explicitly so they behave the same for every operator,
-# regardless of whether SNAKEMAKE_PROFILE is set in their shell. See profiles/default.
+# Tasks rely on SNAKEMAKE_PROFILE (set above) instead of a repeated --profile flag.
 # Full workflow
-all = "snakemake --profile profiles/default --cores 8"
+all = "snakemake --cores 8"
 # Preview what would run
-dry-run = "snakemake --profile profiles/default -n"
+dry-run = "snakemake -n"
+# One-time per-run setup: project config + samplesheet (copy/prefill). Idempotent.
+init = "bash scripts/init_run.sh"
+# Validate the metadata workbook before a real run
+validate = "python run_validation.py"
 # BCL conversion for a single lane, e.g. `pixi run convert output/lane1`
-convert = "snakemake --profile profiles/default --cores 8"
+convert = "snakemake --cores 8"
 # Rule/dependency graphs
-rulegraph = "snakemake --profile profiles/default --rulegraph | dot -Tpng > rulegraph.png"
-dag = "snakemake --profile profiles/default --dag | dot -Tpdf > dag.pdf"
+rulegraph = "snakemake --rulegraph | dot -Tpng > rulegraph.png"
+dag = "snakemake --dag | dot -Tpdf > dag.pdf"
