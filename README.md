@@ -37,11 +37,16 @@ pixi install                                    # solve/create env from pixi.loc
 Run any command inside the environment with `pixi run`, or use the predefined tasks:
 
 ```bash
-pixi run snakemake -n        # dry run
+pixi run init                # one-time per-run setup (project config + samplesheet)
+pixi run dry-run             # preview what would run
 pixi run all                 # full workflow (snakemake --cores 8)
-pixi run dry-run             # preview
 pixi run convert output/lane1
 ```
+
+> `pixi run` auto-loads secrets from the shared per-platform `../.env` (a local `./.env`
+> overrides it) and forces `SNAKEMAKE_PROFILE=profiles/default` (see `[activation]` in
+> `pixi.toml` and `scripts/load_dotenv.sh`). You do **not** copy a `.env`, pass
+> `--profile`, or run `source .env` — every `pixi run snakemake ...` already has both.
 
 pixi manages Python (pandas, openpyxl, numpy, matplotlib, pillow, pyyaml, reportlab),
 Snakemake, and the bioconda CLIs (`fastqc`, `flexbar`, `seqtk`, `fqtk`). Two dependencies
@@ -75,22 +80,24 @@ This pipeline supports two Illumina platforms/configurations. The platform is
 | Example `data_dir` | `/staging/nextcloud/Miseqi100/<run>` | `/staging/nextcloud/NovaseqX/<run>` |
 
 The workflow prints `Detected MiSeq metadata format` (or proceeds with the NovaSeqX
-Summary-sheet path) so you can confirm which mode is active. This run (`iR011`) is a
-**MiSeq i100** run.
+Summary-sheet path) so you can confirm which mode is active. The run identifier below
+(`{RUN}`, e.g. `iR011` / `xR077`) comes from your metadata filename.
 
 ## Configuration
 
 Edit `snakemake_config_project.yaml` (project overrides layered over `snakemake_config.yaml`).
 
-**MiSeq i100 example** (this run):
+Most fields are prefilled by `pixi run init`; set `email_*` to **your** address.
+
+**MiSeq i100 example**:
 
 ```yaml
 library_name: "iR011"                    # Run identifier
 metadata: "metadata/06262026_BXA66618-2426_iR011.xlsx"
 data_dir: "/staging/nextcloud/Miseqi100/20260626_SH00564_0020_ASC2231455-SC3"
 lanes: [1,2,3,4,5,6,7,8]                 # Superset; only lane1 is used for MiSeq
-email_sender: "kstachel@uci.edu"
-email_recipient: "kstachel@uci.edu"
+email_sender: "you@uci.edu"
+email_recipient: "you@uci.edu"
 ```
 
 **NovaSeqX example**:
@@ -100,8 +107,8 @@ library_name: "xR077"                    # Run identifier
 metadata: "metadata/251219_23G5F2LT3_10B_PE151_xR077.xlsx"
 data_dir: "/staging/nextcloud/NovaseqX/20260115_LH00626_0088_A233NM2LT4"
 lanes: [1,2,3,4,5,6,7,8]                 # Lanes to process (auto-detected from BaseCalls)
-email_sender: "kstachel@uci.edu"
-email_recipient: "kstachel@uci.edu"
+email_sender: "you@uci.edu"
+email_recipient: "you@uci.edu"
 ```
 
 ## Metadata Format
