@@ -3188,9 +3188,25 @@ rule check_low_reads:
                             _log(f"Warning: failed to send alert email: {e}")
                         log_fh.close()
 
+def _project_fastqs_for_md5(wildcards):
+    """List the fastq.gz files feeding md5sums.txt so Snakemake ties the checksum
+    file to the actual data, not just the .fastq_names_done sentinel.
+
+    Without this, regenerating the fastqs (e.g. a re-demux) without renewing the
+    sentinel newer than md5sums.txt leaves the checksum file stale — Snakemake sees
+    its only input unchanged and skips the recompute, shipping wrong md5sums.
+    The .fastq_names_done sentinel still gates ordering so the glob only matters
+    once the fastqs exist; when they do, their mtimes force a rerun on any change.
+    """
+    import glob as _glob
+    return sorted(_glob.glob(
+        f"output/{wildcards.config_id}/{wildcards.project}/*.fastq.gz"
+    ))
+
 rule calculate_md5sums:
     input:
-        done = "output/{config_id}/{project}/.fastq_names_done"
+        done = "output/{config_id}/{project}/.fastq_names_done",
+        fastqs = _project_fastqs_for_md5
     output:
         md5 = "output/{config_id}/{project}/md5sums.txt"
     log:

@@ -62,8 +62,10 @@ def generate_download_instructions_pdf(output_path, order_id=None, project_name=
     elements.append(Paragraph("Recommended: Dedicated Transfer Clients", heading_style))
     elements.append(Paragraph("Use these apps for the most reliable, resumable transfers. They handle network disruptions much better than web browsers.", body_style))
 
-    elements.append(Paragraph("<b>Cyberduck (Windows & macOS)</b>", body_style))
-    elements.append(Paragraph("1. Download and install from cyberduck.io.<br/>2. Click <b>Open Connection</b> and choose <b>WebDAV (HTTPS)</b>.<br/>3. Server: https://precision.biochem.uci.edu/public.php/webdav/<br/>4. Enter your share token as the username (leave password blank if instructed).", body_style))
+    elements.append(Paragraph("<b>Cyberduck (Windows & macOS) &mdash; requires version 9.5.2 or newer</b>", body_style))
+    elements.append(Paragraph("1. Download and install <b>Cyberduck 9.5.2 or newer</b> from cyberduck.io.<br/>2. Click <b>Open Connection</b> and choose <b>WebDAV (HTTPS)</b>.<br/>3. Server: precision.biochem.uci.edu &nbsp; Port: 443<br/>4. In the <b>Path</b> field enter: /public.php/webdav/<br/>5. Enter your share token as the username (leave password blank if instructed).", body_style))
+    elements.append(Paragraph("<b>Path field:</b> Keep the host and the path in <i>separate</i> fields &mdash; put only <code>precision.biochem.uci.edu</code> in <b>Server</b> and <code>/public.php/webdav/</code> in <b>Path</b>. Do not paste the full URL into the Server field. If the Path field is not visible, expand <b>More Options</b> in the connection/bookmark dialog.", body_style))
+    elements.append(Paragraph("<b>Important:</b> Older Cyberduck versions (e.g. 9.3.1) have a bug that fails with a misleading &ldquo;DNS lookup for &hellip; failed&rdquo; error on this address. If you see that error, upgrade to <b>9.5.2 or newer</b> and the connection will work.", warning_style))
     elements.append(Paragraph("<b>Note:</b> The share token is the trailing string in the project link (the part after <code>/s/</code>). For example, in https://precision.biochem.uci.edu/s/eXampLeToKEN the share token is <b>eXampLeToKEN</b>.", body_style))
     elements.append(Spacer(1, 0.1*inch))
 
