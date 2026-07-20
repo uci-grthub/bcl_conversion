@@ -6,14 +6,17 @@
 # Search order (later wins), all optional:
 #   1. ../.env  — shared per-platform secrets (NovaSeqX/.env, MiSeqi100/.env).
 #                 This is the normal source; a fresh clone needs no local .env.
-#   2. ./.env   — per-run override, for an operator using their own credentials.
+#   2. ~/.env   — user-specific secrets (own NEXTCLOUD_PASSWORD, etc.); overrides
+#                 the shared file so each operator runs under their own account.
+#   3. ./.env   — per-run override, for one-off credentials in this run dir.
 #
-# Runs at the pixi manifest root (the run directory). If neither file exists the
+# Runs at the pixi manifest root (the run directory). If none exists the
 # Snakefile still fails fast with a clear "required environment variable(s) not
 # set" message.
 set -a
-[ -f ../.env ] && . ../.env
-[ -f ./.env ]  && . ./.env
+[ -f ../.env ]      && . ../.env
+[ -f "$HOME/.env" ] && . "$HOME/.env"
+[ -f ./.env ]       && . ./.env
 set +a
 
 # Re-pin the workflow profile regardless of anything a sourced .env set. A

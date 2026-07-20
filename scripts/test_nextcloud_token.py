@@ -124,9 +124,13 @@ def main():
     if not args.path and not args.share_id:
         parser.error("Provide --path and/or --share-id")
 
+    # ~/.env (user-specific) wins over the shared platform file; setdefault means
+    # first-loaded wins, so load home first. Real env vars (pixi activation) win over both.
+    load_env_file(os.path.expanduser("~/.env"))
     load_env_file(args.env_file)
     nc_url = require_env("NEXTCLOUD_URL").rstrip("/")
-    user = require_env("NEXTCLOUD_USER")
+    import getpass
+    user = os.environ.get("NEXTCLOUD_USER") or getpass.getuser()
     password = require_env("NEXTCLOUD_PASSWORD")
 
     share_id = args.share_id

@@ -49,21 +49,27 @@ That's the whole loop. No `--profile`, no `source .env` — `pixi run` handles b
 
 ### Credentials (`.env`)
 
-The workflow publishes FASTQ links to Nextcloud and emails reports, so it needs four
-secrets. The Snakefile refuses to start (including `dry-run`) unless all four are set.
+The workflow publishes FASTQ links to Nextcloud and emails reports, so it needs three
+required secrets. The Snakefile refuses to start (including `dry-run`) unless all three
+are set.
 
 | Variable | What it is |
 | --- | --- |
 | `NEXTCLOUD_URL` | Nextcloud instance, e.g. `https://precision.biochem.uci.edu` |
-| `NEXTCLOUD_USER` | Nextcloud account owning the share directory |
 | `NEXTCLOUD_PASSWORD` | **App password** for that account (not the login password) |
 | `GMAIL_APP_PASSWORD` | App password for the `email_sender` account |
+| `NEXTCLOUD_USER` | *(optional)* Nextcloud account owning the share directory; defaults to the OS user running snakemake. Set only if the Nextcloud account name differs from your local username. |
 
-**These normally live in the shared per-platform file** — `../.env`
-(`.../NovaSeqX/.env` or `.../MiSeqi100/.env`) — which sits one level above every run
-directory. `pixi run` loads it automatically, so a fresh clone needs **no** local `.env`.
-To use your own credentials for one run, drop a `./.env` in the run directory; it overrides
-the shared file (and is gitignored). Generate a Nextcloud app password under **Settings >
+`pixi run` loads `.env` files automatically (search order, later wins):
+
+1. `../.env` — shared per-platform file (`.../NovaSeqX/.env` or `.../MiSeqi100/.env`), one
+   level above every run directory.
+2. `~/.env` — **your user-specific file**; overrides the shared one so each operator runs
+   under their own Nextcloud account. Put your `NEXTCLOUD_PASSWORD` (and, if it differs from
+   your login name, `NEXTCLOUD_USER`) here.
+3. `./.env` — per-run override for one-off credentials in this run directory (gitignored).
+
+A fresh clone needs **no** local `.env`. Generate a Nextcloud app password under **Settings >
 Personal > Security > Devices & sessions > Create new app password**.
 
 > The loader ignores any `SNAKEMAKE_PROFILE` set in a `.env`; the repo's

@@ -13,7 +13,7 @@ from io import StringIO
 # command into .snakemake/log, leaking secrets. The values are read via os.environ
 # below and inherited by child processes from the launching shell, so the directive
 # is unnecessary. Ensure they are exported before invoking snakemake.
-_REQUIRED_ENV = ("GMAIL_APP_PASSWORD", "NEXTCLOUD_URL", "NEXTCLOUD_USER", "NEXTCLOUD_PASSWORD")
+_REQUIRED_ENV = ("GMAIL_APP_PASSWORD", "NEXTCLOUD_URL", "NEXTCLOUD_PASSWORD")
 _missing_env = [_v for _v in _REQUIRED_ENV if not os.environ.get(_v)]
 if _missing_env:
     raise SystemExit(f"Error: required environment variable(s) not set: {', '.join(_missing_env)}")
@@ -22,9 +22,10 @@ NEXTCLOUD_URL = os.environ.get("NEXTCLOUD_URL")
 if not NEXTCLOUD_URL:
     raise SystemExit("Error: NEXTCLOUD_URL environment variable not set")
 
-NEXTCLOUD_USER = os.environ.get("NEXTCLOUD_USER")
-if not NEXTCLOUD_USER:
-    raise SystemExit("Error: NEXTCLOUD_USER environment variable not set")
+# Defaults to the OS user running snakemake; override via env if the Nextcloud
+# account name differs from the local username.
+import getpass as _getpass
+NEXTCLOUD_USER = os.environ.get("NEXTCLOUD_USER") or _getpass.getuser()
 
 NEXTCLOUD_PASSWORD = os.environ.get("NEXTCLOUD_PASSWORD")
 if not NEXTCLOUD_PASSWORD:
