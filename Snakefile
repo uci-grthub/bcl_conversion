@@ -66,6 +66,7 @@ DRYRUN = config.get("dryrun", False)
 DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20260115_LH00626_0088_A233NM2LT4")  # From merged config
 TILES = config.get("tiles", "1_1101")
 FLEXBAR_BIN = config.get("flexbar_bin", "")
+DRAGEN_BIN = config.get("dragen_bin", "/opt/dragen/4.4.7/bin/dragen")
 USE_ANCIENT = config.get("use_ancient", True)
 REPORT_UNDETERMINED_CONFIGS = config.get("report_undetermined_configs", [])
 _effective_keep = list(config.get("keep_undetermined_configs", []))
@@ -2787,7 +2788,8 @@ rule bcl_convert:
         run_info_path = "src/RunInfo_nn.xml",
         tiles = TILES,
         scratch_dir = SCRATCH_DIR,
-        keep_undetermined_configs = KEEP_UNDETERMINED_CONFIGS
+        keep_undetermined_configs = KEEP_UNDETERMINED_CONFIGS,
+        dragen_bin = DRAGEN_BIN
     shell:
         """
         (
@@ -2798,7 +2800,7 @@ rule bcl_convert:
 
         run_dragen() {{
             local sample_sheet_path="$1"
-            timeout 7200 dragen --bcl-conversion-only true \
+            timeout 7200 {params.dragen_bin} --bcl-conversion-only true \
             --bcl-input-directory {input.data_dir} \
             --output-directory "$dragen_out" \
             --force \
@@ -3474,6 +3476,7 @@ rule bcl_convert_rc:
         lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', ''),
         run_info_path = "src/RunInfo_nn.xml",
         tiles = TILES,
+        dragen_bin = DRAGEN_BIN
     run:
         import json as json_mod, subprocess, sys as sys_mod, os as os_mod
         with open(input.candidates) as f:
@@ -3486,7 +3489,7 @@ rule bcl_convert_rc:
             lf.write(f"RC suspects: {[r['project'] for r in suspects]}\n")
             tiles_args = ["--tiles", str(params.tiles)] if params.tiles else []
             cmd = [
-                "dragen", "--bcl-conversion-only", "true",
+                params.dragen_bin, "--bcl-conversion-only", "true",
                 "--bcl-input-directory", str(input.data_dir),
                 "--output-directory", str(output.output_dir),
                 "--force",

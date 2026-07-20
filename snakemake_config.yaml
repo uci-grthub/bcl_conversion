@@ -7,6 +7,7 @@ fastp_threads: 4
 # flexbar from pixi (see pixi.toml). Override with an absolute path, or the
 # FLEXBAR_BIN env var, to use a local speedup build instead.
 flexbar_bin: "flexbar"
+dragen_bin: "/opt/dragen/4.4.7/bin/dragen"
 # Number of leading bases (e.g. a UMI) before the inline barcode in R1. The
 # barcode FASTA is built as "<this many N's><barcode>" and matched at the read
 # start (LTAIL). 0 = barcode at R1 position 1 (KY26SPI inline libraries). Set to
