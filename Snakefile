@@ -88,9 +88,21 @@ NO_DEMUX = bool(config.get("no_demux", False))
 NEXTCLOUD_DIR_NAME = config.get("nextcloud_dir_name", "DragenExt3")
 NEXTCLOUD_DIR_PATH = config.get("nextcloud_dir_path", "nextcloud3")
 
-EMAIL_SENDER = config.get("email_sender", "kstachel@uci.edu")
-EMAIL_RECIPIENT = config.get("email_recipient", "kstachel@uci.edu")
-EMAIL_CC = config.get("email_cc", "kstachel@uci.edu")
+# Email addresses: prefer the per-run config value, but fall back to the
+# environment (loaded from the operator's ~/.env) when the config leaves the
+# field blank, then to a hard default. An empty config string counts as unset.
+def _email_addr(config_key, env_key, default):
+    val = str(config.get(config_key, "") or "").strip()
+    if val:
+        return val
+    val = str(os.environ.get(env_key, "") or "").strip()
+    if val:
+        return val
+    return default
+
+EMAIL_SENDER = _email_addr("email_sender", "EMAIL_SENDER", "kstachel@uci.edu")
+EMAIL_RECIPIENT = _email_addr("email_recipient", "EMAIL_RECIPIENT", EMAIL_SENDER)
+EMAIL_CC = _email_addr("email_cc", "EMAIL_CC", "kstachel@uci.edu")
 LOW_READS_THRESHOLD = config.get("low_reads_threshold", 1000)
 
 # Rule: rsync project to external drive specified in config.yaml
