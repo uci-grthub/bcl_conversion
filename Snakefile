@@ -156,6 +156,7 @@ VALIDATION_XLSX = f"metadata/metadata_validation_{os.path.splitext(os.path.basen
 LANE_CONFIGS = []
 PROJECT_LOOKUP = {}
 MASKING_LOOKUP = {}
+MISSING_MASKING_ROWS = []  # (lane, group, project) for Summary rows missing a Masking value
 PROJECT_LINKS = {}
 PROJECT_LINKS_BY_LANE = {}
 ORDER_ID_LOOKUP = {}
@@ -289,6 +290,9 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
                          if 'Masking' in df.columns:
                             m = str(row['Masking']).strip()
                             MASKING_LOOKUP[(l, g)] = m
+                            if not m or m.lower() == 'nan':
+                                _proj = str(row.get('Project Name', '')).strip()
+                                MISSING_MASKING_ROWS.append((l, g, '' if _proj.lower() == 'nan' else _proj))
                          
                          if 'Order ID' in df.columns:
                             order_id = str(row['Order ID']).strip().replace(' ', '_')
@@ -320,6 +324,20 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
                     })
     except Exception as e:
         print(f"Error reading metadata: {e}")
+
+    # Hard gate: a blank Masking on a populated Summary row is a fatal metadata
+    # error. Raised OUTSIDE the try/except above so it is not swallowed. Bypass
+    # with ALLOW_MISSING_MASKING=1 for the rare intentional-blank workflow.
+    if MISSING_MASKING_ROWS and os.environ.get('ALLOW_MISSING_MASKING', '').lower() not in ('1', 'true', 'yes'):
+        _details = ', '.join(
+            f"lane {l} group {g}" + (f" ({p})" if p else '')
+            for l, g, p in MISSING_MASKING_ROWS
+        )
+        raise ValueError(
+            f"Missing Masking value in Summary tab for: {_details}. "
+            f"Add a Masking (e.g. 'I1:8;I2:8') to each row, or set "
+            f"ALLOW_MISSING_MASKING=1 to bypass."
+        )
 
 # Read Barcode List to fill in PROJECT_ORDER_ID for projects not in Summary sheet
 try:
