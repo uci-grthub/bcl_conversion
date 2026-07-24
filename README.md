@@ -41,6 +41,7 @@ pixi run init                # one-time per-run setup (project config + samplesh
 pixi run dry-run             # preview what would run
 pixi run all                 # full workflow (snakemake --cores 8)
 pixi run convert output/lane1
+pixi run publish NovaSeqx xR101   # mirror finished run to the share + resend emails
 ```
 
 > `pixi run` auto-loads secrets from the shared per-platform `../.env` (a local `./.env`
@@ -64,6 +65,8 @@ remain **system-level** and are not installed by pixi:
 - **`snakemake_config.yaml`** - Base configuration (paths, threads, email settings)
 - **`snakemake_config_project.yaml`** - Project-specific configuration (overrides base settings)
 - **`metadata/*.xlsx`** - Excel metadata with Summary sheet and per-project sheets
+- **`scripts/publish_run.sh`** - `pixi run publish`: mirror run to share, touch, resend emails
+- **`scripts/sync_run.sh`** - `sync_run` rsync mirror function (sourced by `publish_run.sh`)
 - **`src/RunInfo_nn.xml`** - Normalized run configuration (auto-generated)
 
 ## Platforms & Auto-Detection
@@ -190,6 +193,44 @@ snakemake --cores 1 Reports/iR011_read_counts_email.done
 ```
 - Sends read count CSV as attachment
 - Uses SMTP (smtp.uci.edu:25)
+
+## Publishing a Finished Run
+
+Once `pixi run all` has completed, publish the run with:
+
+```bash
+pixi run publish <instrument> <run_id>        # e.g. pixi run publish NovaSeqx xR101
+```
+
+`scripts/publish_run.sh` runs three steps in order:
+
+1. `sync_run <instrument> <run_id> [dest_base] [parallel]` — rsync-mirrors the run
+   directory to the share (default `dest_base`:
+   `/mnt/jbod_localdisk/nextshare/bcl_convert/<instrument>/<run_id>`).
+2. `snakemake --touch all` — rsync bumps mtimes, so outputs are re-marked current.
+3. `snakemake --forcerun send_order_email` — re-sends the per-order download emails,
+   now that the data is actually reachable on the share.
+
+Extra arguments pass straight through to `sync_run`:
+
+```bash
+PARALLEL=4 pixi run publish NovaSeqx xR101                  # 4 parallel rsync jobs (default 2)
+pixi run publish NovaSeqx xR101 /mnt/usb false              # custom dest, parallel off
+```
+
+Set the 4th argument to `false` for USB/local-disk destinations — there is no network
+latency to hide and concurrent writes to one drive only cause seek contention.
+
+Notes:
+
+- Run it **from the run directory**, so the `snakemake` steps see the right config.
+- `sync_run` is a shell function defined in `scripts/sync_run.sh` (in-repo, no dotfile
+  setup needed); `publish_run.sh` sources it. It can also be called standalone:
+  `bash scripts/sync_run.sh NovaSeqx xR101`.
+- `sync_run` rewrites `nextcloud_dir_name`/`nextcloud_dir_path` in the **mirrored** copy
+  of `snakemake_config_project.yaml` so links point at the JBOD share, and excludes
+  `.snakemake`, `Reports`, and link logs from the transfer.
+- Instrument/run casing is resolved case-insensitively (`NovaSeqx` matches `NovaSeqX`).
 
 ## Common Commands
 

@@ -57,6 +57,9 @@ init = "bash scripts/init_run.sh"
 validate = "python run_validation.py"
 # BCL conversion for a single lane, e.g. `pixi run convert output/lane1`
 convert = "snakemake --cores 8"
+# Publish a finished run: mirror to the share, touch outputs, resend order emails.
+# Extra args pass through to sync_run, e.g. `pixi run publish NovaSeqx xR101`.
+publish = "bash scripts/publish_run.sh"
 # Rule/dependency graphs
 rulegraph = "snakemake --rulegraph | dot -Tpng > rulegraph.png"
 dag = "snakemake --dag | dot -Tpdf > dag.pdf"
