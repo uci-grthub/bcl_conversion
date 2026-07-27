@@ -403,6 +403,23 @@ for (lane, group), project in PROJECT_LOOKUP.items():
         PROJECT_RENAME_MAP[(config_id, project)] = new_name
         PROJECT_RENAME_MAP_INV[(config_id, new_name)] = project
 
+# Projects whose names contain one of these keywords need the index reads delivered
+# as FASTQs; every other project has its I1/I2 files stripped in bcl_project_done.
+INDEX_READ_KEYWORDS = ["10x", "BD", "parse", "Parse", "SMK", "smk", "CITE", "cite", "Hashtag", "hashtag"]
+
+def project_keeps_index_reads(config_id, project):
+    """True when the I1/I2 FASTQs for this project survive bcl_project_done.
+
+    Accepts either the original or the renamed project folder name and always
+    tests the original, matching the check bcl_project_done performs. Callers
+    that glob the project directory must agree with that rule, otherwise
+    Snakemake records index FASTQs as inputs that the pipeline then deletes.
+    """
+    if NO_DEMUX:
+        return True
+    check_name = PROJECT_RENAME_MAP_INV.get((config_id, project), project)
+    return any(kw in check_name for kw in INDEX_READ_KEYWORDS)
+
 # Helper definitions are sourced from src/workflow_defs.smk
 
 
@@ -3207,9 +3224,8 @@ rule bcl_project_done:
         # When no_demux is set the index reads are the point of the run (DRAGEN emits
         # them as FASTQs instead of index-based demultiplexing), so keep them for every
         # project rather than stripping them here.
-        _INDEX_READ_KEYWORDS = ["10x", "BD", "parse", "Parse", "SMK", "smk", "CITE", "cite", "Hashtag", "hashtag"]
         check_name = old_project if old_project else new_project
-        if not NO_DEMUX and not any(kw in check_name for kw in _INDEX_READ_KEYWORDS):
+        if not project_keeps_index_reads(config_id, check_name):
             proj_dir = f"output/{config_id}/{new_project}"
             removed = 0
             for pattern in ["**/*-I1.fastq.gz", "**/*-I2.fastq.gz"]:
@@ -3339,11 +3355,19 @@ def _project_fastqs_for_md5(wildcards):
     its only input unchanged and skips the recompute, shipping wrong md5sums.
     The .fastq_names_done sentinel still gates ordering so the glob only matters
     once the fastqs exist; when they do, their mtimes force a rerun on any change.
+
+    Index FASTQs are excluded for projects bcl_project_done strips them from.
+    The glob runs at DAG-build time, so a leftover I1/I2 from an earlier run would
+    otherwise be recorded as an input and then deleted mid-run by bcl_project_done,
+    leaving this job waiting on files the pipeline itself removed.
     """
     import glob as _glob
-    return sorted(_glob.glob(
+    files = sorted(_glob.glob(
         f"output/{wildcards.config_id}/{wildcards.project}/*.fastq.gz"
     ))
+    if not project_keeps_index_reads(wildcards.config_id, wildcards.project):
+        files = [f for f in files if not f.endswith(("-I1.fastq.gz", "-I2.fastq.gz"))]
+    return files
 
 rule calculate_md5sums:
     input:

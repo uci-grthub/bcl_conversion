@@ -50,14 +50,31 @@ sync_run() {
     # Run rsync quietly here -- concurrent progress2 streams scramble each other on
     # the terminal -- and just announce each subdir as it starts. When parallel is
     # off, this branch is skipped and the single pass below copies output/ too.
+    echo "[sync_run] src:      $src"
+    echo "[sync_run] dest:     $dest"
+    echo "[sync_run] parallel: $parallel_enabled (PARALLEL=$parallel)"
+    echo "[sync_run] excluded from mirror (rebuilt there): .snakemake, Reports, logs/*link*"
+
     if [[ "$parallel_enabled" != "false" && -d "$src/output" ]]; then
         mkdir -p "$dest/output"
+        echo "[sync_run] output/ subdirs to sync: $(ls "$src/output" | wc -l)"
+        # Per-subdir start/finish lines with size and duration -- concurrent
+        # rsync progress meters would scramble each other, so the transfers stay
+        # quiet and each worker reports around its own rsync instead.
         ls "$src/output" | xargs -P"$parallel" -I{} \
-            sh -c 'echo "syncing output/{}"; rsync -aWq "$1/output/{}" "$2/output/"' _ "$src" "$dest"
+            sh -c '
+                started=$(date +%s)
+                echo "[sync_run $(date +%H:%M:%S)] START  output/{} ($(du -sh "$1/output/{}" 2>/dev/null | cut -f1))"
+                rsync -aWq "$1/output/{}" "$2/output/"
+                finished=$(date +%s)
+                echo "[sync_run $(date +%H:%M:%S)] DONE   output/{} in $(( (finished - started) / 60 ))m$(( (finished - started) % 60 ))s"
+            ' _ "$src" "$dest"
+        echo "[sync_run] output/ transfers complete"
     fi
 
     # Everything else (small, recreatable metadata) in a single pass.
-    rsync -aW --info=progress2 \
+    echo "[sync_run] syncing remaining run files (metadata, results, logs, configs)"
+    rsync -aW --info=progress2 --stats -h \
         --exclude '.snakemake' \
         --exclude 'logs/*link*' \
         --exclude 'logs/**/*link*' \
@@ -72,7 +89,14 @@ sync_run() {
             -e 's/^nextcloud_dir_name: .*/nextcloud_dir_name: "Jbod2"/' \
             -e 's/^nextcloud_dir_path: .*/nextcloud_dir_path: "nextshare"/' \
             "$cfg"
+        echo "[sync_run] repointed $(basename "$cfg") at the Jbod2 share:"
+        grep -E '^nextcloud_dir_(name|path):' "$cfg" | sed 's/^/[sync_run]   /'
     fi
+
+    # Publish the resolved destination to the caller (publish_run.sh runs the
+    # post-sync snakemake steps in the mirror, not in the source run dir).
+    SYNC_RUN_DEST="$dest"
+    echo "[sync_run] mirror ready: $dest"
 }
 
 # Allow direct execution: `bash scripts/sync_run.sh <instrument> <run_id> ...`
