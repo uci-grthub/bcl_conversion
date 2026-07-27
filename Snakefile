@@ -1789,6 +1789,11 @@ rule compile_read_counts:
                         sample = row_dict.get('barcode_name', row_dict.get('sample_id', ''))
                         if not sample or sample.lower() in ('unmatched', 'undetermined', ''):
                             continue
+                        # decoy__* entries are not samples: they exist to absorb reads
+                        # belonging to lanes' DRAGEN-assigned indexes (see
+                        # scripts/resolve_fqtk_barcodes.py).
+                        if sample.startswith('decoy__'):
+                            continue
                         try:
                             reads = int(row_dict.get('templates', row_dict.get('reads', 0)))
                         except (ValueError, TypeError):
@@ -2239,7 +2244,12 @@ rule fqtk_per_config:
     """
     input:
         bcl_done    = ".output/{config_id}/.done",
-        barcode_tsv = "metadata/fqtk_barcodes_{config_id}.tsv"
+        barcode_tsv = "metadata/fqtk_barcodes_{config_id}.tsv",
+        # The barcode resolver reads this sheet to know which indexes DRAGEN claimed.
+        # It must be declared, not just referenced in the shell: .done can outlive a
+        # deleted sample sheet, and without the dependency this rule starts alongside
+        # the validation that regenerates it.
+        samplesheet = maybe_ancient("results/{config_id}/SampleSheet_{config_id}_validated.csv")
     output:
         touch("results/{config_id}/fqtk_{config_id}.done")
     log:
@@ -2279,10 +2289,22 @@ rule fqtk_per_config:
         fi
         echo "I1 read length: ${{I1_LEN}}bp -> read structure: $I1_READ_STRUCT"
 
+        # Samples routed here by an index collision carry a short index (e.g. 6bp),
+        # but the read structure above matches 8 bases. Measure what those samples
+        # actually sequenced at the remaining cycles rather than padding a guess;
+        # this fails loudly when the result would collide with a real sample index.
+        RESOLVED="metadata/fqtk_barcodes_{wildcards.config_id}_resolved.tsv"
+        python3 scripts/resolve_fqtk_barcodes.py \
+            --barcodes {input.barcode_tsv} \
+            --undetermined-i1 "$I1" \
+            --samplesheet {input.samplesheet} \
+            --target-length 8 \
+            --output "$RESOLVED"
+
         fqtk demux \
             --inputs "$R1" "$I1" "$R2" \
             --read-structures "151T" "$I1_READ_STRUCT" "151T" \
-            --sample-metadata {input.barcode_tsv} \
+            --sample-metadata "$RESOLVED" \
             --output {params.outdir} \
             --max-mismatches 1 \
             --min-mismatch-delta 2
@@ -2292,6 +2314,11 @@ rule fqtk_per_config:
 
         # Remove unmatched reads — not needed downstream and can be large.
         rm -f "{params.outdir}"/unmatched.*.fq.gz
+
+        # Decoy entries exist only to keep reads belonging to DRAGEN-demultiplexed
+        # samples out of the recovered ones; their FASTQs are duplicates of reads that
+        # already failed assignment once and are not deliverables.
+        rm -f "{params.outdir}"/decoy__*.fq.gz
 
         curr_dir=$PWD
         cd {params.outdir}
@@ -3595,11 +3622,14 @@ rule pick_orientation:
         with open(input.candidates) as f:
             suspects = json_mod.load(f)
 
-        # Keep Undetermined FASTQs for lanes configured for flexbar demux, or for
-        # lanes explicitly listed in keep_undetermined_configs / report_undetermined_configs.
-        # Match bcl_convert behavior to avoid deleting reads it was told to keep.
+        # Keep Undetermined FASTQs for lanes configured for flexbar or fqtk demux, or
+        # for lanes explicitly listed in keep_undetermined_configs / report_undetermined_configs.
+        # Match bcl_convert behavior to avoid deleting reads it was told to keep: fqtk
+        # lanes demultiplex their samples out of these files, so losing them here means
+        # losing those samples entirely and having to re-convert the lane.
         preserve_undetermined = (
             os_mod.path.isfile(f"metadata/flexbar_barcodes_{wildcards.config_id}.txt")
+            or os_mod.path.isfile(f"metadata/fqtk_barcodes_{wildcards.config_id}.tsv")
             or wildcards.config_id in _effective_keep
         )
 

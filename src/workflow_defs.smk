@@ -13,6 +13,7 @@ except Exception:
 
 # Import shared validation function
 from metadata_validation import validate_metadata_and_write_report
+from barcode_collisions import select_projects_for_fqtk
 
 
 # Re-export for backward compatibility (in case it's called as workflow_defs.validate_metadata_and_write_report)
@@ -1326,8 +1327,31 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         # (i7-only barcode matching via I1 reads).  Remove them from the DRAGEN sheet
         # and write metadata/fqtk_barcodes_{config_id}.tsv so the Snakefile can detect
         # the config and build FQTK_CONFIGS / FQTK_CONFIG_RENAMING_MAP at DAG time.
+        # Samples reach this path two ways: a project named *fqtk*, or an index
+        # collision DRAGEN cannot resolve (see src/barcode_collisions.py).  Barcodes
+        # written here may be shorter than the lane's index read; scripts/
+        # resolve_fqtk_barcodes.py extends them from the observed Undetermined reads
+        # before fqtk runs.
         if 'Sample_Project' in ss_data.columns:
             fqtk_mask = ss_data['Sample_Project'].str.contains('fqtk', case=False, na=False)
+
+            # A sample whose index is a prefix of a longer index on the same lane cannot
+            # be demultiplexed by DRAGEN at all: it aborts the lane rather than guess.
+            # Route its project to fqtk as well, so a colliding run reaches the post-hoc
+            # path without anyone having to annotate the metadata workbook.
+            collision_projects, collision_notes, collision_errors = select_projects_for_fqtk(
+                ss_data.to_dict('records')
+            )
+            for note in collision_notes:
+                print(f"Index collision on {config_id}: {note}")
+            if collision_errors:
+                raise ValueError(
+                    f"Unresolvable index collision in {config_id}:\n  "
+                    + "\n  ".join(collision_errors)
+                )
+            if collision_projects:
+                fqtk_mask = fqtk_mask | ss_data['Sample_Project'].isin(collision_projects)
+
             if fqtk_mask.any():
                 fqtk_tsv_path = os.path.join("metadata", f"fqtk_barcodes_{config_id}.tsv")
                 os.makedirs("metadata", exist_ok=True)
