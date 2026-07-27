@@ -1481,7 +1481,14 @@ rule fastp_plots_per_config:
 rule summarize_project_reads:
     input:
         project_done = "output/{config_id}/{project}/.project_done",
-        bcl_done = ".output/{config_id}/.done"
+        bcl_done = ".output/{config_id}/.done",
+        # fqtk-routed projects are absent from Demultiplex_Stats.csv; their counts
+        # come from output/{config_id}/fqtk/demux-metrics.txt instead. Depending on
+        # the done flag also makes this rule rerun after a re-demux.
+        fqtk_done = lambda wildcards: (
+            f"results/{wildcards.config_id}/fqtk_{wildcards.config_id}.done"
+            if wildcards.config_id in FQTK_CONFIGS else []
+        )
     output:
         "results/{config_id}/{project}/read_counts_{project}.csv"
     log:
@@ -1558,7 +1565,49 @@ rule summarize_project_reads:
             else:
                 print(f"Missing Sample_Project column in {demux_path}")
 
-        df = pd.DataFrame(data)
+        # fqtk fallback: this project's samples were demultiplexed post-hoc from the
+        # lane's Undetermined reads, so DRAGEN never reported them. Read the counts
+        # fqtk wrote instead. Same parsing as compile_read_counts.
+        if not data and FQTK_ORDER_ID_PROJECT.get(wildcards.config_id) in target_projects:
+            metrics_path = f"output/{wildcards.config_id}/fqtk/demux-metrics.txt"
+            if not os.path.exists(metrics_path):
+                print(f"Skipping missing {metrics_path}")
+            else:
+                try:
+                    metrics_df = pd.read_csv(metrics_path, sep='\t')
+                except Exception as e:
+                    print(f"Error reading {metrics_path}: {e}")
+                    metrics_df = pd.DataFrame()
+
+                sample_col = 'barcode_name' if 'barcode_name' in metrics_df.columns else 'sample_id'
+                if sample_col not in metrics_df.columns:
+                    print(f"Missing sample column in {metrics_path}")
+                else:
+                    for _, row in metrics_df.iterrows():
+                        sample_name = str(row.get(sample_col, '')).strip()
+                        # unmatched/undetermined are not samples; decoy__* entries exist
+                        # only to absorb reads belonging to the lane's DRAGEN indexes.
+                        if not sample_name or sample_name.lower() in ('unmatched', 'undetermined'):
+                            continue
+                        if sample_name.startswith('decoy__'):
+                            continue
+                        try:
+                            read_pairs = int(row.get('templates', row.get('reads', 0)))
+                        except (ValueError, TypeError):
+                            read_pairs = 0
+                        data.append({
+                            'Config': wildcards.config_id,
+                            'Project': wildcards.project,
+                            'Sample': sample_name,
+                            'Total_Reads': read_pairs,
+                            'Passed_Reads': read_pairs,
+                        })
+                    print(f"Read {len(data)} fqtk sample counts from {metrics_path}")
+
+        df = pd.DataFrame(
+            data,
+            columns=['Config', 'Project', 'Sample', 'Total_Reads', 'Passed_Reads'],
+        )
         if not df.empty:
             df = df.sort_values(['Sample'])
         df.to_csv(output[0], index=False)
