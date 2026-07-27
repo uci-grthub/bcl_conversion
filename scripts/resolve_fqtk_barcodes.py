@@ -20,6 +20,10 @@ a routed sample, and the caller discards the decoy FASTQs afterwards.
 Decoys cannot help when a resolved barcode is *identical* to a sheet index, since no
 rule could tell the two apart; that case fails loudly instead.
 
+Adding decoys tightens how close two barcodes can be, so the matching thresholds fqtk
+should run with follow from the finished table rather than being fixed in the caller.
+They are written to a shell-sourceable sidecar next to the output TSV.
+
 Usage:
     resolve_fqtk_barcodes.py --barcodes metadata/fqtk_barcodes_lane2.tsv \
         --undetermined-i1 .output/lane2/Undetermined_S0_L002_I1_001.fastq.gz \
@@ -89,6 +93,10 @@ def main():
     parser.add_argument("--undetermined-i1", required=True, help="Undetermined I1 FASTQ (gz)")
     parser.add_argument("--samplesheet", help="DRAGEN sheet whose indexes must stay separable")
     parser.add_argument("--output", required=True, help="resolved TSV to write")
+    parser.add_argument(
+        "--params-output",
+        help="shell-sourceable fqtk matching thresholds (default: <output>.params)",
+    )
     parser.add_argument(
         "--target-length", type=int, default=8,
         help="barcode length fqtk will match (default: 8, matching the demux read structure)",
@@ -194,6 +202,49 @@ def main():
         f"Added {len(decoys)} decoy entries from the DRAGEN sheet"
         + (f" ({skipped_short} indexes shorter than {args.target_length}bp skipped)" if skipped_short else "")
     )
+
+    # fqtk's matching thresholds have to follow from how close the barcodes actually
+    # are, not from a fixed guess. A routed sample one mismatch from a decoy loses
+    # every read under --min-mismatch-delta 2: a perfect read scores 0 against the
+    # sample and 1 against the decoy, a delta of 1, so fqtk calls it ambiguous and
+    # writes it to unmatched. Exactly that silently emptied lane4's 1JK (ATCACGAT,
+    # one mismatch from the sheet's ACCACGAT).
+    #
+    # Assignment is safe when the winning margin still exceeds the delta:
+    #   min distance >= 2  ->  perfect reads clear a delta of 2, and one mismatch of
+    #                          error tolerance cannot reach another barcode first
+    #   min distance == 1  ->  only exact matches can be told apart, so drop both the
+    #                          tolerance and the delta rather than dropping the sample
+    min_distance = None
+    for entry in entries:
+        for other in entries + decoys:
+            if other is entry:
+                continue
+            distance = hamming(entry[header[1]], other[header[1]])
+            if min_distance is None or distance < min_distance:
+                min_distance = distance
+    if min_distance is None:
+        min_distance = args.target_length
+
+    max_mismatches = 1 if min_distance >= 2 else 0
+    min_mismatch_delta = min(2, min_distance)
+    print(
+        f"Closest barcode pair involving a routed sample: {min_distance} mismatch(es) "
+        f"-> --max-mismatches {max_mismatches} --min-mismatch-delta {min_mismatch_delta}"
+    )
+    if max_mismatches == 0:
+        print(
+            "Exact-match-only assignment: reads carrying a sequencing error in the "
+            "barcode go to unmatched. Widening the tolerance here would assign reads "
+            "to the wrong library instead."
+        )
+
+    params_path = args.params_output or f"{args.output}.params"
+    with open(params_path, "w") as f:
+        f.write(f"FQTK_MAX_MISMATCHES={max_mismatches}\n")
+        f.write(f"FQTK_MIN_MISMATCH_DELTA={min_mismatch_delta}\n")
+        f.write(f"FQTK_MIN_BARCODE_DISTANCE={min_distance}\n")
+    print(f"Wrote {params_path}")
 
     with open(args.output, "w") as f:
         f.write("\t".join(header) + "\n")

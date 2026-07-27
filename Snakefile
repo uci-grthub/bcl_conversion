@@ -2301,13 +2301,18 @@ rule fqtk_per_config:
             --target-length 8 \
             --output "$RESOLVED"
 
+        # Matching thresholds come from how close the resolved barcodes and decoys
+        # actually are. Hardcoding --min-mismatch-delta 2 silently emptied a sample
+        # sitting one mismatch from a decoy: every read tied and went to unmatched.
+        . "$RESOLVED.params"
+
         fqtk demux \
             --inputs "$R1" "$I1" "$R2" \
             --read-structures "151T" "$I1_READ_STRUCT" "151T" \
             --sample-metadata "$RESOLVED" \
             --output {params.outdir} \
-            --max-mismatches 1 \
-            --min-mismatch-delta 2
+            --max-mismatches "$FQTK_MAX_MISMATCHES" \
+            --min-mismatch-delta "$FQTK_MIN_MISMATCH_DELTA"
 
         echo "fqtk demux complete"
         cat "{params.outdir}/demux-metrics.txt" 2>/dev/null || true
@@ -3074,6 +3079,13 @@ rule bcl_project_done:
             )
         is_primary_copier = new_project == all_lane_projects[0]
 
+        # Undetermined FASTQs are normally deleted before this rule runs. A lane that
+        # demultiplexes with fqtk or flexbar keeps them so the post-hoc demux has input,
+        # which put hundreds of GB of staging-only reads into the delivery tree as a side
+        # effect. Copy them only when the run actually asked for them; the fqtk path
+        # reads from .output/ directly and never wants a second copy here.
+        deliver_undetermined = config_id in _effective_keep
+
         # Bulk accessory copy (primary project only). Skip old Sample_Project subdirs —
         # those are moved by their own bcl_project_done.
         if is_primary_copier and os.path.isdir(staging):
@@ -3085,6 +3097,9 @@ rule bcl_project_done:
                 dst_item = os.path.join(dest_base, item)
                 if os.path.isdir(src_item) and item in old_project_dirs:
                     continue  # handled by that project's bcl_project_done
+                if item.startswith('Undetermined') and not deliver_undetermined:
+                    _plog(f"Skipping staging-only Undetermined file: {item}")
+                    continue
                 if os.path.isdir(src_item):
                     # Force-overwrite so RC-corrected Demultiplex_Stats and summaries
                     # replace any stale copy previously written from .output.
