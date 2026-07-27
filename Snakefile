@@ -1803,7 +1803,9 @@ rule compile_read_counts:
                         lane_group_counts[lane_group_key][label][3] += reads
                         current_barcode = None
 
-        # Parse fqtk demux-metrics.txt and add per-sample read counts as a "fqtk" group
+        # Parse fqtk demux-metrics.txt and add per-sample read counts. These samples
+        # carry a real group number in the metadata even though DRAGEN never demuxed
+        # them, so they get their own lane/group column like every other project.
         for config_id in FQTK_CONFIGS:
             lane_num = None
             try:
@@ -1820,12 +1822,23 @@ rule compile_read_counts:
                 print(f"Skipping missing fqtk metrics: {fqtk_metrics}")
                 continue
 
-            lane_group_key = (lane_num, "fqtk")
+            fqtk_rows = FQTK_CONFIG_RENAMING_MAP.get(config_id) or []
+            fqtk_group = str(fqtk_rows[0].get("Group", "")).strip() if fqtk_rows else ""
+            if not fqtk_group:
+                print(f"No group number for fqtk config {config_id}; labelling column 'fqtk'")
+                fqtk_group = "fqtk"
+            try:
+                fqtk_group_order = int(fqtk_group)
+            except (ValueError, TypeError):
+                fqtk_group_order = float("inf")
+
+            lane_group_key = (lane_num, fqtk_group)
             lane_group_counts.setdefault(lane_group_key, {})
 
             try:
                 with open(fqtk_metrics) as _fh:
                     header_line = None
+                    fqtk_idx = 0
                     for _line in _fh:
                         _line = _line.rstrip('\n')
                         if not _line or _line.startswith('#'):
@@ -1849,7 +1862,12 @@ rule compile_read_counts:
                             reads = 0
                         label = sample
                         if label not in lane_group_counts[lane_group_key]:
-                            lane_group_counts[lane_group_key][label] = [0, 0, "fqtk", 0]
+                            # (group_order, row_index, group, reads) -- row_index keeps
+                            # the samples in demux-metrics.txt order within the column.
+                            lane_group_counts[lane_group_key][label] = [
+                                fqtk_group_order, fqtk_idx, fqtk_group, 0,
+                            ]
+                            fqtk_idx += 1
                         lane_group_counts[lane_group_key][label][3] += reads
             except Exception as _e:
                 print(f"Warning: could not parse fqtk metrics {fqtk_metrics}: {_e}")
