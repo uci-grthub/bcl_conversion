@@ -133,6 +133,69 @@ def rc_index2(barcode):
         return f"{parts[0]}-{_rc(parts[1])}"
     return _rc(str(barcode))
 
+def barcode_lookup_variants(barcode):
+    """Return every orientation a barcode may appear in inside Demultiplex_Stats.csv.
+
+    FASTQ stems always carry the barcode as written in the metadata workbook, but
+    the lane may have been demuxed from an RC'd sample sheet (see pick_orientation:
+    'rc_i7', 'rc_i5', 'rc_both'), in which case Demultiplex_Stats.csv holds the
+    reverse-complemented index. Try the literal form first, then each RC variant.
+    """
+    if not barcode or barcode == "Unknown":
+        return [barcode]
+
+    def _rc(seq):
+        table = str.maketrans("ACGTacgt", "TGCAtgca")
+        return seq.translate(table)[::-1]
+
+    text = str(barcode)
+    parts = text.split("-")
+    if len(parts) == 2:
+        i7, i5 = parts
+        candidates = [
+            text,
+            f"{i7}-{_rc(i5)}",
+            f"{_rc(i7)}-{i5}",
+            f"{_rc(i7)}-{_rc(i5)}",
+        ]
+    else:
+        candidates = [text, _rc(text)]
+
+    seen = set()
+    ordered = []
+    for candidate in candidates:
+        if candidate not in seen:
+            seen.add(candidate)
+            ordered.append(candidate)
+    return ordered
+
+def load_fqtk_sample_ids(config_id):
+    """Map barcode -> fqtk sample_id from metadata/fqtk_barcodes_{config_id}.tsv.
+
+    fqtk demux-metrics.txt is keyed by sample_id, while FASTQ stems carry the
+    barcode, so this table is the join between the two.
+    """
+    mapping = {}
+    tsv_path = os.path.join("metadata", f"fqtk_barcodes_{config_id}.tsv")
+    if not os.path.exists(tsv_path):
+        return mapping
+    try:
+        with open(tsv_path) as fh:
+            header = None
+            for line in fh:
+                parts = line.rstrip("\n").split("\t")
+                if header is None:
+                    header = parts
+                    continue
+                row = dict(zip(header, parts))
+                sample_id = (row.get("sample_id") or "").strip()
+                bc = (row.get("barcode") or "").strip()
+                if sample_id and bc:
+                    mapping[bc] = sample_id
+    except Exception as e:
+        print(f"Warning: could not parse fqtk barcodes from {tsv_path}: {e}")
+    return mapping
+
 def compose_plots_base64(image_paths, total_width=900, quality=35, background_color=(255, 255, 255)):
     """
     Compose up to three PNG plot images side-by-side into a single JPEG and return base64.
@@ -231,9 +294,9 @@ def parse_fqtk_demux_metrics(metrics_path):
     """Parse fqtk demux-metrics.txt and return per-sample read counts.
 
     Returns:
-        dict: {sample_name: int_reads}
+        dict: {'by_sample': {sample_name: int_reads}, 'by_barcode': {barcode: int_reads}}
     """
-    counts = {}
+    counts = {"by_sample": {}, "by_barcode": {}}
     if not metrics_path or not os.path.exists(metrics_path):
         return counts
 
@@ -251,18 +314,50 @@ def parse_fqtk_demux_metrics(metrics_path):
 
                 row = dict(zip(header_line, parts))
                 sample_name = (row.get("barcode_name") or row.get("sample_id") or "").strip()
+                barcode = (row.get("barcode") or "").strip()
                 reads_raw = (row.get("templates") or row.get("reads") or "0").strip()
                 if not sample_name:
                     continue
 
                 try:
-                    counts[sample_name] = counts.get(sample_name, 0) + int(reads_raw)
+                    reads = int(reads_raw)
                 except ValueError:
                     continue
+
+                counts["by_sample"][sample_name] = counts["by_sample"].get(sample_name, 0) + reads
+                if barcode:
+                    counts["by_barcode"][barcode] = counts["by_barcode"].get(barcode, 0) + reads
     except Exception as e:
         print(f"Warning: could not parse fqtk counts from {metrics_path}: {e}")
 
     return counts
+
+def resolve_fqtk_reads(counts, stem, barcode, barcode_to_sample_id):
+    """Look up an fqtk read count for one sample.
+
+    demux-metrics.txt is keyed by fqtk sample_id (e.g. 'M11'), never by the
+    canonical FASTQ stem, and its barcode column may carry extra cycles beyond
+    the sample sheet index (GGCTACAT vs GGCTAC). Resolve in order: stem,
+    sample_id from the fqtk barcode table, exact barcode, unique barcode prefix.
+    """
+    by_sample = counts.get("by_sample", {})
+    by_barcode = counts.get("by_barcode", {})
+
+    for key in (stem, barcode_to_sample_id.get(barcode), barcode):
+        if key:
+            value = by_sample.get(key)
+            if isinstance(value, int) and value > 0:
+                return value
+
+    if barcode:
+        value = by_barcode.get(barcode)
+        if isinstance(value, int) and value > 0:
+            return value
+        prefix_hits = [v for k, v in by_barcode.items() if k.startswith(barcode)]
+        if len(prefix_hits) == 1 and isinstance(prefix_hits[0], int) and prefix_hits[0] > 0:
+            return prefix_hits[0]
+
+    return None
 
 def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_dir, report_dir, fastq_links_str, lane_filter=None, append_mode=False, links_yaml=None, order_id=None, library_name=None, plots_total_width=900, plots_quality=35, orig_project_name=None, project_name_map=None):
     os.makedirs(report_dir, exist_ok=True)
@@ -647,7 +742,8 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
     samples = {} # stem -> { config_id: { info... } }
     demux_stats_cache = {}  # config_id -> {(orig_project, index): num_reads}
     undetermined_reads_cache = {}  # config_id -> num_reads for the lane's Undetermined row
-    fqtk_counts_cache = {}   # config_id -> {sample_name: num_reads}
+    fqtk_counts_cache = {}   # config_id -> {'by_sample': {...}, 'by_barcode': {...}}
+    fqtk_sample_id_cache = {}  # config_id -> {barcode: fqtk sample_id}
     flexbar_counts_cache = {}  # config_id -> {barcode_name: {'r1': int|None, 'r2': int|None}}
     flexbar_label_cache = {}   # config_id -> {barcode_label: sample_name}
 
@@ -789,7 +885,11 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                     barcode = "Unknown"
 
             _cache = demux_stats_cache.get(config_id, {})
-            demux_reads = _cache.get((fastp_lookup_name, barcode)) or _cache.get((fastp_lookup_name, rc_index2(barcode)))
+            demux_reads = None
+            for _variant in barcode_lookup_variants(barcode):
+                demux_reads = _cache.get((fastp_lookup_name, _variant))
+                if demux_reads:
+                    break
             # Undetermined pseudo-sample: its barcode token is "Undetermined" and its
             # count lives in the lane's Undetermined demux row (empty Index), so fall
             # back to the dedicated cache.
@@ -805,14 +905,19 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
                         os.path.join(output_base_dir, config_id, "fqtk", "demux-metrics.txt"),
                         os.path.join(output_base_dir, config_id, "demux-metrics.txt"),
                     ]
-                    fqtk_counts_cache[config_id] = {}
+                    fqtk_counts_cache[config_id] = {"by_sample": {}, "by_barcode": {}}
                     for fqtk_metrics in fqtk_metrics_candidates:
                         if os.path.exists(fqtk_metrics):
                             fqtk_counts_cache[config_id] = parse_fqtk_demux_metrics(fqtk_metrics)
                             break
 
+                if config_id not in fqtk_sample_id_cache:
+                    fqtk_sample_id_cache[config_id] = load_fqtk_sample_ids(config_id)
+
                 _fqtk_counts = fqtk_counts_cache.get(config_id, {})
-                fqtk_reads = _fqtk_counts.get(stem)
+                fqtk_reads = resolve_fqtk_reads(
+                    _fqtk_counts, stem, barcode, fqtk_sample_id_cache.get(config_id, {})
+                )
                 if isinstance(fqtk_reads, int) and fqtk_reads > 0:
                     paired_reads = fqtk_reads
 

@@ -1324,124 +1324,134 @@ rule normalize_project_fastq_names:
     wildcard_constraints:
         config_id = "[^/]+",
         project = ".+"
+    log:
+        "logs/{config_id}/normalize_project_fastq_names_{config_id}_{project}.log"
     run:
         import os
         import shutil
+        import traceback
 
-        config_id = wildcards.config_id
-        new_project = wildcards.project
-        old_project = PROJECT_RENAME_MAP_INV.get((config_id, new_project), new_project)
-        project_dir = os.path.abspath(f"output/{config_id}/{new_project}")
+        _logf = open(log[0], "w")
+        try:
+            config_id = wildcards.config_id
+            new_project = wildcards.project
+            old_project = PROJECT_RENAME_MAP_INV.get((config_id, new_project), new_project)
+            project_dir = os.path.abspath(f"output/{config_id}/{new_project}")
 
-        if not os.path.isdir(project_dir):
-            os.makedirs(project_dir, exist_ok=True)
-            return
+            if not os.path.isdir(project_dir):
+                os.makedirs(project_dir, exist_ok=True)
+                return
 
-        check_name = old_project or new_project
-        lowered = check_name.lower()
-        if any(token in lowered for token in ["10x", "parse", "bd"]):
-            return
+            check_name = old_project or new_project
+            lowered = check_name.lower()
+            if any(token in lowered for token in ["10x", "parse", "bd"]):
+                return
 
-        def _materialize_and_backlink(src_abs, dst_abs):
-            if os.path.lexists(dst_abs) and os.path.islink(dst_abs):
-                os.unlink(dst_abs)
-            if not os.path.exists(dst_abs):
-                try:
-                    os.link(src_abs, dst_abs)
-                except Exception:
-                    shutil.copy2(src_abs, dst_abs)
-            if os.path.lexists(src_abs):
-                try:
-                    if os.path.islink(src_abs) and os.path.realpath(src_abs) == os.path.realpath(dst_abs):
-                        return
-                    os.unlink(src_abs)
-                except Exception:
-                    pass
-            os.symlink(os.path.abspath(dst_abs), src_abs)
+            def _materialize_and_backlink(src_abs, dst_abs):
+                if os.path.lexists(dst_abs) and os.path.islink(dst_abs):
+                    os.unlink(dst_abs)
+                if not os.path.exists(dst_abs):
+                    try:
+                        os.link(src_abs, dst_abs)
+                    except Exception:
+                        shutil.copy2(src_abs, dst_abs)
+                if os.path.lexists(src_abs):
+                    try:
+                        if os.path.islink(src_abs) and os.path.realpath(src_abs) == os.path.realpath(dst_abs):
+                            return
+                        os.unlink(src_abs)
+                    except Exception:
+                        pass
+                os.symlink(os.path.abspath(dst_abs), src_abs)
 
-        _all_flex_rows = globals().get('FLEXBAR_CONFIG_RENAMING_MAP', {}).get(config_id, [])
-        _flexbar_orig_proj = globals().get('FLEXBAR_ORDER_ID_PROJECT', {}).get(config_id, '')
-        _flexbar_proj = PROJECT_RENAME_MAP.get((config_id, _flexbar_orig_proj), _flexbar_orig_proj)
-        flex_rows = _all_flex_rows if new_project == _flexbar_proj else []
-        for idx, row in enumerate(flex_rows):
-            sample_name = str(row.get("Sample_Name", "")).strip()
-            if not sample_name or sample_name.lower() == "nan":
-                continue
-
-            run_name = str(row.get("Run", "")).strip()
-            lane = int(row.get("Lane", 0))
-            try:
-                group = str(int(float(row.get("Group", 0))))
-            except Exception:
-                group = str(row.get("Group", "")).strip()
-            if not group or group.lower() == "nan":
-                group = "Undetermined"
-
-            index1 = str(row.get("index", "")).strip()
-            if index1.lower() == "nan":
-                index1 = ""
-            index2 = str(row.get("index2", "")).strip()
-            if index2.lower() == "nan":
-                index2 = ""
-
-            barcode = f"{index1}-{index2}" if index2 else index1
-            position = str(row.get("Position", f"P{idx + 1:03d}")).strip()
-            stem = f"{run_name}-L{lane}-G{group}-{position}-{barcode}"
-
-            src_r1 = os.path.abspath(f"output/{config_id}/flexbar/flexbarOut_barcode_{sample_name}.fastq.gz")
-            dst_r1 = os.path.abspath(f"{project_dir}/{stem}-R1.fastq.gz")
-            if os.path.exists(src_r1) or os.path.islink(src_r1):
-                _materialize_and_backlink(src_r1, dst_r1)
-
-            if NUM_READS > 1:
-                src_r2 = os.path.abspath(f"output/{config_id}/flexbar/flexbarOut_barcode_{sample_name}_R2.fastq.gz")
-                dst_r2 = os.path.abspath(f"{project_dir}/{stem}-R2.fastq.gz")
-                if os.path.exists(src_r2) or os.path.islink(src_r2):
-                    _materialize_and_backlink(src_r2, dst_r2)
-
-        df = pd.read_csv(input.renaming_map)
-        project_rows = df[df["Sample_Project"].astype(str).str.strip() == old_project]
-
-        for idx, row in project_rows.iterrows():
-            sample_name = str(row.get("Sample_Name", "")).strip()
-            if not sample_name or sample_name.lower() == "nan":
-                continue
-
-            try:
-                lane = int(float(row.get("Lane", 0)))
-            except Exception:
-                lane = 0
-
-            try:
-                group = str(int(float(row.get("Group", 0))))
-            except Exception:
-                group = str(row.get("Group", "")).strip()
-            if not group or group.lower() == "nan":
-                group = "Undetermined"
-
-            run_name = str(row.get("Run", "")).strip()
-            index1 = str(row.get("index", "")).strip()
-            if index1.lower() == "nan":
-                index1 = ""
-            index2 = str(row.get("index2", "")).strip()
-            if index2.lower() == "nan":
-                index2 = ""
-            barcode = f"{index1}-{index2}" if index2 else index1
-            position = str(row.get("Position", f"P{idx + 1:03d}")).strip()
-            s_num = idx + 1
-            stem = f"{run_name}-L{lane}-G{group}-{position}-{barcode}"
-
-            for read_type in ["R1", "R2", "I1", "I2"]:
-                legacy_name = f"{sample_name}_S{s_num}_L{lane:03d}_{read_type}_001.fastq.gz"
-                canonical_name = f"{stem}-{read_type}.fastq.gz"
-                legacy_path = os.path.join(project_dir, legacy_name)
-                canonical_path = os.path.join(project_dir, canonical_name)
-
-                if os.path.exists(canonical_path):
+            _all_flex_rows = globals().get('FLEXBAR_CONFIG_RENAMING_MAP', {}).get(config_id, [])
+            _flexbar_orig_proj = globals().get('FLEXBAR_ORDER_ID_PROJECT', {}).get(config_id, '')
+            _flexbar_proj = PROJECT_RENAME_MAP.get((config_id, _flexbar_orig_proj), _flexbar_orig_proj)
+            flex_rows = _all_flex_rows if new_project == _flexbar_proj else []
+            for idx, row in enumerate(flex_rows):
+                sample_name = str(row.get("Sample_Name", "")).strip()
+                if not sample_name or sample_name.lower() == "nan":
                     continue
-                if not os.path.exists(legacy_path):
+
+                run_name = str(row.get("Run", "")).strip()
+                lane = int(row.get("Lane", 0))
+                try:
+                    group = str(int(float(row.get("Group", 0))))
+                except Exception:
+                    group = str(row.get("Group", "")).strip()
+                if not group or group.lower() == "nan":
+                    group = "Undetermined"
+
+                index1 = str(row.get("index", "")).strip()
+                if index1.lower() == "nan":
+                    index1 = ""
+                index2 = str(row.get("index2", "")).strip()
+                if index2.lower() == "nan":
+                    index2 = ""
+
+                barcode = f"{index1}-{index2}" if index2 else index1
+                position = str(row.get("Position", f"P{idx + 1:03d}")).strip()
+                stem = f"{run_name}-L{lane}-G{group}-{position}-{barcode}"
+
+                src_r1 = os.path.abspath(f"output/{config_id}/flexbar/flexbarOut_barcode_{sample_name}.fastq.gz")
+                dst_r1 = os.path.abspath(f"{project_dir}/{stem}-R1.fastq.gz")
+                if os.path.exists(src_r1) or os.path.islink(src_r1):
+                    _materialize_and_backlink(src_r1, dst_r1)
+
+                if NUM_READS > 1:
+                    src_r2 = os.path.abspath(f"output/{config_id}/flexbar/flexbarOut_barcode_{sample_name}_R2.fastq.gz")
+                    dst_r2 = os.path.abspath(f"{project_dir}/{stem}-R2.fastq.gz")
+                    if os.path.exists(src_r2) or os.path.islink(src_r2):
+                        _materialize_and_backlink(src_r2, dst_r2)
+
+            df = pd.read_csv(input.renaming_map)
+            project_rows = df[df["Sample_Project"].astype(str).str.strip() == old_project]
+
+            for idx, row in project_rows.iterrows():
+                sample_name = str(row.get("Sample_Name", "")).strip()
+                if not sample_name or sample_name.lower() == "nan":
                     continue
-                os.rename(legacy_path, canonical_path)
+
+                try:
+                    lane = int(float(row.get("Lane", 0)))
+                except Exception:
+                    lane = 0
+
+                try:
+                    group = str(int(float(row.get("Group", 0))))
+                except Exception:
+                    group = str(row.get("Group", "")).strip()
+                if not group or group.lower() == "nan":
+                    group = "Undetermined"
+
+                run_name = str(row.get("Run", "")).strip()
+                index1 = str(row.get("index", "")).strip()
+                if index1.lower() == "nan":
+                    index1 = ""
+                index2 = str(row.get("index2", "")).strip()
+                if index2.lower() == "nan":
+                    index2 = ""
+                barcode = f"{index1}-{index2}" if index2 else index1
+                position = str(row.get("Position", f"P{idx + 1:03d}")).strip()
+                s_num = idx + 1
+                stem = f"{run_name}-L{lane}-G{group}-{position}-{barcode}"
+
+                for read_type in ["R1", "R2", "I1", "I2"]:
+                    legacy_name = f"{sample_name}_S{s_num}_L{lane:03d}_{read_type}_001.fastq.gz"
+                    canonical_name = f"{stem}-{read_type}.fastq.gz"
+                    legacy_path = os.path.join(project_dir, legacy_name)
+                    canonical_path = os.path.join(project_dir, canonical_name)
+
+                    if os.path.exists(canonical_path):
+                        continue
+                    if not os.path.exists(legacy_path):
+                        continue
+                    os.rename(legacy_path, canonical_path)
+        except Exception:
+            _logf.write(traceback.format_exc())
+            raise
+        finally:
+            _logf.close()
 
 rule fastp_per_config:
     input:
