@@ -1264,7 +1264,7 @@ def generate_report(project, output_base_dir, fastp_plots_base_dir, fastp_base_d
         pdf_path = os.path.join(report_dir, "Download_Instructions.pdf")
         pdf_script = os.path.join(os.path.dirname(__file__), "generate_download_instructions_pdf.py")
         try:
-            pdf_cmd = ["python3", pdf_script, pdf_path]
+            pdf_cmd = [sys.executable, pdf_script, pdf_path]
             if order_id or display_project:
                 pdf_cmd.append(str(order_id or ""))
                 pdf_cmd.append(str(display_project or ""))

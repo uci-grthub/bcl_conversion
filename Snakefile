@@ -2,6 +2,7 @@
 import os
 import re
 import subprocess
+import sys
 import glob
 import yaml
 import pandas as pd
@@ -953,7 +954,7 @@ rule report_order_id:
 
             # Call generate_report.py for this project
             cmd = [
-                "python3", "src/generate_report.py",
+                sys.executable, "src/generate_report.py",
                 project,
                 params.output_base,
                 params.fastp_plots_base,
@@ -1006,7 +1007,7 @@ rule report_order_id:
         # Always generate Download Instructions PDF so rule outputs are complete,
         # even when project discovery returns an empty set.
         pdf_file = os.path.join(report_dir, "Download_Instructions.pdf")
-        pdf_cmd = ["python3", "src/generate_download_instructions_pdf.py", pdf_file]
+        pdf_cmd = [sys.executable, "src/generate_download_instructions_pdf.py", pdf_file]
         pdf_result = subprocess.run(pdf_cmd, capture_output=True, text=True)
         with open(log_file, 'a') as f:
             f.write("\n=== Download Instructions PDF generation ===\n")
@@ -1181,7 +1182,7 @@ rule flexbar_project_link:
 
 
         # Generate Download Instructions PDF
-        pdf_cmd = ["python3", "src/generate_download_instructions_pdf.py",
+        pdf_cmd = [sys.executable, "src/generate_download_instructions_pdf.py",
                    os.path.join(report_dir, "Download_Instructions.pdf")]
         pdf_result = subprocess.run(pdf_cmd, capture_output=True, text=True)
         with open(log_file, 'a') as f:
@@ -1270,7 +1271,7 @@ rule send_order_email:
                 if os.path.exists(extra):
                     attachments += f";{extra}"
         cmd = [
-            "python3", "src/send_email_retry.py",
+            sys.executable, "src/send_email_retry.py",
             params.script, params.sender, params.receiver,
             params.subject, input.html, attachments,
             params.cc_email, order_id
@@ -3341,7 +3342,7 @@ rule check_low_reads:
                         try:
                             result = subprocess.run(
                                 [
-                                    "python3", "src/send_email.py",
+                                    sys.executable, "src/send_email.py",
                                     params.sender, params.receiver, subject, body,
                                     "none", params.cc,
                                 ],
