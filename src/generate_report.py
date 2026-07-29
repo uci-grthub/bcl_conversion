@@ -108,16 +108,21 @@ def parse_lane_from_config(config_id):
         return int(match.group(1))
     return None
 
-def is_parse_or_10x(project_name):
-    """Check if project uses Illumina default naming.
-    
-    Returns True for: 10x (including VisiumHD, 5'V2, 3'V3, ATAC, etc.), Parse, BD.
-    """
-    try:
-        p = (project_name or "").lower()
-    except Exception:
-        p = ""
-    return ("10x" in p) or ("parse" in p) or ("bd" in p)
+# 10x/Parse/BD detection: matches the project name OR the Summary "Sample sheet tab"
+# entry, so single-cell orders with a plain project name are still recognized.
+try:
+    from single_cell import is_single_cell_project as is_parse_or_10x
+except Exception:
+    def is_parse_or_10x(project_name, lane=None, group=None):
+        """Check if project uses Illumina default naming.
+
+        Returns True for: 10x (including VisiumHD, 5'V2, 3'V3, ATAC, etc.), Parse, BD.
+        """
+        try:
+            p = (project_name or "").lower()
+        except Exception:
+            p = ""
+        return ("10x" in p) or ("parse" in p) or ("bd" in p)
 
 def rc_index2(barcode):
     """Return a reverse-complement fallback for barcode matching."""

@@ -171,12 +171,17 @@ def get_project_links_from_yaml(yaml_path, project, lane=None, order_id=None):
         return "https://precision.biochem.uci.edu/"
 
 # 10x/Parse/BD naming: keep Illumina default (<sample>_S<num>_L00<lane>_R<read>_001.fastq.gz)
-def is_parse_or_10x(project_name):
-    try:
-        p = str(project_name or "").lower()
-    except Exception:
-        p = ""
-    return ("10x" in p) or ("parse" in p) or ("bd" in p)
+# Detection matches the project name OR the Summary "Sample sheet tab" entry, so
+# single-cell orders whose name lacks a 10x/Parse/BD token are still recognized.
+try:
+    from single_cell import is_single_cell_project as is_parse_or_10x
+except Exception:
+    def is_parse_or_10x(project_name, lane=None, group=None):
+        try:
+            p = str(project_name or "").lower()
+        except Exception:
+            p = ""
+        return ("10x" in p) or ("parse" in p) or ("bd" in p)
 
 
 def is_special_atac_project_or_sheet(name):
@@ -1738,7 +1743,7 @@ def get_project_plot_targets(project, lane_filter=None, order_id=None):
                 position = str(row.get('Position', f"P{idx+1:03d}")).strip()
 
                 output_project = PROJECT_RENAME_MAP.get((config_id, orig_project), orig_project)
-                if is_parse_or_10x(orig_project):
+                if is_parse_or_10x(orig_project, lane=lane_val, group=group):
                     if not sample_name or sample_name.lower() == 'nan':
                         continue
                     path = f"{output_project}/{sample_name}"
@@ -1804,7 +1809,7 @@ def _fastp_row_path(row, idx):
 
     position = str(row.get('Position', f"P{idx+1:03d}")).strip()
 
-    if is_parse_or_10x(project):
+    if is_parse_or_10x(project, lane=lane, group=group):
         if not sample_name or sample_name.lower() == 'nan':
             return None
         return f"{output_project}/{sample_name}" if output_project and output_project.lower() != 'nan' else sample_name
@@ -1915,7 +1920,7 @@ def get_fastp_sample_input(wildcards):
                     output_project = PROJECT_RENAME_MAP.get((config_id, project), project)
                     prefix = f"{prefix}/{output_project}"
                 
-                if is_parse_or_10x(project):
+                if is_parse_or_10x(project, lane=lane, group=group):
                     import glob as _glob
                     matches = _glob.glob(f"{prefix}/{sample_name}_S*_L{lane:03d}_R1_001.fastq.gz")
                     if not matches:

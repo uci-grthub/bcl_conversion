@@ -153,6 +153,10 @@ if _restrict_lanes:
 # Metadata path from merged config (project-specific if exists, otherwise base config)
 metadata = config.get("metadata", "metadata/SampleSheet.xlsx")
 METADATA_FILE = config.get("metadata")  # From merged config
+# Exported so helper scripts spawned by rules (generate_report.py, rename_fastqs.py, …)
+# read single-cell "Sample sheet tab" entries from the same workbook.
+if METADATA_FILE:
+    os.environ["PIPELINE_METADATA_FILE"] = os.path.abspath(METADATA_FILE)
 VALIDATION_XLSX = f"metadata/metadata_validation_{os.path.splitext(os.path.basename(metadata))[0]}.xlsx" if metadata else None
 LANE_CONFIGS = []
 PROJECT_LOOKUP = {}
@@ -419,7 +423,11 @@ def project_keeps_index_reads(config_id, project):
     if NO_DEMUX:
         return True
     check_name = PROJECT_RENAME_MAP_INV.get((config_id, project), project)
-    return any(kw in check_name for kw in INDEX_READ_KEYWORDS)
+    if any(kw in check_name for kw in INDEX_READ_KEYWORDS):
+        return True
+    # Single-cell orders identified only by their Summary "Sample sheet tab"
+    # (name carries no 10x/Parse/BD token) still need their index reads.
+    return is_parse_or_10x(check_name)
 
 # Helper definitions are sourced from src/workflow_defs.smk
 
@@ -1777,7 +1785,7 @@ rule compile_read_counts:
 
                 # Determine display label: use Illumina sample name for 10x/Parse/BD; otherwise use stem (includes barcode)
                 try:
-                    is_special = is_parse_or_10x(project)
+                    is_special = is_parse_or_10x(project, lane=lane, group=group)
                 except Exception:
                     is_special = False
                 label = sample_name if is_special else stem
@@ -2505,7 +2513,7 @@ rule fqtk_stage_project:
             s_num   = _s_num_offset + _fqtk_i + 1
             src_r1  = os.path.abspath(f"output/{config_id}/fqtk/{name}.R1.fq.gz")
             src_r2  = os.path.abspath(f"output/{config_id}/fqtk/{name}.R2.fq.gz")
-            if is_parse_or_10x(project_orig):
+            if is_parse_or_10x(project_orig, lane=lane, group=group):
                 dst_r1 = os.path.abspath(f"{proj_dir}/{name}_S{s_num}_L{lane:03d}_R1_001.fastq.gz")
                 dst_r2 = os.path.abspath(f"{proj_dir}/{name}_S{s_num}_L{lane:03d}_R2_001.fastq.gz")
             else:

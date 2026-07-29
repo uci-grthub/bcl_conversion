@@ -13,10 +13,11 @@ except Exception:
 try:
     from rename_fastqs import is_parse_or_10x, rename_fastqs
 except Exception:
-    # Fallback: local definition if import fails
-    def is_parse_or_10x(project_name: str) -> bool:
+    # Fallback: local definition if import fails (name-only detection; the shared
+    # helper in single_cell.py additionally consults the Summary sheet tab)
+    def is_parse_or_10x(project_name: str, lane=None, group=None) -> bool:
         """Check if project uses Illumina default naming.
-        
+
         Returns True for: 10x (including VisiumHD, 5'V2, 3'V3, ATAC, etc.), Parse, BD.
         These platforms require Illumina default naming for downstream tools.
         """
@@ -107,7 +108,7 @@ def rename_fastp_and_plots(config_id: str, map_rows: List[dict], results_base: s
 
     for idx, row in enumerate(map_rows):
         stem, lane, project, sample_name = row_stem(row)
-        parse_10x = is_parse_or_10x(project)
+        parse_10x = is_parse_or_10x(project, lane=lane, group=row.get('Group'))
 
         # Build desired path
         if project and project.lower() != 'nan':
@@ -167,7 +168,7 @@ def rename_fastqs_outputs(config_id: str, output_dir: str, map_file: str, dry_ru
         stem, lane, project, sample_name = row_stem(row)
         s_num = i + 1
         project_dir = output_dir if not project or project.lower() == 'nan' else os.path.join(output_dir, project)
-        parse_10x = is_parse_or_10x(project)
+        parse_10x = is_parse_or_10x(project, lane=lane, group=row.get('Group'))
         for read_type in ['R1', 'R2', 'I1', 'I2']:
             illumina_name = f"{sample_name}_S{s_num}_L{lane:03d}_{read_type}_001.fastq.gz"
             illumina_path = os.path.join(project_dir, illumina_name)
