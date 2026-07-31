@@ -4183,6 +4183,7 @@ rule rescan_nextcloud:
         project = ".+"
     params:
         nc_path = lambda wildcards: f"/{NEXTCLOUD_DIR_NAME}/{LIBRARY}/output/{wildcards.config_id}/{wildcards.project}",
+        nc_user = NEXTCLOUD_USER,
         ssh_host = NEXTCLOUD_SSH_HOST
     shell:
         """
@@ -4202,7 +4203,18 @@ rule rescan_nextcloud:
             internal=$(echo "$internal" | sed 's@^files/@@')
             occ_path="$nc_owner/files/$internal"
         elif [ -n "$nc_path" ]; then
-            occ_path="$nc_path"
+            # project_link failed before it could record NC_OWNER/NC_INTERNAL_PATH,
+            # so only NC_PATH is available. NC_PATH is relative to the API account's
+            # files root (same convention as the WebDAV URL), *not* a host filesystem
+            # path -- passing it to occ verbatim makes occ read its first segment as a
+            # username ("Unknown user 1 dragenshare"). Prefix it to form a valid
+            # "<user>/files/<path>" argument. Note this names the Nextcloud data owner,
+            # unrelated to the SSH login used to reach the host.
+            rel=$(echo "$nc_path" | sed 's@^/*@@')
+            rel=$(echo "$rel" | sed "s@^users/{params.nc_user}/files/@@")
+            rel=$(echo "$rel" | sed "s@^{params.nc_user}/files/@@")
+            rel=$(echo "$rel" | sed 's@^files/@@')
+            occ_path="{params.nc_user}/files/$rel"
         else
             echo "NC path information not found in $nc_log" > {log}
             exit 1
