@@ -32,12 +32,17 @@ NEXTCLOUD_PASSWORD = os.environ.get("NEXTCLOUD_PASSWORD")
 if not NEXTCLOUD_PASSWORD:
     raise SystemExit("Error: NEXTCLOUD_PASSWORD environment variable not set")
 
-# SSH target for `occ files:scan` on the Nextcloud host. Defaults to the same
-# user/host as NEXTCLOUD_URL; override via env for a different admin account.
+# SSH target for `occ files:scan` on the Nextcloud host. The SSH login is
+# independent of NEXTCLOUD_USER (which is the Nextcloud API account): it
+# defaults to the OS user running snakemake, since that is whose SSH keys and
+# agent are available. Override with NEXTCLOUD_SSH_USER, or set
+# NEXTCLOUD_SSH_HOST to a full "user@host" (or ssh_config alias) to control both.
+NEXTCLOUD_SSH_USER = os.environ.get("NEXTCLOUD_SSH_USER") or _getpass.getuser()
+
 NEXTCLOUD_SSH_HOST = os.environ.get("NEXTCLOUD_SSH_HOST")
 if NEXTCLOUD_SSH_HOST is None:
     from urllib.parse import urlparse as _urlparse
-    NEXTCLOUD_SSH_HOST = f"{NEXTCLOUD_USER}@{_urlparse(NEXTCLOUD_URL).hostname}"
+    NEXTCLOUD_SSH_HOST = f"{NEXTCLOUD_SSH_USER}@{_urlparse(NEXTCLOUD_URL).hostname}"
 
 configfile: "snakemake_config.yaml"
 
