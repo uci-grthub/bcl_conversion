@@ -251,6 +251,37 @@ def fix_sheet_conflicts(sheet_path, conflict_rows, output_path=None):
 
     has_any_i5 = any(bool(row.get("index2", "").strip()) for row in rows)
 
+    # BCL Convert requires every row sharing an identical index value to carry the
+    # same BarcodeMismatchesIndex for that index. Fixing only the rows that were
+    # literally involved in a conflict can leave siblings with the same barcode at
+    # a different tolerance, which BCL Convert rejects outright. Propagate each fix
+    # to every row sharing that (lane, index value).
+    i7_groups = defaultdict(list)
+    i5_groups = defaultdict(list)
+    for row_idx, row in enumerate(rows):
+        lane = row.get("Lane", "").strip()
+        idx1 = row.get("index", "").strip()
+        idx2 = row.get("index2", "").strip()
+        if idx1:
+            i7_groups[(lane, idx1)].append(row_idx)
+        if idx2:
+            i5_groups[(lane, idx2)].append(row_idx)
+
+    expanded_conflict_rows = defaultdict(set)
+    for row_idx, indices_to_fix in conflict_rows.items():
+        expanded_conflict_rows[row_idx] |= indices_to_fix
+        row = rows[row_idx]
+        lane = row.get("Lane", "").strip()
+        if "i7" in indices_to_fix:
+            idx1 = row.get("index", "").strip()
+            for sibling_idx in i7_groups.get((lane, idx1), ()):
+                expanded_conflict_rows[sibling_idx].add("i7")
+        if "i5" in indices_to_fix:
+            idx2 = row.get("index2", "").strip()
+            for sibling_idx in i5_groups.get((lane, idx2), ()):
+                expanded_conflict_rows[sibling_idx].add("i5")
+    conflict_rows = expanded_conflict_rows
+
     if "BarcodeMismatchesIndex1" not in fieldnames:
         fieldnames.append("BarcodeMismatchesIndex1")
     if has_any_i5 and "BarcodeMismatchesIndex2" not in fieldnames:
