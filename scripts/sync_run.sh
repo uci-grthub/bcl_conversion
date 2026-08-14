@@ -61,25 +61,43 @@ sync_run() {
         # Per-subdir start/finish lines with size and duration -- concurrent
         # rsync progress meters would scramble each other, so the transfers stay
         # quiet and each worker reports around its own rsync instead.
-        ls "$src/output" | xargs -P"$parallel" -I{} \
+        #
+        # Each worker returns its rsync's exit status, and xargs exits non-zero if
+        # any of them failed. Without this the worker printed DONE regardless, the
+        # failure scrolled past in a parallel log, and publish_run.sh went on to
+        # --touch the missing outputs current and mail links for them.
+        if ! ls "$src/output" | xargs -P"$parallel" -I{} \
             sh -c '
                 started=$(date +%s)
                 echo "[sync_run $(date +%H:%M:%S)] START  output/{} ($(du -sh "$1/output/{}" 2>/dev/null | cut -f1))"
                 rsync -aWq "$1/output/{}" "$2/output/"
+                status=$?
+                if [ "$status" -ne 0 ]; then
+                    echo "[sync_run $(date +%H:%M:%S)] FAILED output/{} (rsync exit $status)" >&2
+                    exit "$status"
+                fi
                 finished=$(date +%s)
                 echo "[sync_run $(date +%H:%M:%S)] DONE   output/{} in $(( (finished - started) / 60 ))m$(( (finished - started) % 60 ))s"
             ' _ "$src" "$dest"
+        then
+            echo "[sync_run] ERROR: at least one output/ subdir failed to transfer (see FAILED lines above)" >&2
+            return 1
+        fi
         echo "[sync_run] output/ transfers complete"
     fi
 
     # Everything else (small, recreatable metadata) in a single pass.
     echo "[sync_run] syncing remaining run files (metadata, results, logs, configs)"
-    rsync -aW --info=progress2 --stats -h \
+    if ! rsync -aW --info=progress2 --stats -h \
         --exclude '.snakemake' \
         --exclude 'logs/*link*' \
         --exclude 'logs/**/*link*' \
         --exclude 'Reports' \
         "$src/" "$dest/"
+    then
+        echo "[sync_run] ERROR: rsync of the remaining run files failed" >&2
+        return 1
+    fi
 
     # Point the synced copy's config at the local JBOD share rather than the
     # dragen share, so publishing from this mirror lands in the right place.
@@ -93,9 +111,11 @@ sync_run() {
         grep -E '^nextcloud_dir_(name|path):' "$cfg" | sed 's/^/[sync_run]   /'
     fi
 
-    # Publish the resolved destination to the caller (publish_run.sh runs the
-    # post-sync snakemake steps in the mirror, not in the source run dir).
+    # Publish the resolved source and destination to the caller (publish_run.sh
+    # runs the post-sync snakemake steps in the mirror, not in the source run dir,
+    # and verifies the mirror against the source before touching anything).
     SYNC_RUN_DEST="$dest"
+    SYNC_RUN_SRC="$src"
     echo "[sync_run] mirror ready: $dest"
 }
 

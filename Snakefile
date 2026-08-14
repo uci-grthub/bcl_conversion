@@ -51,13 +51,34 @@ configfile: "snakemake_config.yaml"
 # After merge, all values (including library_name, data_dir, metadata) come from the merged config
 _PROJECT_CONFIG = f"snakemake_config_project.yaml"
 
+# `--config key=value` is merged into `config` by Snakemake before this point, so
+# the project-config merge below would silently overwrite any CLI override whose
+# key also appears in snakemake_config_project.yaml. Capture the CLI values and
+# re-apply them last, so precedence is: base < project < --config.
+_CLI_CONFIG = dict(getattr(workflow.config_settings, "config", {}) or {})
+
 if os.path.exists(_PROJECT_CONFIG):
     import yaml as _yaml
     with open(_PROJECT_CONFIG, 'r') as _f:
         _project_config = _yaml.safe_load(_f) or {}
     # Merge: project-specific config overrides default config
     config.update(_project_config)
+
+config.update(_CLI_CONFIG)
 # All config values read AFTER merge - project-specific config takes priority
+
+
+def _cfg_truthy(value):
+    """Coerce a config flag to bool.
+
+    A value from `--config send_emails=false` arrives as the *string* "false",
+    which is truthy. Anything read as an on/off switch must go through this.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 # Fail fast if required config values are missing or empty
 _required = {"library_name", "metadata", "data_dir"}
@@ -69,12 +90,12 @@ SAMPLE_SHEET = config.get("sample_sheet", "src/SampleSheet_default.csv")
 NUM_READS = config.get("num_reads", 2)
 LIBRARY = config.get("library_name", "xR079")  # From merged config (project-specific if exists)
 START_S = config.get("start_s", 1)
-DRYRUN = config.get("dryrun", False)
+DRYRUN = _cfg_truthy(config.get("dryrun", False))
 DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20260115_LH00626_0088_A233NM2LT4")  # From merged config
 TILES = config.get("tiles", "1_1101")
 FLEXBAR_BIN = config.get("flexbar_bin", "")
 DRAGEN_BIN = config.get("dragen_bin", "/opt/dragen/4.4.7/bin/dragen")
-USE_ANCIENT = config.get("use_ancient", True)
+USE_ANCIENT = _cfg_truthy(config.get("use_ancient", True))
 REPORT_UNDETERMINED_CONFIGS = config.get("report_undetermined_configs", [])
 _effective_keep = list(config.get("keep_undetermined_configs", []))
 for _c in REPORT_UNDETERMINED_CONFIGS:
@@ -89,7 +110,7 @@ SCRATCH_DIR = config.get("scratch_dir", "")
 
 # When true, force CreateFastqForIndexReads=1 in every generated SampleSheet so DRAGEN
 # emits index reads as FASTQs (no index-based demultiplexing). Default: false.
-NO_DEMUX = bool(config.get("no_demux", False))
+NO_DEMUX = _cfg_truthy(config.get("no_demux", False))
 
 NEXTCLOUD_DIR_NAME = config.get("nextcloud_dir_name", "DragenExt3")
 NEXTCLOUD_DIR_PATH = config.get("nextcloud_dir_path", "nextcloud3")
@@ -805,14 +826,16 @@ rule all:
         expand("results/{config_id}/fqtk_{config_id}.done", config_id=FQTK_CONFIGS),
         # "logs/rsync_to_external_drive.done",
         # "results/check_index_rc_swap.txt"
-    benchmark:
-        "benchmarks/all.bench"
+    # No `benchmark:` here, and none on any other target-only rule. Snakemake
+    # treats the benchmark file as an output of the rule, so a leftover
+    # benchmarks/all.bench makes the whole target look up to date and the run a
+    # silent no-op. That is easy to miss in a mirrored run directory, where
+    # sync_run copies benchmarks/ across but the outputs it refers to were
+    # produced somewhere else.
 
 rule bcl_convert_only:
     input:
         expand(".output/{config_id}/.done", config_id=CONFIG_IDS)
-    benchmark:
-        "benchmarks/bcl_convert_only.bench"
 
 rule report_order_id:
     input:
@@ -883,12 +906,19 @@ rule report_order_id:
         # Merge individual per-project yaml files into a single dict
         merged_links = {}
         links_yaml_files = _as_file_list(input.links_yamls)
-        if not links_yaml_files:
-            # Fallback: glob for yaml files whose name encodes this order_id.
-            # This handles Snakemake subprocess mode where named input lambdas
-            # may resolve to [] even though the files exist on disk.
+        used_fallback = not links_yaml_files
+        if used_fallback:
+            # Fallback for Snakemake subprocess mode, where the named input lambda
+            # can resolve to [] even though the files exist on disk.
+            #
+            # This used to glob `project_links_*---*_{order_id}_*.yaml`, which only
+            # matches because the renamed project folder happens to embed the order
+            # id ({LabID}_{OrderID}_{library}_L{lane}_G{group}); for any project not
+            # following that scheme it silently selected nothing. Glob every links
+            # yaml instead and let the order_id filter in the merge loop below decide
+            # membership -- that filter reads the file contents rather than its name.
             import glob as _glob
-            links_yaml_files = sorted(_glob.glob(f"logs/**/project_links_*---*_{order_id}_*.yaml", recursive=True))
+            links_yaml_files = sorted(_glob.glob("logs/**/project_links_*---*.yaml", recursive=True))
         for yaml_path in links_yaml_files:
             if os.path.exists(yaml_path):
                 with open(yaml_path) as _yf:
@@ -955,6 +985,10 @@ rule report_order_id:
         with open(log_file, 'w') as lf:
             lf.write(f"Generating report for order_id: {order_id}\n")
             lf.write(f"Link YAML inputs: {links_yaml_files}\n")
+            if used_fallback:
+                lf.write("WARNING: input.links_yamls was empty; fell back to globbing "
+                         "logs/**/project_links_*---*.yaml. The report is built from "
+                         "whatever links exist on disk rather than from the DAG.\n")
             lf.write(f"Projects: {projects}\n")
             lf.write(f"Project name map: {project_name_map}\n\n")
 
@@ -1193,15 +1227,11 @@ rule flexbar_project_link:
         with open(yaml_file, 'w') as yf:
             _yaml.dump(yaml_data, yf, default_flow_style=False)
 
-
-        # Generate Download Instructions PDF
-        pdf_cmd = [sys.executable, "src/generate_download_instructions_pdf.py",
-                   os.path.join(report_dir, "Download_Instructions.pdf")]
-        pdf_result = subprocess.run(pdf_cmd, capture_output=True, text=True)
-        with open(log_file, 'a') as f:
-            f.write(pdf_result.stdout)
-            if pdf_result.stderr:
-                f.write(f"PDF STDERR: {pdf_result.stderr}\n")
+        # NOTE: a Download_Instructions.pdf block used to sit here, copy-pasted from
+        # report_order_id. `report_dir` is a param of that rule and is not defined in
+        # this one, so it raised NameError on every path where the share succeeded.
+        # report_order_id already produces the PDF for the order; removed rather than
+        # repaired.
 
 
 rule collect_flexbar_report_extras:
@@ -2896,7 +2926,12 @@ rule validate_barcode_hamming_distances:
     With --fix: sets BarcodeMismatchesIndex1/2 to 0 for conflicting samples and retries.
     """
     input:
-        samplesheet = maybe_ancient("results/{config_id}/SampleSheet_{config_id}.csv")
+        samplesheet = maybe_ancient("results/{config_id}/SampleSheet_{config_id}.csv"),
+        # An input, not a params: the --fix logic lives in this script, so a change
+        # to it must invalidate the validated sheet. As a params it did not, and a
+        # fix to the fixer silently left every stale
+        # SampleSheet_{config_id}_validated.csv in place until someone forced a rerun.
+        script = "scripts/validate_barcode_hamming_distance.py"
     output:
         report = "logs/{config_id}/barcode_hamming_validation_{config_id}.txt",
         marker = touch("logs/{config_id}/barcode_hamming_validation_{config_id}.done"),
@@ -2908,13 +2943,12 @@ rule validate_barcode_hamming_distances:
     wildcard_constraints:
         config_id = VALIDATE_CONFIG_ID_PATTERN
     params:
-        script = "scripts/validate_barcode_hamming_distance.py",
         tolerance = 1
     shell:
         """
         (
         echo "Validating barcode Hamming distances for {wildcards.config_id}..."
-        python3 {params.script} \
+        python3 {input.script} \
             --samplesheets {input.samplesheet} \
             --mismatch-tolerance {params.tolerance} \
             --output {output.report} \
@@ -3597,7 +3631,10 @@ rule validate_barcode_hamming_distances_rc:
     dual-indexed samples, and checks i7 alone for single-indexed samples.
     """
     input:
-        samplesheet = maybe_ancient("results/{config_id}/SampleSheet_{config_id}_rc.csv")
+        samplesheet = maybe_ancient("results/{config_id}/SampleSheet_{config_id}_rc.csv"),
+        # See validate_barcode_hamming_distances: an input so that editing the
+        # fix logic invalidates the validated sheet.
+        script = "scripts/validate_barcode_hamming_distance.py"
     output:
         report = "logs/{config_id}/barcode_hamming_validation_rc_{config_id}.txt",
         marker = touch("logs/{config_id}/barcode_hamming_validation_rc_{config_id}.done"),
@@ -3609,13 +3646,12 @@ rule validate_barcode_hamming_distances_rc:
     wildcard_constraints:
         config_id = "[^/]+"
     params:
-        script = "scripts/validate_barcode_hamming_distance.py",
         tolerance = 1
     shell:
         """
         (
         echo "Validating RC sample sheet barcode Hamming distances for {wildcards.config_id}..."
-        python3 {params.script} \
+        python3 {input.script} \
             --samplesheets {input.samplesheet} \
             --mismatch-tolerance {params.tolerance} \
             --output {output.report} \
@@ -4367,8 +4403,6 @@ rule verify_project_links:
 
 # Diagnostic rule: print expected and actual .done and .log files for project_link
 rule debug_project_link_files:
-    benchmark:
-        "benchmarks/debug_project_link_files.bench"
     run:
         import os
         print("\n=== DIAGNOSTIC: CONFIG_PROJECT_PAIRS ===")
