@@ -2998,14 +2998,56 @@ rule bcl_convert:
     shell:
         """
         (
+        # PGID of the setsid'd dragen job; set by run_dragen, read by cleanup.
+        dragen_pgid=""
+
+        cleanup_done=0
         cleanup() {{
-            pkill -P $$ 2>/dev/null || true
+            [ "$cleanup_done" = "1" ] && return 0
+            cleanup_done=1
+            trap - INT TERM
+            if [ -n "$dragen_pgid" ]; then
+                kill -TERM "-$dragen_pgid" 2>/dev/null || true
+                for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+                    kill -0 "-$dragen_pgid" 2>/dev/null || break
+                    sleep 1
+                done
+                kill -KILL "-$dragen_pgid" 2>/dev/null || true
+            fi
+            # $BASHPID, not $$: inside this subshell $$ expands to the PARENT
+            # shell's PID, so `pkill -P $$` matches this subshell itself and
+            # re-enters the trap in an endless signal loop.
+            pkill -P "$BASHPID" 2>/dev/null || true
         }}
-        trap cleanup INT TERM
+        trap 'cleanup; exit 143' INT TERM
+
+        # Refuse to start if another bcl_convert already owns this config.
+        # serial_operation=1 only serializes within one snakemake process; this
+        # lock is what stops a rerun from racing an orphan of a previous one.
+        #
+        # fd 9 is deliberately left open across exec, so dragen/dragend inherit
+        # it. That is load-bearing: the kernel holds the lock until the LAST
+        # process holding fd 9 exits, so an orphaned dragen keeps the lock even
+        # if snakemake and this shell were SIGKILLed. That is exactly the state
+        # that must block a rerun, since the orphan still owns DRAGEN board 0.
+        mkdir -p "logs/{wildcards.config_id}"
+        exec 9>"logs/{wildcards.config_id}/.bcl_convert.lock"
+        if ! flock -n 9; then
+            echo "ERROR: another bcl_convert for {wildcards.config_id} is already running"
+            echo "       (holds logs/{wildcards.config_id}/.bcl_convert.lock)."
+            echo "       Refusing to start: concurrent runs share DRAGEN board 0 and"
+            echo "       the same output directory. Stop the other run first."
+            exit 1
+        fi
 
         run_dragen() {{
             local sample_sheet_path="$1"
-            timeout 7200 {params.dragen_bin} --bcl-conversion-only true \
+            # setsid puts dragen in its own process group so cleanup can signal the
+            # whole tree (dragen + dragend) with kill -- -PGID. Backgrounding it and
+            # blocking in `wait` is what makes the trap fire promptly: with dragen in
+            # the foreground bash defers trap handling until it returns, which for a
+            # multi-hour conversion means TERM is effectively ignored.
+            setsid timeout 7200 {params.dragen_bin} --bcl-conversion-only true \
             --bcl-input-directory {input.data_dir} \
             --output-directory "$dragen_out" \
             --force \
@@ -3018,7 +3060,14 @@ rule bcl_convert:
             --bcl-num-conversion-threads 8 \
             --bcl-num-compression-threads 8 \
             --bcl-num-decompression-threads 8 \
-            $tiles_arg
+            $tiles_arg &
+            local dragen_pid=$!
+            # setsid does not fork here (a bash background job in a non-job-control
+            # shell is not a pgroup leader), so $! is the new group leader and
+            # PGID == PID. Read it back anyway rather than assuming.
+            dragen_pgid=$(ps -o pgid= -p "$dragen_pid" 2>/dev/null | tr -d ' ')
+            [ -n "$dragen_pgid" ] || dragen_pgid="$dragen_pid"
+            wait "$dragen_pid"
         }}
 
         # Masking is now handled by OverrideCycles in the sample sheet
@@ -3038,10 +3087,11 @@ rule bcl_convert:
         find "$dragen_out" -name "*.fastq.gz" -delete 2>/dev/null || true
         mkdir -p "$dragen_out"
 
-        run_dragen {input.sample_sheet}
-
-        dragen_status=$?
-        if [ $dragen_status -ne 0 ]; then
+        # `|| dragen_status=$?` is required: under `set -e` a bare call would abort
+        # the shell before $? could be inspected, making the check below dead code.
+        dragen_status=0
+        run_dragen {input.sample_sheet} || dragen_status=$?
+        if [ "$dragen_status" -ne 0 ]; then
             cleanup
             exit $dragen_status
         fi
