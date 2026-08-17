@@ -1359,9 +1359,41 @@ rule fastp_sample:
 
         files=({params.fastqs})
         r1="${{files[0]}}"
-
+        r2=""
         if [ ${{#files[@]}} -gt 1 ]; then
             r2="${{files[1]}}"
+        fi
+
+        # S-numbers are assigned by bcl-convert and can shift when renaming runs, but
+        # params are resolved at DAG-build time, before those files exist. Re-resolve
+        # the S index at execution time so a stale _S1_ guess does not fail the job.
+        if [ ! -f "$r1" ]; then
+            pattern=$(echo "$r1" | sed -E 's/_S[0-9]+_L([0-9]+)_R1_001\\.fastq\\.gz$/_S*_L\\1_R1_001.fastq.gz/')
+            if [ "$pattern" != "$r1" ]; then
+                matches=( $pattern )
+                if [ -f "${{matches[0]}}" ]; then
+                    echo "Resolved stale S-number: $r1 -> ${{matches[0]}}"
+                    if [ ${{#matches[@]}} -gt 1 ]; then
+                        echo "WARNING: ${{#matches[@]}} files match $pattern; using the first."
+                    fi
+                    r1="${{matches[0]}}"
+                    if [ -n "$r2" ]; then
+                        r2="${{r1/_R1_001.fastq.gz/_R2_001.fastq.gz}}"
+                    fi
+                fi
+            fi
+        fi
+
+        if [ ! -f "$r1" ]; then
+            echo "ERROR: R1 FASTQ not found: $r1" >&2
+            exit 1
+        fi
+        if [ -n "$r2" ] && [ ! -f "$r2" ]; then
+            echo "ERROR: R2 FASTQ not found: $r2" >&2
+            exit 1
+        fi
+
+        if [ -n "$r2" ]; then
             fastp -i "$r1" -I "$r2" -A -Q -L --reads_to_process 2000000 --json "{output.json}" --html "{output.html}" -w {threads}
         else
             fastp -i "$r1" -A -Q -L --reads_to_process 2000000 --json "{output.json}" --html "{output.html}" -w {threads}
