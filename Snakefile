@@ -112,6 +112,11 @@ SCRATCH_DIR = config.get("scratch_dir", "")
 # emits index reads as FASTQs (no index-based demultiplexing). Default: false.
 NO_DEMUX = _cfg_truthy(config.get("no_demux", False))
 
+# When true, every project keeps Illumina default FASTQ naming regardless of what the
+# single-cell detector infers from project/sheet-tab names. Exported to the environment
+# below so helper scripts spawned by rules see it too. Default: false.
+FORCE_ILLUMINA_NAMING = _cfg_truthy(config.get("force_illumina_naming", False))
+
 NEXTCLOUD_DIR_NAME = config.get("nextcloud_dir_name", "DragenExt3")
 NEXTCLOUD_DIR_PATH = config.get("nextcloud_dir_path", "nextcloud3")
 
@@ -183,6 +188,11 @@ METADATA_FILE = config.get("metadata")  # From merged config
 # read single-cell "Sample sheet tab" entries from the same workbook.
 if METADATA_FILE:
     os.environ["PIPELINE_METADATA_FILE"] = os.path.abspath(METADATA_FILE)
+# Set before the first is_parse_or_10x call (generate_lane_samplesheets, below) so the
+# forced naming applies to the generated sample sheets and renaming maps too. Written
+# unconditionally: the config is the only switch, so a stale value inherited from the
+# operator's shell or a .env can never silently flip naming for a run that didn't ask.
+os.environ["PIPELINE_FORCE_ILLUMINA_NAMING"] = "1" if FORCE_ILLUMINA_NAMING else "0"
 VALIDATION_XLSX = f"metadata/metadata_validation_{os.path.splitext(os.path.basename(metadata))[0]}.xlsx" if metadata else None
 LANE_CONFIGS = []
 PROJECT_LOOKUP = {}
