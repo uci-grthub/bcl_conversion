@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import csv
 from typing import List, Tuple
@@ -71,7 +72,13 @@ def load_map_rows(map_file: str) -> List[dict]:
         return []
 
 
-def row_stem(row: dict, default_run: str = "") -> Tuple[str, int, str, str]:
+def _row_parts(row: dict, default_run: str = "") -> Tuple[str, str, int, str, str]:
+    """Split a renaming-map row into (prefix, barcode, lane, project, sample_name).
+
+    `prefix` is the barcode-free identity of the sample —
+    {run}-L{lane}-G{group}-{position} — and is stable across an RC orientation
+    change. `barcode` is the part that can legitimately change.
+    """
     project = str(row.get('Sample_Project', '')).strip()
     sample_name = str(row.get('Sample_Name', row.get('Sample_ID', ''))).strip()
     try:
@@ -96,8 +103,65 @@ def row_stem(row: dict, default_run: str = "") -> Tuple[str, int, str, str]:
     if not position:
         # Fallback: use row order if needed (best-effort)
         position = 'P001'
-    stem = f"{run}-L{lane}-G{group}-{position}-{barcode}"
-    return stem, lane, project, sample_name
+    prefix = f"{run}-L{lane}-G{group}-{position}"
+    return prefix, barcode, lane, project, sample_name
+
+
+def row_prefix(row: dict, default_run: str = "") -> str:
+    """Barcode-free identity of a sample: {run}-L{lane}-G{group}-{position}."""
+    return _row_parts(row, default_run)[0]
+
+
+def row_stem(row: dict, default_run: str = "") -> Tuple[str, int, str, str]:
+    prefix, barcode, lane, project, sample_name = _row_parts(row, default_run)
+    return f"{prefix}-{barcode}", lane, project, sample_name
+
+
+# A barcode is one index, or two joined by '-'. Anchored at the start of whatever
+# follows the prefix, so the trailing suffix (-R1.fastq.gz, .fastp.json,
+# -base_comp.png, ...) is whatever the match does not consume. None of those
+# suffixes begin with an ACGTN run, so the match cannot eat into them.
+_BARCODE_RE = re.compile(r'^(?:[ACGTN]+(?:-[ACGTN]+)?)?')
+
+
+def restem_by_position(directory: str, rows: List[dict], dry_run: bool = False,
+                       default_run: str = "") -> List[Tuple[str, str]]:
+    """Re-point every file in `directory` from its current barcode to the map's.
+
+    Files are matched on the barcode-free prefix and re-emitted with the same
+    trailing suffix, so reads can never move between samples when an RC
+    orientation changes a barcode. Covers FASTQs, fastp JSON/HTML and plot PNGs
+    alike. Idempotent — a second pass renames nothing.
+
+    Returns the (old_path, new_path) pairs renamed, or that would be renamed
+    under `dry_run`.
+    """
+    renames: List[Tuple[str, str]] = []
+    try:
+        entries = sorted(os.listdir(directory))
+    except OSError:
+        return renames  # Directory doesn't exist yet
+
+    # Trailing '-' in the key keeps P001 from matching P0011, G1 from G11, etc.
+    by_prefix = {}
+    for row in rows:
+        prefix, barcode, _lane, _project, _sample = _row_parts(row, default_run)
+        by_prefix[f"{prefix}-"] = (prefix, barcode)
+
+    for fname in entries:
+        for head, (prefix, barcode) in by_prefix.items():
+            if not fname.startswith(head):
+                continue
+            remainder = fname[len(head):]
+            tail = remainder[_BARCODE_RE.match(remainder).end():]
+            new_name = f"{prefix}-{barcode}{tail}" if barcode else f"{prefix}{tail}"
+            if new_name != fname:
+                src = os.path.join(directory, fname)
+                dst = os.path.join(directory, new_name)
+                if rename_file_if_exists(src, dst, dry_run=dry_run):
+                    renames.append((src, dst))
+            break
+    return renames
 
 
 def rename_fastp_and_plots(config_id: str, map_rows: List[dict], results_base: str = "results", dry_run: bool = False):
@@ -211,24 +275,24 @@ def rename_fastqs_outputs(config_id: str, output_dir: str, map_file: str, dry_ru
                     rename_file_if_exists(illumina_path, new_path, dry_run=False)
                 continue
             
-            # Check for obsolete custom stem format (may have a different barcode or position from map)
-            # Try to find any file matching pattern xR*-L<lane>-G*-P*-*-<read_type>.fastq.gz
+            # Check for obsolete custom stem format (the barcode may differ from the
+            # map, e.g. after an RC orientation won). Match on the barcode-free
+            # prefix {run}-L{lane}-G{group}-{position}, never on the barcode, so a
+            # re-stem can only ever rename a sample onto itself.
+            prefix = row_prefix(row)
+            suffix = f"-{read_type}.fastq.gz"
             try:
-                for fname in os.listdir(project_dir):
-                    if not fname.endswith(f"-{read_type}.fastq.gz"):
-                        continue
-                    if fname == new_name:
-                        continue  # Already correct
-                    if "_S" in fname and f"_L{lane:03d}_" in fname:
-                        continue  # Looks like Illumina format, skip (would catch above)
-                    # Check if it matches old xR format pattern
-                    if fname.startswith("xR") and f"-L{lane}-G" in fname and f"-{read_type}.fastq.gz" in fname:
-                        obsolete_path = os.path.join(project_dir, fname)
-                        if dry_run:
-                            print(f"Would rename obsolete format: {obsolete_path} -> {new_path}")
-                        else:
-                            rename_file_if_exists(obsolete_path, new_path, dry_run=False)
-                        break  # Found and handled, move to next read_type
+                for fname in sorted(os.listdir(project_dir)):
+                    if fname == new_name or not fname.endswith(suffix):
+                        continue  # Already correct, or a different read
+                    if not fname.startswith(f"{prefix}-"):
+                        continue  # Different sample (or Illumina format, caught above)
+                    obsolete_path = os.path.join(project_dir, fname)
+                    if dry_run:
+                        print(f"Would rename obsolete format: {obsolete_path} -> {new_path}")
+                    else:
+                        rename_file_if_exists(obsolete_path, new_path, dry_run=False)
+                    break  # Found and handled, move to next read_type
             except OSError:
                 pass  # Directory doesn't exist yet, skip
             
