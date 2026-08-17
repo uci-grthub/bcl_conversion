@@ -14,6 +14,8 @@ import time
 import random
 import fcntl
 import os
+import getpass
+import tempfile
 
 
 def run_with_lock(lock_path, fn, *args, **kwargs):
@@ -59,7 +61,11 @@ def main():
     parser.add_argument('order_id')
     parser.add_argument('--max-retries', type=int, default=6)
     parser.add_argument('--base-sleep', type=float, default=5.0)
-    parser.add_argument('--lock-dir', default='/tmp/send_email_locks')
+    # Per-user default: a shared /tmp path breaks for every operator but the one
+    # who created it (the dir is owned by the first caller, not group-writable
+    # across accounts).
+    parser.add_argument('--lock-dir', default=os.path.join(
+        tempfile.gettempdir(), f"send_email_locks_{getpass.getuser()}"))
     args = parser.parse_args()
 
     lock_path = os.path.join(args.lock_dir, f"order_{args.order_id}.lock")

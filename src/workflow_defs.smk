@@ -1312,13 +1312,6 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                     print(f"Error parsing compact masking '{masking_str}' for lane {lane}: {e}")
 
             masking_for_cycles = masking_str
-            if strip_i2:
-                try:
-                    parts = [p.strip() for p in masking_str.split(',') if p and str(p).strip()]
-                    parts = [p for p in parts if not p.strip().upper().startswith('I2:')]
-                    masking_for_cycles = ', '.join(parts)
-                except Exception:
-                    masking_for_cycles = masking_str
             try:
                 parts = [p.strip() for p in masking_for_cycles.split(',')]
                 cycles = []
