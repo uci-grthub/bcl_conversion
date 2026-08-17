@@ -35,6 +35,24 @@ RC_ORIENTATION_COLUMNS = {
     'rc_both': ('index', 'index2'),
 }
 
+# Fixed i7-before-i5 display order for the operator-facing RC flag.
+_RC_INDEX_TAGS = (('index', 'i7'), ('index2', 'i5'))
+
+
+def rc_index_label(orientation):
+    """'rc_i5' -> 'i5', 'rc_both' -> 'i7+i5', 'original'/''/None -> ''.
+
+    The label the operator sees for which submitted index had to be
+    reverse-complemented to match the index reads.
+    """
+    columns = RC_ORIENTATION_COLUMNS.get(str(orientation or '').strip(), ())
+    return '+'.join(tag for column, tag in _RC_INDEX_TAGS if column in columns)
+
+
+def rc_tags_label(tags):
+    """Render a set of already-resolved index tags in the same i7-before-i5 order."""
+    return '+'.join(tag for _, tag in _RC_INDEX_TAGS if tag in tags)
+
 
 def apply_orientation_to_map(map_df, decision):
     """Return a copy of a renaming map carrying the *delivered* barcodes.

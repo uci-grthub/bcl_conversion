@@ -85,13 +85,15 @@ def read_count_file(count_file):
     try:
         with open(count_file, 'r') as f:
             reader = csv.reader(f)
-            header = next(reader)  # Skip header
-            
-            # Header pattern: ,lane,group,sample,counts,lane,group,sample,counts,...
-            # After proper CSV parsing: Index 0=empty, 1=lane, 2=group, 3=sample, 4=counts
-            # Sample names are at indices: 3, 7, 11, 15, ... (every 4, starting at 3)
+            header = next(reader)
+
+            # Header repeats one block per lane/group after a leading empty column:
+            # ,lane,group,sample,counts,index_rc,lane,group,sample,counts,index_rc,...
+            # Locate the sample columns from the header rather than assuming a fixed
+            # block width, so this keeps working as columns are added to the block.
+            sample_cols = [i for i, name in enumerate(header) if name.strip() == 'sample']
             for row in reader:
-                for i in range(3, len(row), 4):
+                for i in sample_cols:
                     if i < len(row):
                         sample = row[i].strip()
                         if sample:
