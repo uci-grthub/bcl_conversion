@@ -184,15 +184,18 @@ snakemake --cores 1 Reports/order_0626I-08/index.html
 snakemake --cores 1 results/iR011-count.csv
 ```
 - Aggregates read counts across all lanes
-- Formats as CSV with lane/group/sample/counts columns
-- Sorted by read count (descending) per lane
+- Formats as CSV with one `lane/group/sample/counts/index_rc` column block per lane-group
+- Samples keep their metadata order within each block
+- `index_rc` flags the submitted index(es) that had to be reverse-complemented to match
+  the index reads (`i7`, `i5`, `i7+i5`); blank means delivered on the barcodes as submitted
 
 ### 7. Email Delivery
 ```bash
 snakemake --cores 1 Reports/iR011_read_counts_email.done
 ```
-- Sends read count CSV as attachment
-- Uses SMTP (smtp.uci.edu:25)
+- Sends the read count CSV and `Reports/rc_orientation_summary.csv` as attachments
+- Uses SMTP (Gmail SSL, `smtp.gmail.com:465`, `GMAIL_APP_PASSWORD` from the environment)
+- `SEND_EMAIL_DRY_RUN=1` composes the message without sending it
 
 ## Publishing a Finished Run
 

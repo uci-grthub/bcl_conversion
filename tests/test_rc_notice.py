@@ -68,8 +68,8 @@ def test_tag_names_the_flipped_index(tmp_path):
     expected = {
         "0626I-49": " [i5 reverse-complement applied]",
         "0726I-08": " [i7 reverse-complement applied]",
-        "0726I-30": " [i5+i7 reverse-complement applied]",
-        "0726I-44": " [i5+i7 reverse-complement applied]",
+        "0726I-30": " [i7+i5 reverse-complement applied]",
+        "0726I-44": " [i7+i5 reverse-complement applied]",
         "0626I-25": "",   # an order with no RC project stays untagged
     }
     got = in_dir(str(tmp_path),
@@ -158,5 +158,5 @@ def test_summary_feeds_the_subject_tag(tmp_path):
     run_summary_rule(root, ["lane5"], {(5, 1): FIXTURE_ORDER_ID})
 
     tag = in_dir(root, lambda: rc_orientation_tag(FIXTURE_ORDER_ID))
-    assert tag == " [i5+i7 reverse-complement applied]"
+    assert tag == " [i7+i5 reverse-complement applied]"
     assert in_dir(root, lambda: rc_orientation_tag("0999I-99")) == ""

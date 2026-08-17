@@ -53,17 +53,19 @@ def load_workflow_defs_helpers():
 
 
 def load_snakefile_function(name, end_marker):
-    """A module-level function defined in the Snakefile, by name."""
+    """A module-level function defined in the Snakefile, by name.
+
+    The Snakefile sees everything workflow_defs.smk defines via `include:`, so
+    the whole helper namespace is injected rather than a hand-picked subset.
+    """
     import pandas as pd
 
     with open(os.path.join(REPO, "Snakefile")) as handle:
         source = handle.read()
     start = source.index(f"def {name}(")
-    helpers = load_workflow_defs_helpers()
-    namespace = _exec_source(
-        source[start:source.index(end_marker, start)],
-        {"pd": pd, "RC_ORIENTATION_COLUMNS": helpers["RC_ORIENTATION_COLUMNS"]},
-    )
+    globals_ = {"pd": pd}
+    globals_.update(load_workflow_defs_helpers())
+    namespace = _exec_source(source[start:source.index(end_marker, start)], globals_)
     return namespace[name]
 
 

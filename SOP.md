@@ -123,7 +123,11 @@ pixi run snakemake --cores 4 -R compile_read_counts                # force a rul
 - `output/lane{N}/` — project FASTQ files
 - `results/fastp/` — JSON stats; `results/fastp_plots/` — PNG plots
 - `Reports/` — order/project HTML reports, md5sums, PDFs
-- `results/{RUN}-count.csv` — read counts
+- `results/{RUN}-count.csv` — read counts; the `index_rc` column in each lane/group
+  block names the submitted index(es) that had to be reverse-complemented (`i7`,
+  `i5`, `i7+i5`), blank when the project was delivered on the barcodes as submitted
+- `Reports/rc_orientation_summary.csv` — the flagged projects in full, with submitted
+  vs delivered barcode
 
 ### Automated launch (cron)
 
