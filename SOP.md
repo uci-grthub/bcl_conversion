@@ -87,7 +87,7 @@ pixi run python scripts/test_nextcloud_token.py
   prefills `library_name`, `metadata`, `data_dir`. You confirm those and set
   `email_sender` / `email_recipient` / `email_cc` (to **your** address — the base config
   ships these blank so a run never emails the previous operator), plus optional
-  `external_drive_path`, `scratch_dir`, `tiles`, `flexbar_bin`.
+  `external_drive_path`, `scratch_dir`, `tiles`, `flexbar_bin`, `force_illumina_naming`.
 - `snakemake_config.yaml` — base defaults, layered under the project file. Rarely edited.
 - `profiles/default/config.yaml` — resource limits. **Not optional tuning**: it declares
   `serial_operation=1` (serializes DRAGEN so bcl-convert jobs don't contend for the FPGA)
@@ -107,10 +107,13 @@ pixi run python scripts/test_nextcloud_token.py
 ### Run specific stages
 
 Configs are per lane (`lane1`…`lane8`; MiSeq uses only `lane1`). Pass a target to
-`pixi run snakemake`:
+`pixi run snakemake`. There is no rule producing a bare `output/lane1` — the per-lane
+BCL-conversion target is the project sentinel, where `{PROJECT}` is the **renamed**
+folder `{LabID}_{OrderID}_{library}_L{lane}_G{group}` (e.g. `ChenR_ChenR_xR107_L1_G1`).
+Find it with `pixi run snakemake -n -p --until fastp_sample | grep -o 'output/lane1/[^ /]*'`:
 
 ```bash
-pixi run snakemake --cores 8 output/lane1                          # BCL conversion, one lane
+pixi run snakemake --cores 8 output/lane1/{PROJECT}/.project_done  # BCL conversion, one lane
 pixi run snakemake --cores 4 results/fastp_lane1.done              # FastP for a lane
 pixi run snakemake --cores 4 results/lane1/fastp_plots_lane1.done  # FastP plots
 pixi run snakemake --cores 1 Reports/order_0626I-08/index.html     # one order report
@@ -142,7 +145,24 @@ pixi run dag                  # dag.pdf
 - **Flexbar / inline demultiplexing**: barcode FASTAs auto-generated from metadata;
   `flexbar_barcode_leader_n` / `flexbar_retry_min_reads` tune inline matching. A bioconda
   `flexbar` is provided by pixi; point `flexbar_bin` at a local speedup build to override.
-- **Tile subset** (test/debug): set `tiles: "1_1101"` in config.
+- **Tile subset** (test/debug): set `tiles: "1101"` in config. The value is passed to
+  DRAGEN `--tiles` as a **regular expression** over the tile name, so use the bare
+  4-digit tile (`1101`), not the RunInfo `<Tile>` text `1_1101` — DRAGEN rejects the
+  latter with `tiles regular expression is ill-formed`. Combine with `lanes: [1]` to
+  restrict to one lane. Reset `tiles: ""` **and delete** `output/{config_id}/` plus
+  `.output/{config_id}/.done` before the real run: `use_ancient: true` otherwise
+  reuses the tile-subset FASTQs.
+- **Mixed-library lanes** (`force_illumina_naming: true`): single-cell detection
+  (`src/single_cell.py`) is **per project** — it matches a `10x`/`parse`/`bd` token in the
+  project name or in the Summary "Sample sheet tab". Single-cell projects keep Illumina
+  default FASTQ names; everything else is renamed to
+  `{RUN}-L{lane}-G{group}-P{pos}-{i7}-{i5}`. When a lane mixes single-cell and bulk
+  libraries under one project name, that per-project granularity cannot split them, so set
+  `force_illumina_naming: true` to keep Illumina default names for every project. 10x/Parse
+  samples stay readable by CellRanger and the Parse pipeline, and bulk samples get standard
+  Illumina names. The Snakefile exports this as `PIPELINE_FORCE_ILLUMINA_NAMING` so helper
+  scripts spawned by rules honor it too. The correct long-term fix is to have the lab split
+  the lane into separate `Gr` numbers and sample-sheet tabs per library type.
 - **Email**: `src/send_email.py` (SMTP default `smtp.uci.edu:25`). For Gmail OAuth2, store
   `client_secret.json` / `token.json` and switch `send_email.py` to `google-auth`.
 

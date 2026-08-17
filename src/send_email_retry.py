@@ -14,13 +14,36 @@ import time
 import random
 import fcntl
 import os
-import getpass
 import tempfile
 
 
+def default_lock_dir():
+    """Per-user lock dir.
+
+    A shared /tmp dir breaks as soon as two accounts run the pipeline on the same
+    host: the first one creates it 0775 under its own group and everyone else
+    gets EACCES creating a lock file inside it.
+    """
+    return os.path.join(tempfile.gettempdir(), f"send_email_locks-{os.getuid()}")
+
+
+def open_lock_file(lock_path):
+    """Open the lock file, falling back to a per-user dir if it is not writable."""
+    try:
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        return open(lock_path, 'w')
+    except (PermissionError, OSError) as e:
+        fallback_dir = default_lock_dir()
+        if os.path.dirname(lock_path) == fallback_dir:
+            raise
+        fallback = os.path.join(fallback_dir, os.path.basename(lock_path))
+        print(f"Cannot use lock file {lock_path} ({e}); falling back to {fallback}")
+        os.makedirs(fallback_dir, exist_ok=True)
+        return open(fallback, 'w')
+
+
 def run_with_lock(lock_path, fn, *args, **kwargs):
-    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
-    with open(lock_path, 'w') as lf:
+    with open_lock_file(lock_path) as lf:
         try:
             fcntl.flock(lf, fcntl.LOCK_EX)
             return fn(*args, **kwargs)
@@ -61,11 +84,7 @@ def main():
     parser.add_argument('order_id')
     parser.add_argument('--max-retries', type=int, default=6)
     parser.add_argument('--base-sleep', type=float, default=5.0)
-    # Per-user default: a shared /tmp path breaks for every operator but the one
-    # who created it (the dir is owned by the first caller, not group-writable
-    # across accounts).
-    parser.add_argument('--lock-dir', default=os.path.join(
-        tempfile.gettempdir(), f"send_email_locks_{getpass.getuser()}"))
+    parser.add_argument('--lock-dir', default=os.environ.get('SEND_EMAIL_LOCK_DIR') or default_lock_dir())
     args = parser.parse_args()
 
     lock_path = os.path.join(args.lock_dir, f"order_{args.order_id}.lock")

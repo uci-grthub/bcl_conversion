@@ -112,6 +112,11 @@ SCRATCH_DIR = config.get("scratch_dir", "")
 # emits index reads as FASTQs (no index-based demultiplexing). Default: false.
 NO_DEMUX = _cfg_truthy(config.get("no_demux", False))
 
+# When true, every project keeps Illumina default FASTQ naming regardless of what the
+# single-cell detector infers from project/sheet-tab names. Exported to the environment
+# below so helper scripts spawned by rules see it too. Default: false.
+FORCE_ILLUMINA_NAMING = _cfg_truthy(config.get("force_illumina_naming", False))
+
 NEXTCLOUD_DIR_NAME = config.get("nextcloud_dir_name", "DragenExt3")
 NEXTCLOUD_DIR_PATH = config.get("nextcloud_dir_path", "nextcloud3")
 
@@ -183,6 +188,11 @@ METADATA_FILE = config.get("metadata")  # From merged config
 # read single-cell "Sample sheet tab" entries from the same workbook.
 if METADATA_FILE:
     os.environ["PIPELINE_METADATA_FILE"] = os.path.abspath(METADATA_FILE)
+# Set before the first is_parse_or_10x call (generate_lane_samplesheets, below) so the
+# forced naming applies to the generated sample sheets and renaming maps too. Written
+# unconditionally: the config is the only switch, so a stale value inherited from the
+# operator's shell or a .env can never silently flip naming for a run that didn't ask.
+os.environ["PIPELINE_FORCE_ILLUMINA_NAMING"] = "1" if FORCE_ILLUMINA_NAMING else "0"
 VALIDATION_XLSX = f"metadata/metadata_validation_{os.path.splitext(os.path.basename(metadata))[0]}.xlsx" if metadata else None
 LANE_CONFIGS = []
 PROJECT_LOOKUP = {}
@@ -1354,9 +1364,41 @@ rule fastp_sample:
 
         files=({params.fastqs})
         r1="${{files[0]}}"
-
+        r2=""
         if [ ${{#files[@]}} -gt 1 ]; then
             r2="${{files[1]}}"
+        fi
+
+        # S-numbers are assigned by bcl-convert and can shift when renaming runs, but
+        # params are resolved at DAG-build time, before those files exist. Re-resolve
+        # the S index at execution time so a stale _S1_ guess does not fail the job.
+        if [ ! -f "$r1" ]; then
+            pattern=$(echo "$r1" | sed -E 's/_S[0-9]+_L([0-9]+)_R1_001\\.fastq\\.gz$/_S*_L\\1_R1_001.fastq.gz/')
+            if [ "$pattern" != "$r1" ]; then
+                matches=( $pattern )
+                if [ -f "${{matches[0]}}" ]; then
+                    echo "Resolved stale S-number: $r1 -> ${{matches[0]}}"
+                    if [ ${{#matches[@]}} -gt 1 ]; then
+                        echo "WARNING: ${{#matches[@]}} files match $pattern; using the first."
+                    fi
+                    r1="${{matches[0]}}"
+                    if [ -n "$r2" ]; then
+                        r2="${{r1/_R1_001.fastq.gz/_R2_001.fastq.gz}}"
+                    fi
+                fi
+            fi
+        fi
+
+        if [ ! -f "$r1" ]; then
+            echo "ERROR: R1 FASTQ not found: $r1" >&2
+            exit 1
+        fi
+        if [ -n "$r2" ] && [ ! -f "$r2" ]; then
+            echo "ERROR: R2 FASTQ not found: $r2" >&2
+            exit 1
+        fi
+
+        if [ -n "$r2" ]; then
             fastp -i "$r1" -I "$r2" -A -Q -L --reads_to_process 2000000 --json "{output.json}" --html "{output.html}" -w {threads}
         else
             fastp -i "$r1" -A -Q -L --reads_to_process 2000000 --json "{output.json}" --html "{output.html}" -w {threads}
@@ -1392,8 +1434,13 @@ rule normalize_project_fastq_names:
                 return
 
             check_name = old_project or new_project
-            lowered = check_name.lower()
-            if any(token in lowered for token in ["10x", "parse", "bd"]):
+            # 10x/Parse/BD projects keep Illumina default naming, and so does every
+            # project when force_illumina_naming is set, so this rule must not rewrite
+            # them to the GRT stem -- rename_fastqs.py deliberately left them alone.
+            # A raw token check here missed both the Summary "Sample sheet tab" orders
+            # and the force flag. Test the renamed folder too: it carries the
+            # _L<lane>_G<group> suffix the Summary lookup falls back on.
+            if is_parse_or_10x(check_name) or is_parse_or_10x(new_project):
                 return
 
             def _materialize_and_backlink(src_abs, dst_abs):

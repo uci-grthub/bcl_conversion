@@ -14,6 +14,12 @@ name or its Summary sheet tab matches.
 The Summary lookup is cached module-wide.  The metadata workbook is taken from
 ``PIPELINE_METADATA_FILE`` (exported by the Snakefile so child scripts inherit
 it) or discovered under ``metadata/`` when that variable is unset.
+
+``PIPELINE_FORCE_ILLUMINA_NAMING`` (exported the same way, from the
+``force_illumina_naming`` config key) makes every project count as single cell.
+Use it when a lane mixes single-cell and bulk libraries under one project name:
+detection is per project, so the only way to keep the 10x/Parse samples readable
+by CellRanger and the Parse pipeline is to keep Illumina naming for the lane.
 """
 
 import os
@@ -22,6 +28,9 @@ import glob
 
 # Tokens shared by project names and Summary sheet tabs.
 SINGLE_CELL_TOKENS = ("10x", "parse", "bd")
+
+# Accepted values of PIPELINE_FORCE_ILLUMINA_NAMING (see module docstring).
+_TRUTHY = {"1", "true", "yes", "on"}
 
 # Renamed project folders look like {LabID}_{OrderID}_{library}_L{lane}_G{group};
 # the suffix lets a renamed folder be resolved back to its Summary row.
@@ -110,13 +119,21 @@ def load_single_cell_registry(metadata_file=None, force=False):
     return _REGISTRY
 
 
+def force_illumina_naming():
+    """True when the run forces Illumina default naming on every project."""
+    return _norm(os.environ.get("PIPELINE_FORCE_ILLUMINA_NAMING")) in _TRUTHY
+
+
 def is_single_cell_project(project_name, lane=None, group=None, metadata_file=None):
     """True when the project uses Illumina default naming (10x / Parse / BD).
 
     Matches on the project name, on the Summary "Sample sheet tab" entry for
     that project, or on the (lane, group) the project belongs to — including the
-    lane/group encoded in a renamed output folder.
+    lane/group encoded in a renamed output folder.  ``force_illumina_naming``
+    short-circuits all of that for runs whose lanes mix library types.
     """
+    if force_illumina_naming():
+        return True
     if name_indicates_single_cell(project_name):
         return True
     try:

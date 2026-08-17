@@ -39,6 +39,13 @@ use_ancient: true  # Whether to use ancient files for bcl-convert outputs if ava
 # reads as FASTQs (i.e. no index-based demultiplexing). Default: false.
 no_demux: false
 
+# Treat every project as single cell for FASTQ-naming purposes: keep Illumina default
+# names (<Sample_Name>_S<n>_L00<lane>_R<n>_001.fastq.gz) instead of the
+# {RUN}-L{lane}-G{group}-P{pos}-{barcode} scheme. Use when a lane mixes single-cell and
+# bulk libraries under one project, so 10x/Parse samples stay readable by CellRanger and
+# the Parse pipeline. Default: false.
+force_illumina_naming: false
+
 # Which configs (lanes) should keep Undetermined reads? Others will have them deleted.
 # Default is empty list (delete all Undetermined reads).
 # Example: keep_undetermined_configs: ["lane1", "lane3"]
