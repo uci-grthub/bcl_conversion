@@ -1429,8 +1429,13 @@ rule normalize_project_fastq_names:
                 return
 
             check_name = old_project or new_project
-            lowered = check_name.lower()
-            if any(token in lowered for token in ["10x", "parse", "bd"]):
+            # 10x/Parse/BD projects keep Illumina default naming, and so does every
+            # project when force_illumina_naming is set, so this rule must not rewrite
+            # them to the GRT stem -- rename_fastqs.py deliberately left them alone.
+            # A raw token check here missed both the Summary "Sample sheet tab" orders
+            # and the force flag. Test the renamed folder too: it carries the
+            # _L<lane>_G<group> suffix the Summary lookup falls back on.
+            if is_parse_or_10x(check_name) or is_parse_or_10x(new_project):
                 return
 
             def _materialize_and_backlink(src_abs, dst_abs):
