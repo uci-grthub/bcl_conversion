@@ -26,10 +26,28 @@ from io import StringIO
 
 
 def hamming_distance(s1, s2):
-    """Calculate Hamming distance between two sequences."""
-    if len(s1) != len(s2):
+    """Hamming distance between two barcodes, compared over their common prefix.
+
+    DRAGEN compares mixed-length indexes at their "common value": the longer index
+    truncated to the shorter one's length. Skipping unequal-length pairs hides real
+    collisions (e.g. GTAGAG vs GTAGAGGA), so compare the prefix instead of bailing.
+    """
+    if not s1 or not s2:
         return None
-    return sum(c1 != c2 for c1, c2 in zip(s1, s2))
+    n = min(len(s1), len(s2))
+    return sum(c1 != c2 for c1, c2 in zip(s1[:n], s2[:n]))
+
+
+def is_prefix_collision(s1, s2):
+    """True when two barcodes differ in length but are identical over the common prefix.
+
+    Such a pair is unresolvable: a read carrying the longer barcode matches the shorter
+    sample exactly and the longer sample exactly, at any BarcodeMismatchesIndex value.
+    """
+    if not s1 or not s2 or len(s1) == len(s2):
+        return False
+    n = min(len(s1), len(s2))
+    return s1[:n] == s2[:n]
 
 
 def _find_data_section(lines):
@@ -65,14 +83,17 @@ def validate_sheet_barcodes(sheet_path, tolerance=1):
     """
     Validate barcode Hamming distances in a single sample sheet.
 
-    Returns: (is_valid, errors, config_id, conflict_rows)
+    Returns: (is_valid, errors, config_id, conflict_rows, hard_errors)
       conflict_rows: dict mapping row_idx -> set of {'i7', 'i5'} indicating
                      which index columns need BMI set to 0 to resolve the conflict.
+      hard_errors: subset of errors that BarcodeMismatchesIndex=0 cannot resolve
+                   (mixed index lengths colliding on their common prefix).
     """
     rows = parse_samplesheet_data(sheet_path)
     config_id = Path(sheet_path).stem.replace("SampleSheet_", "")
 
     errors = []
+    hard_errors = []
     conflict_rows = defaultdict(set)  # row_idx -> {'i7', 'i5'}
 
     # Group by lane
@@ -130,15 +151,29 @@ def validate_sheet_barcodes(sheet_path, tolerance=1):
                 # only_i7: at least one sample lacks i5 (bmi2 is None for single-indexed)
                 only_i7 = pair1["bmi2"] is None or pair2["bmi2"] is None
 
+                i7_prefix_collision = is_prefix_collision(pair1["i7"], pair2["i7"])
+                i5_prefix_collision = is_prefix_collision(pair1["i5"], pair2["i5"])
+
                 if only_i7:
                     # DRAGEN requires distance > 2*tol to avoid a midpoint read
                     # matching both samples within tolerance simultaneously.
                     if i7_dist is not None and i7_dist <= 2 * eff_i7_tol:
-                        msg = (
-                            f"Lane {lane}: Insufficient i7 Hamming distance ({i7_dist}) "
-                            f"between {pair1['barcode_str']} ({pair1['project']}/{pair1['sample']}) "
-                            f"and {pair2['barcode_str']} ({pair2['project']}/{pair2['sample']})"
-                        )
+                        if i7_prefix_collision:
+                            msg = (
+                                f"Lane {lane}: UNRESOLVABLE i7 prefix collision between "
+                                f"{pair1['i7']} ({len(pair1['i7'])}bp, {pair1['project']}/{pair1['sample']}) "
+                                f"and {pair2['i7']} ({len(pair2['i7'])}bp, {pair2['project']}/{pair2['sample']}). "
+                                f"Mixed index lengths: the shorter index matches the longer one over its "
+                                f"whole length, so no BarcodeMismatchesIndex1 value can separate these samples. "
+                                f"Demultiplex the conflicting project in a separate BCL Convert run."
+                            )
+                            hard_errors.append(msg)
+                        else:
+                            msg = (
+                                f"Lane {lane}: Insufficient i7 Hamming distance ({i7_dist}) "
+                                f"between {pair1['barcode_str']} ({pair1['project']}/{pair1['sample']}) "
+                                f"and {pair2['barcode_str']} ({pair2['project']}/{pair2['sample']})"
+                            )
                         errors.append(msg)
                         conflict_rows[pair1["row"]].add("i7")
                         conflict_rows[pair2["row"]].add("i7")
@@ -148,12 +183,23 @@ def validate_sheet_barcodes(sheet_path, tolerance=1):
                     i7_too_close = i7_dist is not None and i7_dist <= 2 * eff_i7_tol
                     i5_too_close = i5_dist is not None and i5_dist <= 2 * eff_i5_tol
                     if i7_too_close and i5_too_close:
-                        msg = (
-                            f"Lane {lane}: Insufficient combined Hamming distance "
-                            f"(i7={i7_dist}, i5={i5_dist}) "
-                            f"between {pair1['barcode_str']} ({pair1['project']}/{pair1['sample']}) "
-                            f"and {pair2['barcode_str']} ({pair2['project']}/{pair2['sample']})"
-                        )
+                        if i7_prefix_collision and (i5_prefix_collision or i5_dist == 0):
+                            msg = (
+                                f"Lane {lane}: UNRESOLVABLE index prefix collision between "
+                                f"{pair1['barcode_str']} ({pair1['project']}/{pair1['sample']}) "
+                                f"and {pair2['barcode_str']} ({pair2['project']}/{pair2['sample']}). "
+                                f"Mixed index lengths collide on the common prefix in both i7 and i5, "
+                                f"so no BarcodeMismatchesIndex value can separate these samples. "
+                                f"Demultiplex the conflicting project in a separate BCL Convert run."
+                            )
+                            hard_errors.append(msg)
+                        else:
+                            msg = (
+                                f"Lane {lane}: Insufficient combined Hamming distance "
+                                f"(i7={i7_dist}, i5={i5_dist}) "
+                                f"between {pair1['barcode_str']} ({pair1['project']}/{pair1['sample']}) "
+                                f"and {pair2['barcode_str']} ({pair2['project']}/{pair2['sample']})"
+                            )
                         errors.append(msg)
                         conflict_rows[pair1["row"]].add("i7")
                         conflict_rows[pair1["row"]].add("i5")
@@ -182,7 +228,7 @@ def validate_sheet_barcodes(sheet_path, tolerance=1):
                 for pair in group:
                     conflict_rows[pair["row"]].add("i5")
 
-    return len(errors) == 0, errors, config_id, conflict_rows
+    return len(errors) == 0, errors, config_id, conflict_rows, hard_errors
 
 
 def fix_sheet_conflicts(sheet_path, conflict_rows, output_path=None):
@@ -204,6 +250,37 @@ def fix_sheet_conflicts(sheet_path, conflict_rows, output_path=None):
     rows = list(reader)
 
     has_any_i5 = any(bool(row.get("index2", "").strip()) for row in rows)
+
+    # BCL Convert requires every row sharing an identical index value to carry the
+    # same BarcodeMismatchesIndex for that index. Fixing only the rows that were
+    # literally involved in a conflict can leave siblings with the same barcode at
+    # a different tolerance, which BCL Convert rejects outright. Propagate each fix
+    # to every row sharing that (lane, index value).
+    i7_groups = defaultdict(list)
+    i5_groups = defaultdict(list)
+    for row_idx, row in enumerate(rows):
+        lane = row.get("Lane", "").strip()
+        idx1 = row.get("index", "").strip()
+        idx2 = row.get("index2", "").strip()
+        if idx1:
+            i7_groups[(lane, idx1)].append(row_idx)
+        if idx2:
+            i5_groups[(lane, idx2)].append(row_idx)
+
+    expanded_conflict_rows = defaultdict(set)
+    for row_idx, indices_to_fix in conflict_rows.items():
+        expanded_conflict_rows[row_idx] |= indices_to_fix
+        row = rows[row_idx]
+        lane = row.get("Lane", "").strip()
+        if "i7" in indices_to_fix:
+            idx1 = row.get("index", "").strip()
+            for sibling_idx in i7_groups.get((lane, idx1), ()):
+                expanded_conflict_rows[sibling_idx].add("i7")
+        if "i5" in indices_to_fix:
+            idx2 = row.get("index2", "").strip()
+            for sibling_idx in i5_groups.get((lane, idx2), ()):
+                expanded_conflict_rows[sibling_idx].add("i5")
+    conflict_rows = expanded_conflict_rows
 
     if "BarcodeMismatchesIndex1" not in fieldnames:
         fieldnames.append("BarcodeMismatchesIndex1")
@@ -286,10 +363,10 @@ def main():
     args = parser.parse_args()
 
     def _run_validation():
-        results = {"valid": True, "sheets": {}, "all_errors": []}
+        results = {"valid": True, "sheets": {}, "all_errors": [], "hard_errors": []}
         for sheet_path in args.samplesheets:
             try:
-                is_valid, errors, config_id, conflict_rows = validate_sheet_barcodes(
+                is_valid, errors, config_id, conflict_rows, hard_errors = validate_sheet_barcodes(
                     sheet_path, args.mismatch_tolerance
                 )
                 results["sheets"][sheet_path] = {
@@ -297,10 +374,12 @@ def main():
                     "valid": is_valid,
                     "errors": errors,
                     "conflict_rows": conflict_rows,
+                    "hard_errors": hard_errors,
                 }
                 if not is_valid:
                     results["valid"] = False
                     results["all_errors"].extend(errors)
+                    results["hard_errors"].extend(hard_errors)
             except Exception as e:
                 results["valid"] = False
                 error_msg = f"Error validating {sheet_path}: {e}"
@@ -308,6 +387,7 @@ def main():
                     "valid": False,
                     "errors": [error_msg],
                     "conflict_rows": {},
+                    "hard_errors": [],
                 }
                 results["all_errors"].append(error_msg)
         return results
@@ -315,7 +395,9 @@ def main():
     results = _run_validation()
 
     any_fixed = False
-    if not results["valid"] and args.fix:
+    # Prefix collisions between mixed-length indexes survive BarcodeMismatchesIndex=0,
+    # so auto-fixing there only produces a sheet DRAGEN aborts on. Fail immediately instead.
+    if not results["valid"] and args.fix and not results["hard_errors"]:
         for sheet_path, sheet_result in results["sheets"].items():
             if not sheet_result["valid"] and sheet_result.get("conflict_rows"):
                 output_path = args.output_sheet if args.output_sheet else None
@@ -348,6 +430,7 @@ def main():
         serializable = {
             "valid": results["valid"],
             "all_errors": results["all_errors"],
+            "hard_errors": results["hard_errors"],
             "sheets": {
                 k: {"config_id": v.get("config_id"), "valid": v["valid"], "errors": v["errors"]}
                 for k, v in results["sheets"].items()
@@ -361,7 +444,15 @@ def main():
             output_text = "✗ Barcode Hamming distance validation FAILED\n\n"
             for error in results["all_errors"]:
                 output_text += f"  {error}\n"
-            output_text += "\nSuggested fix: Apply reverse-complement to i7 or i5 indices for conflicting projects\n"
+            if results["hard_errors"]:
+                output_text += (
+                    "\nSuggested fix: mixed index lengths collide on their common prefix; "
+                    "reverse-complement and BarcodeMismatchesIndex=0 cannot resolve this. "
+                    "Split the lane into separate BCL Convert runs (one per index-length group), "
+                    "or pad/replace the short index so no barcode is a prefix of another.\n"
+                )
+            else:
+                output_text += "\nSuggested fix: Apply reverse-complement to i7 or i5 indices for conflicting projects\n"
 
     if args.output:
         with open(args.output, 'w') as f:

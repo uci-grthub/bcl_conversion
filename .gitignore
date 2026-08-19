@@ -3,6 +3,7 @@
 *.zip
 md5sum*
 *.csv
+!tests/fixtures/*.csv
 *.png
 !rulegraph.png
 Tools/*.storable

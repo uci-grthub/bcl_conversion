@@ -1,0 +1,6 @@
+Sample_ID,Sample_Name,Sample_Project,Lane,index,index2,Run,Group,Position
+Plate1_A01,Plate1_A01,AcmeC_WGS_8plex,5,CGCTCATT,AGGCGAAG,xR106,1,P001
+Plate1_A02,Plate1_A02,AcmeC_WGS_8plex,5,TCCGGAGA,CAGGACGT,xR106,1,P002
+Plate1_A03,Plate1_A03,AcmeC_WGS_8plex,5,ATTCAGAA,GTACTGAC,xR106,1,P003
+Amp_01,Amp_01,SoloS_Amplicon_2plex,5,GGACTCCT,,xR106,2,P004
+Amp_02,Amp_02,SoloS_Amplicon_2plex,5,TAGGCATG,,xR106,2,P005

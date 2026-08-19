@@ -1,0 +1,43 @@
+# Snakemake profile for this workflow. Use it with:
+#   pixi run snakemake --profile profiles/default --cores 8
+#
+# The resource limits below are NOT optional tuning: rules declare
+# `resources: serial_operation=1`, but a resource with no global limit is
+# unconstrained, so without this profile DRAGEN bcl-convert jobs run
+# concurrently and contend for the FPGA.
+
+# Serialize the rules that must not overlap: bcl_convert, bcl_convert_rc,
+# project_link, flexbar_project_link.
+resources:
+  - serial_operation=1
+  - nextcloud_api=3
+  - precision_ssh=3
+
+# JBOD/NFS can take a while to make outputs visible after a job exits.
+latency-wait: 120
+
+# Only mtime triggers a re-run. Snakemake's default also reruns on changed
+# code/params/software-env, which would re-run bcl-convert on an unrelated
+# Snakefile edit — hours of DRAGEN time.
+rerun-triggers: mtime
+
+rerun-incomplete: True
+keep-going: True
+printshellcmds: True
+max-jobs-per-second: 10
+max-status-checks-per-second: 1
+restart-times: 0
+
+# If listing files on the JBOD is slow.
+max-inventory-time: 60
+
+shared-fs-usage:
+  - input-output
+  - persistence
+  - software-deployment
+
+# Tune to the host: these suit the 32-core dragen server. Override on the
+# command line (`--cores 8`) for a smaller machine or a shared window.
+cores: 32
+local-cores: 32
+jobs: 32

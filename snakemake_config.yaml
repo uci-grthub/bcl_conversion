@@ -1,25 +1,29 @@
 # Snakemake configuration for postprocess workflow
-sample_sheet: "src/SampleSheet_default.csv"
 num_reads: 2
 library_name: ""
 start_s: 1
 lanes: [1,2,3,4,5,6,7,8]
 fastp_threads: 4
-flexbar_bin: "/home/kstachel/TOOLS/flexbar-speedup/build_parasail/src/flexbar"
+# flexbar from pixi (see pixi.toml). Override with an absolute path, or the
+# FLEXBAR_BIN env var, to use a local speedup build instead.
+flexbar_bin: "flexbar"
+dragen_bin: "/opt/dragen/4.4.7/bin/dragen"
 # Number of leading bases (e.g. a UMI) before the inline barcode in R1. The
 # barcode FASTA is built as "<this many N's><barcode>" and matched at the read
 # start (LTAIL). 0 = barcode at R1 position 1 (KY26SPI inline libraries). Set to
 # 5 for PAREseq-style U5I6 libraries.
-flexbar_barcode_leader_n: 0
+flexbar_barcode_leader_n: 5
 # If no sample exceeds this many assigned reads after the forward-orientation
 # pass, flexbar retries with the reverse-complement indices.
 flexbar_retry_min_reads: 1000000
 metadata: ""
 data_dir: ""
 tiles: ""
-email_sender: "kstachel@uci.edu"
-email_recipient: "kstachel@uci.edu"
-email_cc: "kstachel@uci.edu"
+# Set these per run in snakemake_config_project.yaml (see SOP). Left blank in the
+# base config so a fresh clone never silently emails the previous operator.
+email_sender: ""
+email_recipient: ""
+email_cc: ""
 nextcloud_dir_name: "dragenshare"
 nextcloud_dir_path: "nextcloud"
 external_drive_path: "/mnt/jbod_localdisk/nextshare/bcl_convert/NovaSeqX"
@@ -34,6 +38,13 @@ use_ancient: true  # Whether to use ancient files for bcl-convert outputs if ava
 # Force CreateFastqForIndexReads=1 in every generated SampleSheet so DRAGEN emits index
 # reads as FASTQs (i.e. no index-based demultiplexing). Default: false.
 no_demux: false
+
+# Treat every project as single cell for FASTQ-naming purposes: keep Illumina default
+# names (<Sample_Name>_S<n>_L00<lane>_R<n>_001.fastq.gz) instead of the
+# {RUN}-L{lane}-G{group}-P{pos}-{barcode} scheme. Use when a lane mixes single-cell and
+# bulk libraries under one project, so 10x/Parse samples stay readable by CellRanger and
+# the Parse pipeline. Default: false.
+force_illumina_naming: false
 
 # Which configs (lanes) should keep Undetermined reads? Others will have them deleted.
 # Default is empty list (delete all Undetermined reads).

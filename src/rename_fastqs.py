@@ -15,18 +15,18 @@ def _find_illumina_fastq(project_dir: str, sample_name: str, lane: int, read_typ
     matches = sorted(glob.glob(pattern))
     return matches[0] if matches else None
 
-def is_parse_or_10x(project_name: str) -> bool:
-    """Check if project uses Illumina default naming.
-    
-    Returns True for: 10x (including VisiumHD, 5'V2, 3'V3, ATAC, etc.), Parse, BD.
-    These platforms require Illumina default naming for downstream tools.
-    """
-    try:
-        p = (project_name or "").lower()
-    except Exception:
-        p = ""
-    # Respect FASTQ_RENAME.md: 10x (all products), Parse, and BD keep Illumina default naming
-    return ("10x" in p) or ("parse" in p) or ("bd" in p)
+# Respect FASTQ_RENAME.md: 10x (all products), Parse, and BD keep Illumina default naming.
+# Detection matches the project name OR the Summary "Sample sheet tab" entry, so
+# single-cell orders whose name lacks a 10x/Parse/BD token are still caught.
+try:
+    from single_cell import is_single_cell_project as is_parse_or_10x
+except Exception:
+    def is_parse_or_10x(project_name: str, lane=None, group=None) -> bool:
+        try:
+            p = (project_name or "").lower()
+        except Exception:
+            p = ""
+        return ("10x" in p) or ("parse" in p) or ("bd" in p)
 
 def rename_fastqs(config_id, output_dir, map_file):
     if not os.path.exists(map_file):
@@ -123,7 +123,7 @@ def rename_fastqs(config_id, output_dir, map_file):
 
         # For 10x, Parse, and BD projects: ensure files are in Illumina default naming
         # Check if files are already in Illumina format, or if they're in stem format and need reverse-renaming
-        if is_parse_or_10x(project):
+        if is_parse_or_10x(project, lane=lane, group=group):
             for read_type in ['R1', 'R2', 'I1', 'I2']:
                 illumina_name = f"{sample_name}_S{s_num}_L{lane:03d}_{read_type}_001.fastq.gz"
                 illumina_path = os.path.join(project_dir, illumina_name)

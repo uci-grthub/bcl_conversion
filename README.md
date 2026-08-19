@@ -37,11 +37,17 @@ pixi install                                    # solve/create env from pixi.loc
 Run any command inside the environment with `pixi run`, or use the predefined tasks:
 
 ```bash
-pixi run snakemake -n        # dry run
+pixi run init                # one-time per-run setup (project config + samplesheet)
+pixi run dry-run             # preview what would run
 pixi run all                 # full workflow (snakemake --cores 8)
-pixi run dry-run             # preview
 pixi run convert output/lane1
+pixi run publish NovaSeqx xR101   # mirror finished run to the share + resend emails
 ```
+
+> `pixi run` auto-loads secrets from the shared per-platform `../.env` (a local `./.env`
+> overrides it) and forces `SNAKEMAKE_PROFILE=profiles/default` (see `[activation]` in
+> `pixi.toml` and `scripts/load_dotenv.sh`). You do **not** copy a `.env`, pass
+> `--profile`, or run `source .env` — every `pixi run snakemake ...` already has both.
 
 pixi manages Python (pandas, openpyxl, numpy, matplotlib, pillow, pyyaml, reportlab),
 Snakemake, and the bioconda CLIs (`fastqc`, `flexbar`, `seqtk`, `fqtk`). Two dependencies
@@ -59,6 +65,8 @@ remain **system-level** and are not installed by pixi:
 - **`snakemake_config.yaml`** - Base configuration (paths, threads, email settings)
 - **`snakemake_config_project.yaml`** - Project-specific configuration (overrides base settings)
 - **`metadata/*.xlsx`** - Excel metadata with Summary sheet and per-project sheets
+- **`scripts/publish_run.sh`** - `pixi run publish`: mirror run to share, touch, resend emails
+- **`scripts/sync_run.sh`** - `sync_run` rsync mirror function (sourced by `publish_run.sh`)
 - **`src/RunInfo_nn.xml`** - Normalized run configuration (auto-generated)
 
 ## Platforms & Auto-Detection
@@ -75,22 +83,24 @@ This pipeline supports two Illumina platforms/configurations. The platform is
 | Example `data_dir` | `/staging/nextcloud/Miseqi100/<run>` | `/staging/nextcloud/NovaseqX/<run>` |
 
 The workflow prints `Detected MiSeq metadata format` (or proceeds with the NovaSeqX
-Summary-sheet path) so you can confirm which mode is active. This run (`iR011`) is a
-**MiSeq i100** run.
+Summary-sheet path) so you can confirm which mode is active. The run identifier below
+(`{RUN}`, e.g. `iR011` / `xR077`) comes from your metadata filename.
 
 ## Configuration
 
 Edit `snakemake_config_project.yaml` (project overrides layered over `snakemake_config.yaml`).
 
-**MiSeq i100 example** (this run):
+Most fields are prefilled by `pixi run init`; set `email_*` to **your** address.
+
+**MiSeq i100 example**:
 
 ```yaml
 library_name: "iR011"                    # Run identifier
 metadata: "metadata/06262026_BXA66618-2426_iR011.xlsx"
 data_dir: "/staging/nextcloud/Miseqi100/20260626_SH00564_0020_ASC2231455-SC3"
 lanes: [1,2,3,4,5,6,7,8]                 # Superset; only lane1 is used for MiSeq
-email_sender: "kstachel@uci.edu"
-email_recipient: "kstachel@uci.edu"
+email_sender: "you@uci.edu"
+email_recipient: "you@uci.edu"
 ```
 
 **NovaSeqX example**:
@@ -100,8 +110,8 @@ library_name: "xR077"                    # Run identifier
 metadata: "metadata/251219_23G5F2LT3_10B_PE151_xR077.xlsx"
 data_dir: "/staging/nextcloud/NovaseqX/20260115_LH00626_0088_A233NM2LT4"
 lanes: [1,2,3,4,5,6,7,8]                 # Lanes to process (auto-detected from BaseCalls)
-email_sender: "kstachel@uci.edu"
-email_recipient: "kstachel@uci.edu"
+email_sender: "you@uci.edu"
+email_recipient: "you@uci.edu"
 ```
 
 ## Metadata Format
@@ -174,15 +184,56 @@ snakemake --cores 1 Reports/order_0626I-08/index.html
 snakemake --cores 1 results/iR011-count.csv
 ```
 - Aggregates read counts across all lanes
-- Formats as CSV with lane/group/sample/counts columns
-- Sorted by read count (descending) per lane
+- Formats as CSV with one `lane/group/sample/counts/index_rc` column block per lane-group
+- Samples keep their metadata order within each block
+- `index_rc` flags the submitted index(es) that had to be reverse-complemented to match
+  the index reads (`i7`, `i5`, `i7+i5`); blank means delivered on the barcodes as submitted
 
 ### 7. Email Delivery
 ```bash
 snakemake --cores 1 Reports/iR011_read_counts_email.done
 ```
-- Sends read count CSV as attachment
-- Uses SMTP (smtp.uci.edu:25)
+- Sends the read count CSV and `Reports/rc_orientation_summary.csv` as attachments
+- Uses SMTP (Gmail SSL, `smtp.gmail.com:465`, `GMAIL_APP_PASSWORD` from the environment)
+- `SEND_EMAIL_DRY_RUN=1` composes the message without sending it
+
+## Publishing a Finished Run
+
+Once `pixi run all` has completed, publish the run with:
+
+```bash
+pixi run publish <instrument> <run_id>        # e.g. pixi run publish NovaSeqx xR101
+```
+
+`scripts/publish_run.sh` runs three steps in order:
+
+1. `sync_run <instrument> <run_id> [dest_base] [parallel]` — rsync-mirrors the run
+   directory to the share (default `dest_base`:
+   `/mnt/jbod_localdisk/nextshare/bcl_convert/<instrument>/<run_id>`).
+2. `snakemake --touch all` — rsync bumps mtimes, so outputs are re-marked current.
+3. `snakemake --forcerun send_order_email` — re-sends the per-order download emails,
+   now that the data is actually reachable on the share.
+
+Extra arguments pass straight through to `sync_run`:
+
+```bash
+PARALLEL=4 pixi run publish NovaSeqx xR101                  # 4 parallel rsync jobs (default 2)
+pixi run publish NovaSeqx xR101 /mnt/usb false              # custom dest, parallel off
+```
+
+Set the 4th argument to `false` for USB/local-disk destinations — there is no network
+latency to hide and concurrent writes to one drive only cause seek contention.
+
+Notes:
+
+- Run it **from the run directory**, so the `snakemake` steps see the right config.
+- `sync_run` is a shell function defined in `scripts/sync_run.sh` (in-repo, no dotfile
+  setup needed); `publish_run.sh` sources it. It can also be called standalone:
+  `bash scripts/sync_run.sh NovaSeqx xR101`.
+- `sync_run` rewrites `nextcloud_dir_name`/`nextcloud_dir_path` in the **mirrored** copy
+  of `snakemake_config_project.yaml` so links point at the JBOD share, and excludes
+  `.snakemake`, `Reports`, and link logs from the transfer.
+- Instrument/run casing is resolved case-insensitively (`NovaSeqx` matches `NovaSeqX`).
 
 ## Common Commands
 

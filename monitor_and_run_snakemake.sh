@@ -28,8 +28,10 @@ if [ -f "$TARGET_FILE" ]; then
   if tmux has-session -t "$LIBRARY" 2>/dev/null; then
     echo "tmux session $LIBRARY already exists. Not starting a new one."
   else
-    # Start tmux session: source .env, run snakemake under pixi, then drop into an activated shell
-    tmux new-session -d -c "$(pwd)" -s "$LIBRARY" "if [ -f ../.env ]; then source ../.env; fi; $PIXI run snakemake --profile default -p; exec $PIXI run bash"
+    # Start tmux session, then drop into an activated shell. pixi's activation
+    # loads .env (secrets) and sets SNAKEMAKE_PROFILE=profiles/default, so
+    # `pixi run all` needs no --profile flag and no manual env sourcing.
+    tmux new-session -d -c "$(pwd)" -s "$LIBRARY" "$PIXI run all; exec $PIXI run bash"
     if [ $? -ne 0 ]; then
       echo "Failed to start tmux session $LIBRARY."
     else

@@ -22,17 +22,48 @@ reportlab = "4.*"
 
 # Bioinformatics CLIs invoked by the workflow (bioconda)
 fastqc = "0.12.*"
+fastp = "0.24.*"
 flexbar = "3.5.*"
 seqtk = "1.5.*"
 fqtk = "0.3.*"
+seqkit = ">=2.13.0,<3"
+pigz = ">=2.8,<3"
+
+# `dot` for the rulegraph/dag tasks below
+graphviz = ">=12,<15"
+
+# Applied on every `pixi run` / `pixi shell`.
+[activation]
+# Source .env so the 4 required secrets are always in the environment — no
+# manual `set -a; source .env; set +a` before snakemake. See scripts/load_dotenv.sh.
+scripts = ["scripts/load_dotenv.sh"]
+
+[activation.env]
+# Snakemake reads SNAKEMAKE_PROFILE, so profiles/default applies to EVERY
+# invocation (even a bare `pixi run snakemake -n`) without passing --profile.
+# The profile is not optional: it serializes DRAGEN bcl-convert (FPGA contention)
+# and pins rerun-triggers. See profiles/default/config.yaml.
+SNAKEMAKE_PROFILE = "profiles/default"
 
 [tasks]
+# Tasks rely on SNAKEMAKE_PROFILE (set above) instead of a repeated --profile flag.
 # Full workflow
 all = "snakemake --cores 8"
 # Preview what would run
 dry-run = "snakemake -n"
+# One-time per-run setup: project config + samplesheet (copy/prefill). Idempotent.
+init = "bash scripts/init_run.sh"
+# Validate the metadata workbook before a real run
+validate = "python run_validation.py"
+# Unit tests (tests/). Plain pytest functions, run by a bundled runner so the
+# suite works without adding pytest to the environment: `pixi run test backfill`
+# limits it to matching files.
+test = "python tests/run_tests.py"
 # BCL conversion for a single lane, e.g. `pixi run convert output/lane1`
 convert = "snakemake --cores 8"
+# Publish a finished run: mirror to the share, touch outputs, resend order emails.
+# Extra args pass through to sync_run, e.g. `pixi run publish NovaSeqx xR101`.
+publish = "bash scripts/publish_run.sh"
 # Rule/dependency graphs
 rulegraph = "snakemake --rulegraph | dot -Tpng > rulegraph.png"
 dag = "snakemake --dag | dot -Tpdf > dag.pdf"

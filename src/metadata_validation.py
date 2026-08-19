@@ -650,10 +650,29 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
         if 'Masking' not in df.columns:
             continue
 
+        _is_summary_sheet = isinstance(sheet, str) and 'summary' in sheet.lower()
+        _mask_lane_col = 'Lane' if 'Lane' in df.columns else None
+        _mask_group_col = next((c for c in ('Group', 'Gr', 'group', 'gr') if c in df.columns), None)
+
         # iterate with positional index to avoid label/loc mismatches
         for pos, (ridx, row) in enumerate(df.iterrows()):
             masking_val = row.get('Masking')
             if pd.isna(masking_val) or str(masking_val).strip() == '':
+                # Flag blank Masking on populated Summary rows (real sample rows
+                # have both a lane and a group; trailing empty rows do not).
+                if _is_summary_sheet and _mask_lane_col and _mask_group_col:
+                    _lk = _norm_key(row.get(_mask_lane_col))
+                    _gk = _norm_key(row.get(_mask_group_col))
+                    if _lk is not None and _gk is not None:
+                        issues.append({
+                            'sheet': sheet,
+                            'row': int(pos),
+                            'col': 'Masking',
+                            'message': 'Missing Masking value',
+                            'lane': _lk,
+                            'group': _gk,
+                            'excel_row': int(pos) + 2
+                        })
                 continue
 
             mask_map = _mask_len_map(masking_val)

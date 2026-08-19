@@ -3,7 +3,8 @@ new tmux session named after the run's library.
 
 The monitor_and_run_snakemake.sh script already handles everything: it reads data_dir and
 library_name from snakemake_config_project.yaml, waits for CopyComplete.txt in data_dir,
-and launches `pixi run snakemake --profile default -p` inside a tmux session.
+and launches `pixi run all` inside a tmux session. pixi activation loads .env and sets
+SNAKEMAKE_PROFILE=profiles/default, so no --profile flag or manual env sourcing is needed.
 
 1. Ensure 'data_dir' and 'library_name' are set in snakemake_config_project.yaml, e.g.:
      data_dir: /staging/nextcloud/Miseqi100/20260626_SH00564_0020_ASC2231455-SC3
