@@ -15,14 +15,15 @@ from reportlab.lib import colors
 from reportlab.lib.colors import HexColor
 
 def build_remote_name(order_id=None, project_name=None):
-    """Build a unique, meaningful rclone remote name from order_id and project_name.
+    """Build an rclone remote name that matches the shared destination folder.
 
-    Combines the two identifiers and sanitizes the result so it is a valid rclone
-    remote name (only alphanumerics, underscores, and hyphens are kept). Falls back
-    to 'nextcloud' if neither identifier is provided.
+    The project name is the name of the folder shared on Nextcloud, so the remote
+    is named after it to keep `rclone copy <remote>:` and the destination folder
+    obviously related. Falls back to the order id, then to 'nextcloud'. The result
+    is sanitized so it is a valid rclone remote name (only alphanumerics,
+    underscores, and hyphens are kept).
     """
-    parts = [str(p).strip() for p in (order_id, project_name) if p and str(p).strip()]
-    raw = "_".join(parts)
+    raw = next((str(p).strip() for p in (project_name, order_id) if p and str(p).strip()), "")
     # Replace any run of disallowed characters with a single underscore.
     name = re.sub(r"[^0-9A-Za-z_-]+", "_", raw).strip("_-")
     return name or "nextcloud"
@@ -101,7 +102,7 @@ def generate_download_instructions_pdf(output_path, order_id=None, project_name=
     elements.append(Paragraph("<b>Note:</b> The share token is the trailing string in the project link (the part after <code>/s/</code>). For example, in https://precision.biochem.uci.edu/s/eXampLeToKEN the share token is <b>eXampLeToKEN</b>.", body_style))
     elements.append(Paragraph("<b>Step 1 &mdash; Create the WebDAV remote (one-time setup).</b> Replace &lt;share-token&gt; with your token. The endpoint is the public share's WebDAV URL, the username is the share token, and the password is left blank:", body_style))
     rclone_config_cmds = (
-        "rclone config create {remote} \\\n"
+        "rclone config create {remote} webdav \\\n"
         "    url=https://precision.biochem.uci.edu/public.php/webdav/ \\\n"
         "    vendor=owncloud \\\n"
         "    user=<share-token> \\\n"
