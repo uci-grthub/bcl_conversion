@@ -1063,9 +1063,18 @@ rule report_order_id:
             f.write(f"\nConsolidated {len(all_md5s)} md5 entries into {md5_file}\n")
 
         # Always generate Download Instructions PDF so rule outputs are complete,
-        # even when project discovery returns an empty set.
+        # even when project discovery returns an empty set.  This runs after the
+        # per-project loop and overwrites the copy generate_report.py already wrote,
+        # so it has to pass the same naming arguments or the rclone remote in the PDF
+        # falls back to the generic "nextcloud".  The remote is named after the folder
+        # shared on Nextcloud, which is the renamed project name; an order holding
+        # several projects has no single folder to name, so the order id is used.
         pdf_file = os.path.join(report_dir, "Download_Instructions.pdf")
-        pdf_cmd = [sys.executable, "src/generate_download_instructions_pdf.py", pdf_file]
+        pdf_project = projects[0] if len(projects) == 1 else ""
+        pdf_cmd = [
+            sys.executable, "src/generate_download_instructions_pdf.py",
+            pdf_file, str(order_id or ""), pdf_project,
+        ]
         pdf_result = subprocess.run(pdf_cmd, capture_output=True, text=True)
         with open(log_file, 'a') as f:
             f.write("\n=== Download Instructions PDF generation ===\n")
