@@ -493,9 +493,52 @@ _dest_runinfo = "src/RunInfo_nn.xml"
 if not os.path.exists(_dest_runinfo) or (os.path.exists(_src_runinfo) and os.path.getmtime(_src_runinfo) > os.path.getmtime(_dest_runinfo)):
     fix_runinfo_reverse_complement()
 
+# Invalidate stale barcode-validation artifacts here, at PARSE time, before the DAG is
+# built.
+#
+# validate_barcode_hamming_distances declares SampleSheet_{cid}_validated.csv as an
+# output, and takes the sheet it validates as an ancient() input, so a regenerated sheet
+# does not on its own schedule a re-validation. generate_samplesheets used to delete the
+# stale artifacts from inside its rule body, which is too late: by then the DAG is built,
+# the scheduler has seen the validated sheet present and queued no validation job, and
+# bcl_convert goes on to wait out --latency-wait on an input that was removed under it.
+# Deleting before generation makes the missing output visible to the scheduler instead.
+def _samplesheet_digest(path):
+    import hashlib
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as _fh:
+        return hashlib.sha256(_fh.read()).hexdigest()
+
+# Spawned job subprocesses re-parse this file while the workflow is running and must
+# never delete a running job's inputs. They regenerate identical sheets from the same
+# workbook, so nothing would compare as changed anyway; the guard makes that a property
+# of the code rather than of the timing.
+_IS_SPAWNED_JOB = any(
+    a == "subprocess" and i and sys.argv[i - 1] == "--mode"
+    for i, a in enumerate(sys.argv)
+)
+_SHEET_DIGESTS_BEFORE = {
+    _c["id"]: _samplesheet_digest(f"results/{_c['id']}/SampleSheet_{_c['id']}.csv")
+    for _c in (LANE_CONFIGS or [])
+}
+
 # Generate sample sheets during parse time (needed for function calls below)
 # Rule generate_samplesheets will also ensure they're created as explicit dependencies
 SAMPLE_SHEETS_DICT = generate_lane_samplesheets(METADATA_FILE, LANE_CONFIGS, PROJECT_LOOKUP, MASKING_LOOKUP, "results", "src/RunInfo_nn.xml", LIBRARY)
+
+if not _IS_SPAWNED_JOB:
+    for _cid, _digest_before in _SHEET_DIGESTS_BEFORE.items():
+        if _digest_before == _samplesheet_digest(f"results/{_cid}/SampleSheet_{_cid}.csv"):
+            continue
+        for _stale in (
+            f"results/{_cid}/SampleSheet_{_cid}_validated.csv",
+            f"logs/{_cid}/barcode_hamming_validation_{_cid}.done",
+            f"logs/{_cid}/barcode_hamming_validation_{_cid}.txt",
+        ):
+            if os.path.exists(_stale):
+                os.remove(_stale)
+                print(f"Invalidated stale validation artifact: {_stale}", file=sys.stderr)
 
 # print(SAMPLE_SHEETS_DICT)
 
@@ -2817,18 +2860,15 @@ rule generate_samplesheets:
                     old_hash = old_hashes.get(config_id)
                     
                     if new_hash != old_hash:
-                        # Content changed, update done marker and invalidate stale validated sheet
+                        # Content changed, update done marker. The stale validated sheet
+                        # and hamming-validation markers are NOT removed here: this runs
+                        # after the DAG was built, so the removal would be invisible to
+                        # the scheduler and would strip bcl_convert of an input it is
+                        # already queued to consume. That invalidation now happens at
+                        # parse time, next to the parse-time sheet generation.
                         os.makedirs(os.path.dirname(done_marker), exist_ok=True)
                         open(done_marker, 'w').close()
                         print(f"Updated done marker for {config_id} (content changed)")
-                        for stale in [
-                            f"results/{config_id}/SampleSheet_{config_id}_validated.csv",
-                            f"logs/{config_id}/barcode_hamming_validation_{config_id}.done",
-                            f"logs/{config_id}/barcode_hamming_validation_{config_id}.txt",
-                        ]:
-                            if os.path.exists(stale):
-                                os.remove(stale)
-                                print(f"Removed stale validation artifact: {stale}")
                     else:
                         # Content unchanged, only touch if done marker doesn't exist
                         if not os.path.exists(done_marker):
