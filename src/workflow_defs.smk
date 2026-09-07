@@ -1473,7 +1473,101 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 ss_data[c] = ""
 
         ss_data = ss_data[cols]
-        
+
+        # A blank OverrideCycles makes DRAGEN reject the whole sheet ("Sample N has no
+        # value in column 'OverrideCycles' of section [BCLConvert_Data]"), but only once
+        # bcl_convert actually runs — potentially hours into a run, after the lanes ahead
+        # of it in bcl_convert_order have finished. It means the sample's (Lane, Group)
+        # has no Masking entry in the workbook Summary sheet, and the usual cause is a
+        # stray group-assignment block in a sample tab: Group is forward-filled, so a
+        # block sitting one row too high captures the rows above it and invents a
+        # (Lane, Group) pair that Summary never defines.
+        #
+        # Checked here rather than where Masking is assigned: flexbar and fqtk rows are
+        # dropped from ss_data above and are demultiplexed post-hoc, so only the rows
+        # that DRAGEN will actually read are required to carry OverrideCycles.
+        _blank_oc = [
+            i for i, oc in enumerate(ss_data['OverrideCycles'].fillna('').astype(str))
+            if not oc.strip()
+        ]
+        if _blank_oc:
+            _has_group = 'Group' in lane_df.columns
+            _offenders = [
+                f"{ss_data['Sample_ID'].iloc[i]} "
+                f"(Lane {ss_data['Lane'].iloc[i]}, "
+                f"Group {lane_df['Group'].iloc[i] if _has_group else '?'}, "
+                f"Project {ss_data['Sample_Project'].iloc[i]})"
+                for i in _blank_oc
+            ]
+            raise ValueError(
+                f"{config_id}: {len(_blank_oc)} sample(s) have no OverrideCycles because "
+                f"their (Lane, Group) has no Masking row in the Summary sheet of "
+                f"{metadata_file}. Refusing to write a SampleSheet that DRAGEN will "
+                f"reject. Offending samples: " + "; ".join(_offenders) + ". Either add "
+                f"the missing Summary row(s), or correct the Lane/group assignment block "
+                f"in the sample tab so these rows inherit the right group."
+            )
+
+        # A Sample_Project that Summary does not list for this lane gets no
+        # PROJECT_RENAME_MAP entry (that map is built purely from PROJECT_LOOKUP, keyed
+        # by the Summary (Lane, Group) rows). bcl_project_done then leaves the folder
+        # under its raw project name, and project_link dies with an empty order_id --
+        # in the last rule of the workflow, after every lane has been demultiplexed.
+        #
+        # Same root cause as the blank-OverrideCycles case above: a lane whose
+        # group-assignment block starts below the lane's first sample row leaves those
+        # rows inheriting the previous lane's block, and with it the previous lane's
+        # order id and project name. That misassignment is invisible while neighbouring
+        # lanes share an order and only surfaces at the first lane that does not.
+        #
+        # Only DRAGEN rows are checked: flexbar and fqtk samples were dropped from
+        # ss_data above and are delivered through their own post-hoc paths, which never
+        # consult the rename map.
+        def _norm_proj(p):
+            return str(p).strip().replace(' ', '_')
+
+        _lane_projects = {}
+        for (_l, _g), _p in (project_lookup or {}).items():
+            try:
+                _lane_projects.setdefault(int(_l), set()).add(_norm_proj(_p))
+            except (TypeError, ValueError):
+                continue
+
+        _orphans = []
+        for _i in range(len(ss_data)):
+            try:
+                _l = int(float(ss_data['Lane'].iloc[_i]))
+            except (TypeError, ValueError):
+                continue
+            # A lane missing from Summary altogether has no masking either, so the
+            # OverrideCycles check above has already raised; skip rather than double-report.
+            if _l not in _lane_projects:
+                continue
+            if _norm_proj(ss_data['Sample_Project'].iloc[_i]) not in _lane_projects[_l]:
+                _orphans.append(_i)
+
+        if _orphans:
+            _has_group = 'Group' in lane_df.columns
+            _detail = [
+                f"{ss_data['Sample_ID'].iloc[_i]} "
+                f"(Lane {ss_data['Lane'].iloc[_i]}, "
+                f"Group {lane_df['Group'].iloc[_i] if _has_group else '?'}, "
+                f"Project {ss_data['Sample_Project'].iloc[_i]})"
+                for _i in _orphans
+            ]
+            _expected = ", ".join(sorted(
+                _lane_projects.get(int(float(ss_data['Lane'].iloc[_orphans[0]])), set())
+            ))
+            raise ValueError(
+                f"{config_id}: {len(_orphans)} sample(s) carry a Sample_Project that the "
+                f"Summary sheet of {metadata_file} does not define for their lane, so the "
+                f"project folder would never be renamed and project_link would fail at the "
+                f"end of the run. Offending samples: " + "; ".join(_detail) + ". "
+                f"Projects Summary defines for this lane: {_expected or '(none)'}. Either "
+                f"add the missing Summary row(s), or correct the Lane/group assignment "
+                f"block in the sample tab so these rows inherit the right group."
+            )
+
         outfile = os.path.join(out_dir, config_id, f"SampleSheet_{config_id}.csv")
         os.makedirs(os.path.join(out_dir, config_id), exist_ok=True)
         with open(outfile, 'w') as f:
