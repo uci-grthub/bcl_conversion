@@ -5,9 +5,14 @@
 # Why this works: the variants for this run differ only in the R2 Y-length
 # (Y28;I10;I10;Y{n}N{91-n}). R1/I1/I2 and the demultiplex are identical, so a
 # shorter-R2 FASTQ is an exact prefix of the long-R2 FASTQ already produced by
-# the main run. Each variant therefore reuses the main run's .output/<lane> with
-# R2 truncated by seqtk, and runs the unmodified pipeline in its own working
+# the main run. Each variant therefore reuses the main run's reads with R2
+# truncated by seqtk, and runs the unmodified pipeline in its own working
 # directory (snakemake -d) for QC, plots, md5s, links and the order report.
+#
+# Those reads come from .output/<lane> while they are still there, and from the
+# delivered output/<lane>/<renamed project> folders once bcl_project_done has
+# moved them -- which it has, by the time the main run is finished enough for
+# this script to be allowed to start. See resolve_fastq_sources.
 #
 # Usage (after the main run has finished the lane):
 #     pixi run masking-sweep              # variants 39 22 17
@@ -60,17 +65,121 @@ DATA_DIR="$(read_cfg data_dir)"
 MAIN_OUT="$REPO/.output/$CONFIG_ID"
 MAIN_RC_OUT="$REPO/.output_rc/$CONFIG_ID"
 
+# Locate the FASTQs belonging to one conversion tree, emitting
+# "<absolute source path>\t<path relative to the tree root>" per file.
+#
+# The staging tree is only the FIRST place to look. bcl_project_done MOVES
+# .output/<lane>/<Sample_Project> into output/<lane>/<renamed project>, so once
+# the main run has finished the lane -- which is exactly the precondition this
+# script enforces -- .output/<lane> holds Reports/, Logs/ and the dragen JSONs
+# and not one read. Fall back to the delivered folders and rebuild the
+# pre-rename layout, because that is the layout the variant's own
+# bcl_project_done will go looking for.
+resolve_fastq_sources() {
+    local src="$1" orientation="$2"
+    python - "$REPO" "$CONFIG_ID" "$src" "$orientation" <<'PY'
+import csv, json, os, re, sys
+
+repo, config_id, src, want = sys.argv[1:5]
+
+FQ = re.compile(r'^(?P<sample>.+)_S\d+_L\d+_[RI][12]_001\.fastq\.gz$')
+
+def emit(pairs):
+    for path, rel in pairs:
+        print(f"{path}\t{rel}")
+
+# 1. The staging tree still has its projects (main run not yet past
+#    bcl_project_done, or a hand-staged tree). Use it verbatim.
+staged = []
+for root, _dirs, files in os.walk(src):
+    for name in files:
+        if name.endswith('.fastq.gz'):
+            full = os.path.join(root, name)
+            staged.append((full, os.path.relpath(full, src)))
+if staged:
+    emit(sorted(staged))
+    raise SystemExit(0)
+
+# 2. Recover them from the delivered folders instead. The delivered folder name
+#    is the renamed one, so map each FASTQ back to its Sample_Project through the
+#    main run's renaming map rather than trying to invert the rename here.
+mapping_path = os.path.join(repo, 'results', config_id, f'renaming_map_{config_id}.csv')
+if not os.path.exists(mapping_path):
+    sys.exit(f"FAIL: {src} holds no FASTQs and {mapping_path} is missing, so the "
+             f"delivered folders cannot be mapped back to their Sample_Project.")
+
+sample_project = {}
+with open(mapping_path, newline='') as fh:
+    for row in csv.DictReader(fh):
+        sample = (row.get('Sample_ID') or '').strip()
+        project = (row.get('Sample_Project') or '').strip().replace(' ', '_')
+        if sample and project:
+            sample_project[sample] = project
+
+# A delivered folder carries whichever orientation won for its project, so it is
+# only a legitimate source for the seed of that same orientation. Seeding an RC
+# folder into .output (or the reverse) would silently hand the variant reads with
+# flipped indexes.
+try:
+    with open(os.path.join(repo, 'logs', config_id,
+                           f'orientation_decision_{config_id}.json')) as fh:
+        decision = json.load(fh) or {}
+except (OSError, ValueError):
+    decision = {}
+
+def won(*names):
+    for name in names:
+        value = decision.get(name)
+        if value:
+            return 'rc' if str(value).startswith('rc') else 'original'
+    return 'original'
+
+delivered_root = os.path.join(repo, 'output', config_id)
+recovered, skipped = [], set()
+for folder in sorted(os.listdir(delivered_root) if os.path.isdir(delivered_root) else []):
+    folder_path = os.path.join(delivered_root, folder)
+    if not os.path.isdir(folder_path):
+        continue
+    for name in sorted(os.listdir(folder_path)):
+        if not name.endswith('.fastq.gz'):
+            continue
+        match = FQ.match(name)
+        if not match:
+            sys.exit(f"FAIL: cannot parse a Sample_ID out of "
+                     f"{os.path.join(folder_path, name)}")
+        project = sample_project.get(match.group('sample'))
+        if not project:
+            sys.exit(f"FAIL: {match.group('sample')} ({name}) is not listed in "
+                     f"{mapping_path}, so its Sample_Project is unknown.")
+        if won(project, folder) != want:
+            skipped.add(folder)
+            continue
+        recovered.append((os.path.join(folder_path, name),
+                          os.path.join(project, name)))
+
+if not recovered:
+    detail = (f" ({len(skipped)} delivered folder(s) hold the other orientation: "
+              f"{', '.join(sorted(skipped))})" if skipped else "")
+    sys.exit(f"FAIL: found no {want}-orientation FASTQs in {src} or under "
+             f"{delivered_root}{detail}.")
+
+emit(recovered)
+PY
+}
+
 # Copy one finished DRAGEN output tree into a variant, truncating R2 to $3 bases.
 # R2 at a shorter mask is an exact prefix of the long-mask R2, so this reproduces
 # what DRAGEN would have written for that OverrideCycles. R1/I1/I2 are unchanged
-# and hardlinked when the filesystem allows it.
+# and hardlinked when the filesystem allows it. $4 is the orientation this tree
+# represents ("original" for .output, "rc" for .output_rc).
 seed_conversion_dir() {
-    local src="$1" dst="$2" keep="$3"
+    local src="$1" dst="$2" keep="$3" orientation="${4:-original}"
     mkdir -p "$dst"
     rsync -a --delete --exclude '*.fastq.gz' --exclude '.done' "$src/" "$dst/"
     echo "Seeding $(basename "$(dirname "$dst")")/$(basename "$dst") (R2 -> ${keep} bp)..."
-    while IFS= read -r -d '' fq; do
-        local rel="${fq#$src/}"
+    local seeded=0
+    while IFS=$'\t' read -r fq rel; do
+        [ -n "$fq" ] || continue
         local out="$dst/$rel"
         mkdir -p "$(dirname "$out")"
         rm -f "$out"
@@ -79,15 +188,38 @@ seed_conversion_dir() {
                 seqtk trimfq -L "$keep" "$fq" | pigz -p "$CORES" > "$out"
                 ;;
             *)
+                # R1/I1/I2 are byte-identical across variants, so hardlink them.
+                # Under the delivery fallback that link points at a customer file;
+                # safe because nothing in the workflow rewrites a FASTQ in place
+                # (normalize_project_fastq_names renames, and no-ops for 10x).
                 ln "$fq" "$out" 2>/dev/null || cp -p "$fq" "$out"
                 ;;
         esac
-    done < <(find "$src" -name '*.fastq.gz' -print0)
+        seeded=$((seeded + 1))
+    done < <(resolve_fastq_sources "$src" "$orientation")
+
+    # An empty seed is the worst possible outcome, and the quietest: `touch .done`
+    # right below tells snakemake the conversion is complete, so the variant runs
+    # the whole workflow against no reads, creates an empty delivery folder, mails
+    # an order report, and only falls over at fastp 20 jobs later.
+    if [ "$seeded" -eq 0 ]; then
+        echo "ERROR: seeded no FASTQs into $dst — refusing to mark the conversion done." >&2
+        exit 1
+    fi
+    echo "  seeded $seeded FASTQ file(s)."
 }
 
 if [ ! -f "$MAIN_OUT/.done" ]; then
     echo "ERROR: $MAIN_OUT/.done missing — the main run has not finished $CONFIG_ID yet."
     echo "       The sweep reuses that conversion; run it after the main run."
+    exit 1
+fi
+
+# The reads themselves may live in either tree by now, so require that at least
+# one of them actually has some before building anything.
+if [ "$(find "$MAIN_OUT" "$REPO/output/$CONFIG_ID" -name '*.fastq.gz' -print -quit 2>/dev/null | wc -l)" -eq 0 ]; then
+    echo "ERROR: no FASTQs under $MAIN_OUT or $REPO/output/$CONFIG_ID."
+    echo "       Nothing to seed the variants from."
     exit 1
 fi
 
@@ -194,7 +326,7 @@ PY
 
     # ---- 2. seed .output from the main run, truncating R2 ------------------
     SEED="$WORK/.output/$CONFIG_ID"
-    seed_conversion_dir "$MAIN_OUT" "$SEED" "$N"
+    seed_conversion_dir "$MAIN_OUT" "$SEED" "$N" original
 
     # ---- 3. mark the conversion complete ----------------------------------
     touch "$SEED/.done"
@@ -221,7 +353,7 @@ PY
             exit 1
         fi
         echo "RC suspects present; seeding .output_rc from the main run."
-        seed_conversion_dir "$MAIN_RC_OUT" "$RC_SEED" "$N"
+        seed_conversion_dir "$MAIN_RC_OUT" "$RC_SEED" "$N" rc
     else
         # No suspects: bcl_convert_rc creates the directory and returns without
         # touching DRAGEN. Nothing to copy.
@@ -245,7 +377,7 @@ PY
         continue
     fi
 
-    # ---- 5. full pipeline for this variant --------------------------------
+    # ---- 6. full pipeline for this variant --------------------------------
     snakemake -d "$WORK" --cores "$CORES"
     echo "variant $TAG complete: $WORK"
 done
