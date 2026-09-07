@@ -48,7 +48,7 @@ SNAKEMAKE_PROFILE = "profiles/default"
 [tasks]
 # Tasks rely on SNAKEMAKE_PROFILE (set above) instead of a repeated --profile flag.
 # Full workflow
-all = "snakemake --cores 8"
+all = "bash src/run_snakemake_logged.sh"
 # Preview what would run
 dry-run = "snakemake -n"
 # One-time per-run setup: project config + samplesheet (copy/prefill). Idempotent.
