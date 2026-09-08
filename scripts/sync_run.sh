@@ -96,11 +96,21 @@ sync_run() {
     # links among files it sees in a single run. dedupe_mirror.py collapses the
     # rest afterwards, against the delivery those variants were seeded from.
     echo "[sync_run] syncing remaining run files (metadata, results, sweeps, logs, configs)"
+    #
+    # The Reports excludes are ANCHORED (leading /). An unanchored 'Reports' matches
+    # a directory of that name at any depth, which also stripped every
+    # output/<lane>/Reports/ under sweeps/ -- the DRAGEN demux reports. The run's own
+    # output/ survived only because the parallel branch above transfers it with no
+    # excludes at all; the sweeps have no such reprieve, and generate_report.py then
+    # found no Demultiplex_Stats.csv and printed "N/A" for every sample's paired
+    # reads. Only the top-level order reports are meant to be excluded here, for the
+    # run and for each variant, because publish rebuilds those in the mirror.
     if ! rsync -aWH --info=progress2 --stats -h \
         --exclude '.snakemake' \
         --exclude 'logs/*link*' \
         --exclude 'logs/**/*link*' \
-        --exclude 'Reports' \
+        --exclude '/Reports' \
+        --exclude '/sweeps/*/Reports' \
         "$src/" "$dest/"
     then
         echo "[sync_run] ERROR: rsync of the remaining run files failed" >&2

@@ -172,7 +172,11 @@ else
             say "WARNING: --touch failed for $sweep; skipping its email"
             continue
         fi
-        if ! snakemake -d "$sweep" -p --show-failed-logs --forcerun send_order_email; then
+        # report_order_id is forced alongside the email: --touch above stamps an
+        # existing index.html current, so without this a variant whose report was
+        # built from incomplete data would simply be re-mailed unchanged.
+        if ! snakemake -d "$sweep" -p --show-failed-logs \
+                --forcerun report_order_id send_order_email; then
             say "WARNING: send_order_email failed for $sweep"
         fi
     done
