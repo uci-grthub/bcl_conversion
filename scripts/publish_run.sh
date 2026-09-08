@@ -143,6 +143,15 @@ t1=$(date +%s)
 say "step 4/6 done in $(elapsed "$t0" "$t1")"
 
 step "step 5/6: snakemake --forcerun send_order_email (in $SYNC_RUN_DEST)"
+# send_order_email short-circuits on Reports/order_*/.email_receipt. That receipt
+# exists so a bare `snakemake` on a finished run stops re-mailing every order:
+# the rule sits behind the pick_orientation checkpoint and is scheduled on every
+# DAG build whether or not it has anything to do, and mail is not idempotent.
+# Publishing is the deliberate case, so clear the receipts first -- otherwise
+# --forcerun would run the rule and the rule would decline to send. Step 6 clears
+# each variant's for the same reason.
+say "clearing email receipts so --forcerun really sends"
+rm -f Reports/order_*/.email_receipt
 say "pending work after touch:"
 snakemake -n --quiet rules --forcerun send_order_email 2>&1 | sed 's/^/    /'
 t0=$(date +%s)
@@ -172,6 +181,7 @@ else
             say "WARNING: --touch failed for $sweep; skipping its email"
             continue
         fi
+        rm -f "$sweep"/Reports/order_*/.email_receipt
         # report_order_id is forced alongside the email: --touch above stamps an
         # existing index.html current, so without this a variant whose report was
         # built from incomplete data would simply be re-mailed unchanged.
