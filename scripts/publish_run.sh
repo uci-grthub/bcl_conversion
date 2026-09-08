@@ -5,12 +5,13 @@
 #   pixi run publish NovaSeqx xR101
 #   PARALLEL=4 pixi run publish NovaSeqx xR101 /mnt/usb false   # extra sync_run args pass through
 #
-# Steps (3 and 4 run IN THE MIRROR, not in the source run dir):
+# Steps (3, 4 and 5 run IN THE MIRROR, not in the source run dir):
 #   1. sync_run <instrument> <run_id> [dest] [parallel]  -- rsync mirror to share
 #   2. verify_mirror.py              -- every FASTQ in the mirror's md5sums.txt is
 #                                       present and matches the source size
-#   3. snakemake --touch all         -- mark outputs current (rsync bumps mtimes)
-#   4. snakemake -n --forcerun send_order_email  -- preview the re-send
+#   3. dedupe_mirror.py --apply      -- hardlink byte-identical FASTQs together
+#   4. snakemake --touch all         -- mark outputs current (rsync bumps mtimes)
+#   5. snakemake --forcerun send_order_email  -- re-send the per-order emails
 #
 # Step 2 exists because step 3 is dangerous on an incomplete mirror: --touch
 # stamps outputs current WITHOUT reading them, so a dropped or truncated transfer
@@ -26,9 +27,14 @@
 # so project_link/report_order_id/send_order_email still rebuild against the
 # Jbod2 share.
 #
-# Step 3 is a dry run on purpose: emails are irreversible. Review the plan, then
-# run the real send from the mirror:
-#   cd <dest> && snakemake --cores 8 --forcerun send_order_email
+# Step 3 runs after step 2, never before: it rewrites directory entries, and there
+# is no point doing that to a mirror that has not been shown to be complete. It is
+# the counterpart to the -H rsync only gets in sync_run's sequential pass -- that
+# keeps a masking sweep's variants linked to each other, and this links them to the
+# delivery they were seeded from, which arrives in a different rsync invocation.
+# Set SKIP_DEDUPE=1 to leave the mirror expanded.
+#
+# Step 5 really sends: one order email per order in the mirror, sweeps included.
 set -euo pipefail
 
 # Everything below is echoed to the terminal AND appended to a publish log in
@@ -71,7 +77,7 @@ fi
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-step "step 1/4: rsync mirror to share"
+step "step 1/5: rsync mirror to share"
 say "args: $*"
 say "PARALLEL=${PARALLEL:-2}"
 t0=$(date +%s)
@@ -79,14 +85,14 @@ SYNC_RUN_DEST=""
 SYNC_RUN_SRC=""
 sync_run "$@"
 t1=$(date +%s)
-say "step 1/4 done in $(elapsed "$t0" "$t1")"
+say "step 1/5 done in $(elapsed "$t0" "$t1")"
 
 if [[ -z "$SYNC_RUN_DEST" || ! -d "$SYNC_RUN_DEST" ]]; then
     echo "ERROR: sync_run did not report a destination directory" >&2
     exit 1
 fi
 
-step "step 2/4: verify mirror against source (in $SYNC_RUN_DEST)"
+step "step 2/5: verify mirror against source (in $SYNC_RUN_DEST)"
 say "checks every FASTQ listed in the mirror's md5sums.txt files; must pass BEFORE --touch"
 t0=$(date +%s)
 VERIFY_ARGS=("$SYNC_RUN_DEST")
@@ -101,27 +107,43 @@ if [[ "${VERIFY_MD5:-0}" == "1" ]]; then
 fi
 python3 "$REPO_DIR/scripts/verify_mirror.py" "${VERIFY_ARGS[@]}"
 t1=$(date +%s)
-say "step 2/4 done in $(elapsed "$t0" "$t1")"
+say "step 2/5 done in $(elapsed "$t0" "$t1")"
 
 # Already inside the pixi env (snakemake + SNAKEMAKE_PROFILE on PATH/env);
 # SNAKEMAKE_PROFILE is relative, so it resolves to the mirror's own profile.
 cd "$SYNC_RUN_DEST"
 say "mirror size: $(du -sh . 2>/dev/null | cut -f1)"
 
-step "step 3/4: snakemake --touch all (in $SYNC_RUN_DEST)"
+step "step 3/5: hardlink byte-identical FASTQs (in $SYNC_RUN_DEST)"
+if [[ "${SKIP_DEDUPE:-0}" == "1" ]]; then
+    say "SKIP_DEDUPE=1: leaving the mirror expanded"
+else
+    say "uses the md5sums.txt already in each delivered project; reads no FASTQ data"
+    t0=$(date +%s)
+    # Not fatal: a mirror that failed to deduplicate is merely larger than it needs
+    # to be, and the emails in step 5 are the part the customer is waiting on.
+    if ! python3 "$REPO_DIR/scripts/dedupe_mirror.py" "$SYNC_RUN_DEST" --apply --quiet; then
+        say "WARNING: dedupe reported problems (see above); mirror is intact but not fully linked"
+    fi
+    t1=$(date +%s)
+    say "step 3/5 done in $(elapsed "$t0" "$t1")"
+    say "mirror size after dedupe: $(du -sh . 2>/dev/null | cut -f1)"
+fi
+
+step "step 4/5: snakemake --touch all (in $SYNC_RUN_DEST)"
 say "stamps synced outputs current; unsynced ones (Reports/, logs/*link*) warn and stay pending"
 t0=$(date +%s)
 snakemake --touch --show-failed-logs all
 t1=$(date +%s)
-say "step 3/4 done in $(elapsed "$t0" "$t1")"
+say "step 4/5 done in $(elapsed "$t0" "$t1")"
 
-step "step 4/4: snakemake --forcerun send_order_email (in $SYNC_RUN_DEST)"
+step "step 5/5: snakemake --forcerun send_order_email (in $SYNC_RUN_DEST)"
 say "pending work after touch:"
 snakemake -n --quiet rules --forcerun send_order_email 2>&1 | sed 's/^/    /'
 t0=$(date +%s)
 snakemake -p --show-failed-logs --forcerun send_order_email
 t1=$(date +%s)
-say "step 4/4 done in $(elapsed "$t0" "$t1")"
+say "step 5/5 done in $(elapsed "$t0" "$t1")"
 
 say "emails sent this run:"
 find Reports -name email_sent.done -newermt "@$PUBLISH_START" -printf '    %p\n' 2>/dev/null | sort

@@ -54,6 +54,7 @@ sync_run() {
     echo "[sync_run] dest:     $dest"
     echo "[sync_run] parallel: $parallel_enabled (PARALLEL=$parallel)"
     echo "[sync_run] excluded from mirror (rebuilt there): .snakemake, Reports, logs/*link*"
+    echo "[sync_run] hardlinks preserved within the sequential pass (-H); across passes, see dedupe_mirror.py"
 
     if [[ "$parallel_enabled" != "false" && -d "$src/output" ]]; then
         mkdir -p "$dest/output"
@@ -86,9 +87,16 @@ sync_run() {
         echo "[sync_run] output/ transfers complete"
     fi
 
-    # Everything else (small, recreatable metadata) in a single pass.
-    echo "[sync_run] syncing remaining run files (metadata, results, logs, configs)"
-    if ! rsync -aW --info=progress2 --stats -h \
+    # Everything else (small, recreatable metadata) in a single pass -- plus
+    # sweeps/, which is not small: a masking sweep hardlinks R1/I1/I2 into each
+    # variant because only R2 differs between maskings. -H keeps those shared here
+    # instead of writing one full copy per variant (209G -> 96.5G for three
+    # variants of one lane). It cannot reach across to output/, which the parallel
+    # branch above transfers in separate rsync invocations -- rsync only preserves
+    # links among files it sees in a single run. dedupe_mirror.py collapses the
+    # rest afterwards, against the delivery those variants were seeded from.
+    echo "[sync_run] syncing remaining run files (metadata, results, sweeps, logs, configs)"
+    if ! rsync -aWH --info=progress2 --stats -h \
         --exclude '.snakemake' \
         --exclude 'logs/*link*' \
         --exclude 'logs/**/*link*' \
