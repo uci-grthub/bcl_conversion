@@ -119,6 +119,15 @@ sync_run() {
         grep -E '^nextcloud_dir_(name|path):' "$cfg" | sed 's/^/[sync_run]   /'
     fi
 
+    # rsync copies a symlink verbatim, target string and all, so a masking sweep's
+    # Snakefile/src/scripts/profiles links in the mirror still point into the source
+    # run directory. They dangle the moment staging is cleared, which breaks any
+    # attempt to re-run snakemake inside a mirrored variant. Repoint them at the
+    # mirror, relatively, so the share is self-contained.
+    echo "[sync_run] repointing sweep symlinks at the mirror"
+    bash "$(dirname "${BASH_SOURCE[0]}")/relink_mirror.sh" "$dest" --apply \
+        | sed 's/^/[sync_run]   /'
+
     # Publish the resolved source and destination to the caller (publish_run.sh
     # runs the post-sync snakemake steps in the mirror, not in the source run dir,
     # and verifies the mirror against the source before touching anything).

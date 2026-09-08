@@ -64,6 +64,10 @@ convert = "snakemake --cores 8"
 # Publish a finished run: mirror to the share, touch outputs, resend order emails.
 # Extra args pass through to sync_run, e.g. `pixi run publish NovaSeqx xR101`.
 publish = "bash scripts/publish_run.sh"
+# Repoint a mirrored run's sweep symlinks (Snakefile, src, scripts, ...) at the
+# mirror itself, so they survive the staging run being deleted. Dry run by
+# default: `pixi run relink <mirror_dir>`, then add `--apply`.
+relink = "bash scripts/relink_mirror.sh"
 # Collapse byte-identical FASTQs in the published mirror into hardlinks, using
 # the md5sums.txt the run already wrote (no re-reading the data). rsync is not
 # given -H, so hardlinks shared in the source arrive as separate copies.
