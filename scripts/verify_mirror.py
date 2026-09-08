@@ -9,7 +9,9 @@ md5sums.txt is never recomputed. The result is a share link to a short FASTQ.
 
 This script closes that gap using the checksums the conversion run already wrote:
 every `output/*/*/md5sums.txt` in the mirror lists the files that project is
-supposed to contain.
+supposed to contain. That listing is itself checked for truncation first -- it
+is written by a shell redirect and so is legitimately empty while the checksum
+job runs, and a short one would otherwise shrink this whole check in silence.
 
     python3 scripts/verify_mirror.py <mirror_dir>                 # existence + size
     python3 scripts/verify_mirror.py <mirror_dir> --src <run_dir> # also compare sizes to the source
@@ -50,13 +52,74 @@ def md5_of(path, chunk=8 * 1024 * 1024):
     return digest.hexdigest()
 
 
+def fastqs_on_disk(project_dir):
+    """The FASTQs actually sitting in a project directory.
+
+    calculate_md5sums records `find . -name '*.fastq.gz'` run from inside the
+    project, so a finished md5sums.txt has exactly one line per file here.
+    """
+    return {name for name in os.listdir(project_dir) if name.endswith(".fastq.gz")}
+
+
+def check_md5sums_file(md5_path, rel_dir, project_dir, entries, src, problems):
+    """Decide whether md5sums.txt itself is trustworthy before believing its contents.
+
+    calculate_md5sums writes with `find ... | xargs md5sum | sort > md5sums.txt`,
+    so the shell truncates the file the instant the rule starts and it stays
+    short until the last md5sum returns -- minutes, on a 100 GB project. A run
+    killed in that window (or a publish interrupted mid-flight) leaves a 0-byte
+    or partial file on disk, and `snakemake --touch` then stamps it current
+    without reading it. Every other check in this script is driven BY this file,
+    so a short one silently shrinks the whole verification instead of failing
+    it: the missing FASTQs are simply never looked for.
+
+    Size and line count are the only things that separate that from a healthy
+    file, since a partial md5sums.txt is perfectly well-formed.
+
+    Returns True when the listing is worth iterating.
+    """
+    md5_size = os.path.getsize(md5_path)
+    if md5_size == 0:
+        problems.append(
+            f"{rel_dir}: md5sums.txt is 0 bytes -- truncated, or the checksum "
+            "job was still running when the mirror was taken")
+        return False
+    if not entries:
+        problems.append(
+            f"{rel_dir}: md5sums.txt has {md5_size:,} bytes but no parseable entries")
+        return False
+
+    # A FASTQ sitting in the directory with no line in md5sums.txt means the
+    # checksum job never got to it; the file would ship unverified.
+    unlisted = fastqs_on_disk(project_dir) - set(entries)
+    if unlisted:
+        shown = ", ".join(sorted(unlisted)[:5])
+        more = f" (+{len(unlisted) - 5} more)" if len(unlisted) > 5 else ""
+        problems.append(
+            f"{rel_dir}: md5sums.txt lists {len(entries)} entr(ies) but the "
+            f"directory holds {len(unlisted) + len(entries)} FASTQ(s); "
+            f"unlisted: {shown}{more}")
+
+    # The source copy is the reference for how long the listing should be, and
+    # catches the case where the mirror copied a partial file faithfully.
+    if src:
+        src_md5 = os.path.join(src, rel_dir, "md5sums.txt")
+        if os.path.exists(src_md5):
+            src_entries = read_md5sums(src_md5)
+            if len(src_entries) != len(entries):
+                problems.append(
+                    f"{rel_dir}: md5sums.txt has {len(entries)} entr(ies), "
+                    f"source has {len(src_entries)}")
+
+    return True
+
+
 def check_project(md5_path, mirror, src, check_md5, problems):
     project_dir = os.path.dirname(md5_path)
     rel_dir = os.path.relpath(project_dir, mirror)
     entries = read_md5sums(md5_path)
 
-    if not entries:
-        problems.append(f"{rel_dir}: md5sums.txt is empty")
+    if not check_md5sums_file(md5_path, rel_dir, project_dir, entries, src, problems):
         return 0
 
     for name, digest in sorted(entries.items()):
