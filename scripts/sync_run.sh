@@ -109,15 +109,22 @@ sync_run() {
 
     # Point the synced copy's config at the local JBOD share rather than the
     # dragen share, so publishing from this mirror lands in the right place.
-    local cfg="$dest/snakemake_config_project.yaml"
-    if [[ -f "$cfg" ]]; then
+    #
+    # Masking-sweep variants carry their own copy of this file, and the Snakefile
+    # loads it by a relative path, so `snakemake -d <variant>` reads the variant's
+    # copy and not the run root's. Repoint those too, or a variant's project_link
+    # mints its share against the dragen storage and mails a link into the wrong
+    # place entirely.
+    local cfg
+    for cfg in "$dest/snakemake_config_project.yaml" \
+               "$dest"/sweeps/*/snakemake_config_project.yaml; do
+        [[ -f "$cfg" ]] || continue
         sed -i \
             -e 's/^nextcloud_dir_name: .*/nextcloud_dir_name: "Jbod2"/' \
             -e 's/^nextcloud_dir_path: .*/nextcloud_dir_path: "nextshare"/' \
             "$cfg"
-        echo "[sync_run] repointed $(basename "$cfg") at the Jbod2 share:"
-        grep -E '^nextcloud_dir_(name|path):' "$cfg" | sed 's/^/[sync_run]   /'
-    fi
+        echo "[sync_run] repointed ${cfg#"$dest"/} at the Jbod2 share"
+    done
 
     # rsync copies a symlink verbatim, target string and all, so a masking sweep's
     # Snakefile/src/scripts/profiles links in the mirror still point into the source
