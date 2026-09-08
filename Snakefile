@@ -503,12 +503,40 @@ if not os.path.exists(_dest_runinfo) or (os.path.exists(_src_runinfo) and os.pat
 # the scheduler has seen the validated sheet present and queued no validation job, and
 # bcl_convert goes on to wait out --latency-wait on an input that was removed under it.
 # Deleting before generation makes the missing output visible to the scheduler instead.
+#
+# The RC chain hangs off the same sheet and has the same blind spot at every link:
+# detect_rc_candidates and generate_rc_samplesheet both take
+# SampleSheet_{cid}.csv as ancient(), and validate_barcode_hamming_distances_rc takes
+# SampleSheet_{cid}_rc.csv as ancient(). A corrected sheet would otherwise be demuxed
+# in the forward orientation while bcl_convert_rc replayed the superseded barcodes, and
+# pick_orientation would choose between them. Drop the whole chain, rooted at the
+# candidates JSON, so it rebuilds from the corrected sheet.
 def _samplesheet_digest(path):
     import hashlib
     if not os.path.exists(path):
         return None
     with open(path, "rb") as _fh:
         return hashlib.sha256(_fh.read()).hexdigest()
+
+def _stale_samplesheet_artifacts(config_id):
+    """Everything downstream of SampleSheet_{config_id}.csv that a regenerated sheet
+    leaves stale without scheduling a rebuild.
+
+    A rule belongs here when it consumes the sheet -- or something derived from it --
+    through maybe_ancient(). Add new links as the chain grows; test_stale_invalidation
+    fails if a rule takes an ancient() dependency on the sheet and its outputs are not
+    listed.
+    """
+    return (
+        f"results/{config_id}/SampleSheet_{config_id}_validated.csv",
+        f"logs/{config_id}/barcode_hamming_validation_{config_id}.done",
+        f"logs/{config_id}/barcode_hamming_validation_{config_id}.txt",
+        f"logs/{config_id}/rc_candidates_{config_id}.json",
+        f"results/{config_id}/SampleSheet_{config_id}_rc.csv",
+        f"results/{config_id}/SampleSheet_{config_id}_rc_validated.csv",
+        f"logs/{config_id}/barcode_hamming_validation_rc_{config_id}.done",
+        f"logs/{config_id}/barcode_hamming_validation_rc_{config_id}.txt",
+    )
 
 # Spawned job subprocesses re-parse this file while the workflow is running and must
 # never delete a running job's inputs. They regenerate identical sheets from the same
@@ -531,11 +559,7 @@ if not _IS_SPAWNED_JOB:
     for _cid, _digest_before in _SHEET_DIGESTS_BEFORE.items():
         if _digest_before == _samplesheet_digest(f"results/{_cid}/SampleSheet_{_cid}.csv"):
             continue
-        for _stale in (
-            f"results/{_cid}/SampleSheet_{_cid}_validated.csv",
-            f"logs/{_cid}/barcode_hamming_validation_{_cid}.done",
-            f"logs/{_cid}/barcode_hamming_validation_{_cid}.txt",
-        ):
+        for _stale in _stale_samplesheet_artifacts(_cid):
             if os.path.exists(_stale):
                 os.remove(_stale)
                 print(f"Invalidated stale validation artifact: {_stale}", file=sys.stderr)
