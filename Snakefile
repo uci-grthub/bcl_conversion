@@ -1396,24 +1396,51 @@ rule send_order_email:
             f"{rc_orientation_tag(wildcards.order_id)}"
         )
     run:
-        import subprocess, os
+        import subprocess, os, datetime
         order_id = wildcards.order_id
-        attachments = f"{input.md5};{input.pdf}"
-        for cid in FLEXBAR_CONFIG_BY_ORDER_ID.get(order_id, []):
-            for prefix, ext in [("flexbarOut", "log"), ("flexbar_barcodes", "txt"), ("flexbar_filesizes", "txt")]:
-                extra = f"Reports/order_{order_id}/{prefix}_{cid}.{ext}"
-                if os.path.exists(extra):
-                    attachments += f";{extra}"
-        cmd = [
-            sys.executable, "src/send_email_retry.py",
-            params.script, params.sender, params.receiver,
-            params.subject, input.html, attachments,
-            params.cc_email, order_id
-        ]
-        with open(log[0], "w") as logf:
-            result = subprocess.run(cmd, stdout=logf, stderr=logf)
-        if result.returncode != 0:
-            raise RuntimeError(f"Email send failed (see {log[0]})")
+
+        # Sending mail is not idempotent, and this rule is scheduled on every DAG
+        # build whether or not it has anything to do: its inputs come from behind the
+        # pick_orientation checkpoint (see get_fastp_plots_targets in workflow_defs),
+        # so Snakemake re-instantiates the producing jobs each time and flags this one
+        # as "input files updated by another job". No file state clears that -- not
+        # mtime, not --touch, not provenance -- so a bare `snakemake` on a finished run
+        # re-sends every order email, and does so again on the run after that.
+        #
+        # The receipt is deliberately NOT a declared output. Snakemake never manages
+        # it, so it survives whatever the scheduler decides to redo. Delete an order's
+        # receipt to deliberately send its mail again.
+        receipt = f"Reports/order_{order_id}/.email_receipt"
+        if os.path.exists(receipt):
+            with open(log[0], "w") as logf:
+                logf.write(f"Email for order {order_id} already sent.\n")
+                logf.write(f"Receipt: {receipt}\n")
+                with open(receipt) as rf:
+                    logf.write(rf.read())
+                logf.write(f"Delete that receipt to send this order's email again.\n")
+        else:
+            attachments = f"{input.md5};{input.pdf}"
+            for cid in FLEXBAR_CONFIG_BY_ORDER_ID.get(order_id, []):
+                for prefix, ext in [("flexbarOut", "log"), ("flexbar_barcodes", "txt"), ("flexbar_filesizes", "txt")]:
+                    extra = f"Reports/order_{order_id}/{prefix}_{cid}.{ext}"
+                    if os.path.exists(extra):
+                        attachments += f";{extra}"
+            cmd = [
+                sys.executable, "src/send_email_retry.py",
+                params.script, params.sender, params.receiver,
+                params.subject, input.html, attachments,
+                params.cc_email, order_id
+            ]
+            with open(log[0], "w") as logf:
+                result = subprocess.run(cmd, stdout=logf, stderr=logf)
+            if result.returncode != 0:
+                raise RuntimeError(f"Email send failed (see {log[0]})")
+            # Only after a confirmed send: a failure must leave the order re-sendable.
+            with open(receipt, "w") as rf:
+                rf.write(f"sent_at: {datetime.datetime.now().isoformat(timespec='seconds')}\n")
+                rf.write(f"subject: {params.subject}\n")
+                rf.write(f"to: {params.receiver}\n")
+                rf.write(f"cc: {params.cc_email}\n")
 
 rule fastp_sample:
     input:
