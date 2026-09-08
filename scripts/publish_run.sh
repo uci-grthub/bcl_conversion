@@ -5,27 +5,29 @@
 #   pixi run publish NovaSeqx xR101
 #   PARALLEL=4 pixi run publish NovaSeqx xR101 /mnt/usb false   # extra sync_run args pass through
 #
-# Steps (3, 4 and 5 run IN THE MIRROR, not in the source run dir):
+# Steps 3-6 run IN THE MIRROR, not in the source run dir:
 #   1. sync_run <instrument> <run_id> [dest] [parallel]  -- rsync mirror to share
 #   2. verify_mirror.py              -- every FASTQ in the mirror's md5sums.txt is
 #                                       present and matches the source size
 #   3. dedupe_mirror.py --apply      -- hardlink byte-identical FASTQs together
 #   4. snakemake --touch all         -- mark outputs current (rsync bumps mtimes)
 #   5. snakemake --forcerun send_order_email  -- re-send the per-order emails
+#   6. the same, once per masking-sweep variant under sweeps/
 #
-# Step 2 exists because step 3 is dangerous on an incomplete mirror: --touch
+# Step 2 exists because step 4 is dangerous on an incomplete mirror: --touch
 # stamps outputs current WITHOUT reading them, so a dropped or truncated transfer
 # is blessed as good, the per-project md5sums.txt is never recomputed, and the
 # share link points at a short FASTQ. Verify before touching, never after.
 # Set VERIFY_MD5=1 to re-verify every checksum instead of just sizes (slow).
 #
-# Step 3 is required: rsync -a preserves mtimes but the mirror's own .snakemake
+# Step 4 is required: rsync -a preserves mtimes but the mirror's own .snakemake
 # metadata is from an earlier run (.snakemake is excluded from the sync), so the
 # DAG in the mirror is not complete -- without --touch, snakemake would re-run
 # fastp/md5/plots for every sample. --touch only stamps outputs that exist; the
 # deliberately unsynced ones (Reports/, logs/*link*) just warn and stay pending,
 # so project_link/report_order_id/send_order_email still rebuild against the
-# Jbod2 share.
+# Jbod2 share. Step 6 does the same --touch inside each sweep variant, for the
+# same reason.
 #
 # Step 3 runs after step 2, never before: it rewrites directory entries, and there
 # is no point doing that to a mirror that has not been shown to be complete. It is
@@ -34,7 +36,10 @@
 # delivery they were seeded from, which arrives in a different rsync invocation.
 # Set SKIP_DEDUPE=1 to leave the mirror expanded.
 #
-# Step 5 really sends: one order email per order in the mirror, sweeps included.
+# Steps 5 and 6 really send. Step 5 covers the run's own orders; it does NOT
+# reach the sweeps, because each variant is a separate snakemake workdir and the
+# root Snakefile has no knowledge of sweeps/. Step 6 walks them explicitly.
+# Set SKIP_SWEEP_EMAILS=1 to publish the variants' data without mailing them.
 set -euo pipefail
 
 # Everything below is echoed to the terminal AND appended to a publish log in
@@ -77,7 +82,7 @@ fi
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-step "step 1/5: rsync mirror to share"
+step "step 1/6: rsync mirror to share"
 say "args: $*"
 say "PARALLEL=${PARALLEL:-2}"
 t0=$(date +%s)
@@ -85,14 +90,14 @@ SYNC_RUN_DEST=""
 SYNC_RUN_SRC=""
 sync_run "$@"
 t1=$(date +%s)
-say "step 1/5 done in $(elapsed "$t0" "$t1")"
+say "step 1/6 done in $(elapsed "$t0" "$t1")"
 
 if [[ -z "$SYNC_RUN_DEST" || ! -d "$SYNC_RUN_DEST" ]]; then
     echo "ERROR: sync_run did not report a destination directory" >&2
     exit 1
 fi
 
-step "step 2/5: verify mirror against source (in $SYNC_RUN_DEST)"
+step "step 2/6: verify mirror against source (in $SYNC_RUN_DEST)"
 say "checks every FASTQ listed in the mirror's md5sums.txt files; must pass BEFORE --touch"
 t0=$(date +%s)
 VERIFY_ARGS=("$SYNC_RUN_DEST")
@@ -107,14 +112,14 @@ if [[ "${VERIFY_MD5:-0}" == "1" ]]; then
 fi
 python3 "$REPO_DIR/scripts/verify_mirror.py" "${VERIFY_ARGS[@]}"
 t1=$(date +%s)
-say "step 2/5 done in $(elapsed "$t0" "$t1")"
+say "step 2/6 done in $(elapsed "$t0" "$t1")"
 
 # Already inside the pixi env (snakemake + SNAKEMAKE_PROFILE on PATH/env);
 # SNAKEMAKE_PROFILE is relative, so it resolves to the mirror's own profile.
 cd "$SYNC_RUN_DEST"
 say "mirror size: $(du -sh . 2>/dev/null | cut -f1)"
 
-step "step 3/5: hardlink byte-identical FASTQs (in $SYNC_RUN_DEST)"
+step "step 3/6: hardlink byte-identical FASTQs (in $SYNC_RUN_DEST)"
 if [[ "${SKIP_DEDUPE:-0}" == "1" ]]; then
     say "SKIP_DEDUPE=1: leaving the mirror expanded"
 else
@@ -126,27 +131,58 @@ else
         say "WARNING: dedupe reported problems (see above); mirror is intact but not fully linked"
     fi
     t1=$(date +%s)
-    say "step 3/5 done in $(elapsed "$t0" "$t1")"
+    say "step 3/6 done in $(elapsed "$t0" "$t1")"
     say "mirror size after dedupe: $(du -sh . 2>/dev/null | cut -f1)"
 fi
 
-step "step 4/5: snakemake --touch all (in $SYNC_RUN_DEST)"
+step "step 4/6: snakemake --touch all (in $SYNC_RUN_DEST)"
 say "stamps synced outputs current; unsynced ones (Reports/, logs/*link*) warn and stay pending"
 t0=$(date +%s)
 snakemake --touch --show-failed-logs all
 t1=$(date +%s)
-say "step 4/5 done in $(elapsed "$t0" "$t1")"
+say "step 4/6 done in $(elapsed "$t0" "$t1")"
 
-step "step 5/5: snakemake --forcerun send_order_email (in $SYNC_RUN_DEST)"
+step "step 5/6: snakemake --forcerun send_order_email (in $SYNC_RUN_DEST)"
 say "pending work after touch:"
 snakemake -n --quiet rules --forcerun send_order_email 2>&1 | sed 's/^/    /'
 t0=$(date +%s)
 snakemake -p --show-failed-logs --forcerun send_order_email
 t1=$(date +%s)
-say "step 5/5 done in $(elapsed "$t0" "$t1")"
+say "step 5/6 done in $(elapsed "$t0" "$t1")"
+
+step "step 6/6: order emails for masking-sweep variants (in $SYNC_RUN_DEST)"
+shopt -s nullglob
+sweep_dirs=(sweeps/*/)
+shopt -u nullglob
+if [[ "${SKIP_SWEEP_EMAILS:-0}" == "1" ]]; then
+    say "SKIP_SWEEP_EMAILS=1: not mailing the ${#sweep_dirs[@]} variant(s)"
+elif [[ ${#sweep_dirs[@]} -eq 0 ]]; then
+    say "no sweeps/ variants in this run"
+else
+    say "${#sweep_dirs[@]} variant(s); each is its own snakemake workdir (-d)"
+    t0=$(date +%s)
+    for sweep in "${sweep_dirs[@]}"; do
+        sweep="${sweep%/}"
+        say "--- $sweep"
+        # Reports/ and .snakemake are both excluded from the mirror, so a variant
+        # here has neither sentinels nor DAG metadata. Without --touch first, the
+        # forcerun below decides fastp, the plots and the md5sums are all out of
+        # date and rebuilds the variant from its FASTQs.
+        if ! snakemake -d "$sweep" --touch --show-failed-logs all; then
+            say "WARNING: --touch failed for $sweep; skipping its email"
+            continue
+        fi
+        if ! snakemake -d "$sweep" -p --show-failed-logs --forcerun send_order_email; then
+            say "WARNING: send_order_email failed for $sweep"
+        fi
+    done
+    t1=$(date +%s)
+    say "step 6/6 done in $(elapsed "$t0" "$t1")"
+fi
 
 say "emails sent this run:"
-find Reports -name email_sent.done -newermt "@$PUBLISH_START" -printf '    %p\n' 2>/dev/null | sort
+find Reports sweeps/*/Reports -name email_sent.done -newermt "@$PUBLISH_START" \
+    -printf '    %p\n' 2>/dev/null | sort
 
 say "PUBLISH COMPLETE in $(elapsed "$PUBLISH_START" "$(date +%s)")  mirror: $SYNC_RUN_DEST"
 say "log: $PUBLISH_LOG"
