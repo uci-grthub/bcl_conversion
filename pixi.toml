@@ -73,6 +73,11 @@ relink = "bash scripts/relink_mirror.sh"
 # given -H, so hardlinks shared in the source arrive as separate copies.
 # Dry run by default: `pixi run dedupe`, then `pixi run dedupe -- --apply`.
 dedupe = "python scripts/dedupe_mirror.py"
+# Archive a finished run's processed data (FASTQs, reports, metadata, sweeps)
+# to HPC3 /dfs3b/ucightf_lab/NSProcessed. Needs an SSH master to hpc3 first
+# (`ssh -fN hpc3`, answer DUO). `pixi run backup-processed xR112`, or
+# `DRY_RUN=1 pixi run backup-processed xR112` to see what would move.
+backup-processed = "bash scripts/backup_processed_run.sh"
 # Masking sweep: one full deliverable set per alternative masking of a single
 # lane/group, reusing the main run's conversion. `pixi run masking-sweep 39 22 17`.
 masking-sweep = "bash scripts/masking_sweep.sh"
