@@ -64,6 +64,11 @@ convert = "snakemake --cores 8"
 # Publish a finished run: mirror to the share, touch outputs, resend order emails.
 # Extra args pass through to sync_run, e.g. `pixi run publish NovaSeqx xR101`.
 publish = "bash scripts/publish_run.sh"
+# Collapse byte-identical FASTQs in the published mirror into hardlinks, using
+# the md5sums.txt the run already wrote (no re-reading the data). rsync is not
+# given -H, so hardlinks shared in the source arrive as separate copies.
+# Dry run by default: `pixi run dedupe`, then `pixi run dedupe -- --apply`.
+dedupe = "python scripts/dedupe_mirror.py"
 # Masking sweep: one full deliverable set per alternative masking of a single
 # lane/group, reusing the main run's conversion. `pixi run masking-sweep 39 22 17`.
 masking-sweep = "bash scripts/masking_sweep.sh"
