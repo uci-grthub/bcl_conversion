@@ -1827,6 +1827,12 @@ rule compile_read_counts:
         # (lane, group) -> set of raw orientation values seen, to catch a block whose
         # rows disagree (two projects sharing one lane/group with different decisions).
         lane_group_orientations = {}
+        # Samples whose Sample_Project no longer agrees with the one DRAGEN recorded,
+        # and samples that could not be matched at all. Both are collected and
+        # reported at the end: a per-row print in the middle of a few hundred rows is
+        # exactly how a whole project silently counted zero once already.
+        project_drift = []
+        unmatched_samples = []
 
         for map_path in input.maps:
             if not os.path.exists(map_path):
@@ -1910,8 +1916,17 @@ rule compile_read_counts:
                 position = str(row.get("Position", f"P{idx + 1:03d}")).strip()
                 stem = f"{run_name}-L{lane}-G{group}-{position}-{barcode}"
 
-                # Look up read count in Demultiplex_Stats.csv
-                # Match by Lane, Sample_Project, and SampleID
+                # Look up read count in Demultiplex_Stats.csv.
+                #
+                # Match on (Lane, Sample_Project, SampleID) first, then fall back to
+                # (Lane, SampleID). Demultiplex_Stats.csv is frozen at conversion time,
+                # so a Sample_Project edited in the workbook afterwards no longer
+                # matches the one DRAGEN recorded and the triple misses -- which used
+                # to mean a silent 0 for a sample that had in fact demultiplexed
+                # perfectly. SampleID is unique within a lane (bcl-convert requires
+                # it), so dropping the project from the key loses no precision; the
+                # fallback is still reported, because a drifting project name means the
+                # workbook and the delivered data disagree about something.
                 read_pairs = 0
                 try:
                     if sample_name == "Undetermined":
@@ -1930,11 +1945,34 @@ rule compile_read_counts:
                             (demux_df['SampleID'] == sample_name)
                         ]
 
+                        if len(matches) == 0:
+                            by_sample = demux_df[
+                                (demux_df['Lane'] == lane) &
+                                (demux_df['SampleID'] == sample_name)
+                            ]
+                            if len(by_sample) == 1:
+                                recorded = str(by_sample.iloc[0]['Sample_Project']).strip()
+                                project_drift.append(
+                                    (lane, sample_name, project, recorded))
+                                matches = by_sample
+                            elif len(by_sample) > 1:
+                                # Two rows for one SampleID in one lane: nothing here
+                                # can say which is meant, so refuse to guess rather
+                                # than pick the first and report a plausible number.
+                                unmatched_samples.append(
+                                    (lane, project, sample_name,
+                                     f"{len(by_sample)} rows share this SampleID in "
+                                     f"lane {lane}"))
+
                     if len(matches) > 0:
                         # BCL Convert reports '# Reads' as read pairs (clusters), not individual reads
                         read_pairs = int(matches.iloc[0]['# Reads'])
-                    else:
-                        print(f"No match in Demultiplex_Stats.csv for L{lane} {project} {sample_name}")
+                    elif sample_name != "Undetermined" and not any(
+                            entry[:3] == (lane, project, sample_name)
+                            for entry in unmatched_samples):
+                        unmatched_samples.append(
+                            (lane, project, sample_name,
+                             "no row for this SampleID in the lane"))
                 except Exception as e:
                     print(f"Error looking up read count for {sample_name} in {demux_stats_path}: {e}")
                     read_pairs = 0
@@ -2095,6 +2133,22 @@ rule compile_read_counts:
             if len(orientations) > 1:
                 print(f"Warning: lane/group {key} carries mixed orientations "
                       f"{sorted(orientations)}; index_rc reports their union")
+
+        if project_drift:
+            print(f"Warning: {len(project_drift)} sample(s) matched Demultiplex_Stats.csv "
+                  f"on (Lane, SampleID) only -- the workbook's Sample_Project has been "
+                  f"edited since these lanes were converted, so the delivered FASTQs sit "
+                  f"under the project DRAGEN recorded, not the one the workbook now names:")
+            for lane, sample_name, expected, recorded in sorted(project_drift):
+                print(f"  L{lane} {sample_name}: workbook={expected} converted={recorded}")
+
+        # A sample with no row at all counts zero, and a zero here is indistinguishable
+        # from a sample that genuinely got no reads. Name them so the table can be read.
+        if unmatched_samples:
+            print(f"Warning: {len(unmatched_samples)} sample(s) have no usable "
+                  f"Demultiplex_Stats.csv row and are reported as 0:")
+            for lane, expected, sample_name, why in sorted(unmatched_samples):
+                print(f"  L{lane} {expected} {sample_name}: {why}")
         lane_group_rc_label = {
             key: rc_tags_label(tags) for key, tags in lane_group_rc.items()
         }
