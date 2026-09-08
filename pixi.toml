@@ -73,6 +73,11 @@ relink = "bash scripts/relink_mirror.sh"
 # given -H, so hardlinks shared in the source arrive as separate copies.
 # Dry run by default: `pixi run dedupe`, then `pixi run dedupe -- --apply`.
 dedupe = "python scripts/dedupe_mirror.py"
+# Archive a run's raw BCLs to HPC3 /dfs3b/ucightf_lab/NSRaw. Needs an SSH
+# master to hpc3 first (`ssh -fN hpc3`, answer DUO). With no argument it backs
+# up the raw run this one was converted from (data_dir in the project config):
+# `pixi run backup-raw`, or `pixi run backup-raw <raw_run_dir_name>`.
+backup-raw = "bash scripts/backup_raw_run.sh"
 # Archive a finished run's processed data (FASTQs, reports, metadata, sweeps)
 # to HPC3 /dfs3b/ucightf_lab/NSProcessed. Needs an SSH master to hpc3 first
 # (`ssh -fN hpc3`, answer DUO). `pixi run backup-processed xR112`, or

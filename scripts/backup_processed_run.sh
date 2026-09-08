@@ -44,7 +44,7 @@ processed_novaseqx_backup() {
 
     # Accept either a bare run dir name or an absolute path; strip any trailing
     # slash, since the nesting behaviour below depends on its absence.
-    local src
+    local src=""
     if [[ "$run" == /* ]]; then
         src="${run%/}"
     else
