@@ -15,6 +15,7 @@
 #   SKIP_SWEEPS=1  omit sweeps/ (masking-sweep variants)
 #   KEEP_PIXI=1    include .pixi/ (~1.2 G of rebuildable environment)
 #   BWLIMIT=50M    pass --bwlimit to rsync (shared uplink courtesy)
+#   BACKUP_GROUP=ucightf   group to own the copy on the share (empty to disable)
 #
 # example:
 #   ssh -fN hpc3                                    # DUO once, then:
@@ -36,11 +37,40 @@
 # the cipher, not NFS round-trip latency.
 # ---------------------------------------------------------------------------
 
+# Report the group the copy actually landed in. sftp because access-hpc3 refuses
+# arbitrary remote commands; `ls -l` on the PARENT, because sftp's ls on a
+# directory lists its contents rather than the directory itself.
+#
+# A warning, never a failure: the data is transferred and verified by the time
+# this runs, and a wrong group is a permissions problem to fix, not a reason to
+# report a completed multi-terabyte backup as failed.
+_backup_report_group() {
+    local host="$1" dest_base="$2" name="$3" want="$4" tag="$5"
+    [[ -n "$want" ]] || return 0
+
+    local listing got
+    if ! listing=$(printf 'ls -l "%s"\n' "$dest_base" | sftp -b - "$host" 2>&1); then
+        echo "[$tag] WARNING: could not list ${host}:${dest_base} to confirm the group" >&2
+        return 0
+    fi
+    # drwxrws--- 5 user group ... name
+    got=$(echo "$listing" | awk -v n="$name" '$NF == n {print $4; exit}')
+    if [[ -z "$got" ]]; then
+        echo "[$tag] WARNING: $name not found in the listing of $dest_base" >&2
+    elif [[ "$got" != "$want" ]]; then
+        echo "[$tag] WARNING: ${name} is group '${got}', expected '${want}'" >&2
+        echo "[$tag]          the transferring account may not be a member of ${want}" >&2
+    else
+        echo "[$tag] group:    $name is group '$got' on the share"
+    fi
+}
+
 processed_novaseqx_backup() {
     local run="${1:?Usage: processed_novaseqx_backup <run> [dest_base] [host]}"
     local dest_base="${2:-/dfs3b/ucightf_lab/NSProcessed}"
     local host="${3:-hpc3}"
     local src_base="/staging/nextcloud/testing_illumina"
+    local backup_group="${BACKUP_GROUP-ucightf}"
 
     # Accept either a bare run dir name or an absolute path; strip any trailing
     # slash, since the nesting behaviour below depends on its absence.
@@ -111,23 +141,48 @@ processed_novaseqx_backup() {
     [[ -z "${KEEP_PIXI:-}" ]] && excludes+=(--exclude '/.pixi')
     [[ -n "${SKIP_SWEEPS:-}" ]] && excludes+=(--exclude '/sweeps')
 
+    # The copy has to land in the lab group so anyone in ucightf can read it.
+    # -a preserves the source group, and 'grthcloud' means nothing on HPC3, so
+    # without this every file arrives owned by the transferring user's default
+    # group and the share is a backup only that one person can use.
+    #
+    # This has to be an rsync option rather than a chgrp afterwards: access-hpc3
+    # is a restricted transfer node and refuses arbitrary remote commands, which
+    # is the same reason the checks above go through sftp.
+    #
+    # It goes on EVERY rsync here, including the verification pass. That pass
+    # re-runs the transfer as a dry run and treats any remaining output as
+    # missing data -- so if it did not also map the group, it would see a group
+    # it wants to change on every file and report a complete backup as broken.
+    local -a group_opts=()
+    if [[ -n "$backup_group" ]]; then
+        if ! rsync --help 2>&1 | grep -q -- '--chown'; then
+            echo "ERROR: rsync $(rsync --version | head -1 | awk '{print $3}') has no --chown (needs 3.1.0+)" >&2
+            echo "       set BACKUP_GROUP= to transfer without setting the group" >&2
+            return 1
+        fi
+        group_opts=(--chown=":$backup_group")
+    fi
+
     local -a rsync_opts=(-a -H --partial --append-verify)
     [[ -n "${BWLIMIT:-}" ]] && rsync_opts+=(--bwlimit="$BWLIMIT")
 
     echo "[proc_backup] src:  $src ($(du -sh "$src" 2>/dev/null | cut -f1))"
     echo "[proc_backup] dest: ${host}:${dest}"
     echo "[proc_backup] excluded: ${excludes[*]}"
+    echo "[proc_backup] group:    ${backup_group:-<source group, unmapped>}"
     echo "[proc_backup] hardlinks preserved (-H) across output/ and sweeps/ in one pass"
     echo "$remote_df" | grep -vE '^sftp>' | sed 's/^/[proc_backup] df: /'
 
     if [[ -n "${DRY_RUN:-}" ]]; then
         echo "[proc_backup] DRY_RUN -- no data will be transferred"
-        rsync -anH --itemize-changes "${excludes[@]}" "$src" "${host}:${dest_base}/"
+        rsync -anH --itemize-changes "${group_opts[@]}" "${excludes[@]}" \
+            "$src" "${host}:${dest_base}/"
         return $?
     fi
 
     if ! rsync "${rsync_opts[@]}" --info=progress2 --stats -h \
-        "${excludes[@]}" "$src" "${host}:${dest_base}/"
+        "${group_opts[@]}" "${excludes[@]}" "$src" "${host}:${dest_base}/"
     then
         echo "[proc_backup] ERROR: transfer failed -- rerun to resume" >&2
         return 1
@@ -137,12 +192,15 @@ processed_novaseqx_backup() {
     # No --delete here; this must never be able to remove anything on the share.
     echo "[proc_backup] verifying..."
     local diff
-    diff=$(rsync -anH --itemize-changes "${excludes[@]}" "$src" "${host}:${dest_base}/")
+    diff=$(rsync -anH --itemize-changes "${group_opts[@]}" "${excludes[@]}" \
+           "$src" "${host}:${dest_base}/")
     if [[ -n "$diff" ]]; then
         echo "[proc_backup] ERROR: mirror incomplete, still differing:" >&2
         echo "$diff" | head -20 >&2
         return 1
     fi
+
+    _backup_report_group "$host" "$dest_base" "$name" "$backup_group" proc_backup
 
     echo "[proc_backup] complete and verified: ${host}:${dest}"
 }
