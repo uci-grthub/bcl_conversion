@@ -11,7 +11,10 @@ column always names the specialty tab those samples live on, so it is consulted
 as a second source of truth: a project counts as single cell when *either* its
 name or its Summary sheet tab matches.
 
-The Summary lookup is cached module-wide.  The metadata workbook is taken from
+The Summary lookup is cached module-wide, failures included: MiSeq submission
+workbooks have no Summary sheet, and detection runs once per project, so a
+workbook that cannot supply the sets is read (and reported) only once.  Nothing
+is lost — MiSeq runs fall back to the project-name tokens.  The workbook is taken from
 ``PIPELINE_METADATA_FILE`` (exported by the Snakefile so child scripts inherit
 it) or discovered under ``metadata/`` when that variable is unset.
 
@@ -41,6 +44,11 @@ _REGISTRY = {
     "names": set(),        # normalized project names sitting on a single-cell tab
     "lane_groups": set(),  # (lane, group) pairs sitting on a single-cell tab
 }
+
+# Workbooks that could not be read, so a failure is not retried (and re-reported)
+# on every project. Detection runs once per FASTQ during renaming, so without
+# this a single unreadable workbook prints hundreds of identical notes.
+_UNREADABLE = set()
 
 
 def _norm(value):
@@ -92,11 +100,18 @@ def load_single_cell_registry(metadata_file=None, force=False):
     abspath = os.path.abspath(path)
     if not force and _REGISTRY["loaded_from"] == abspath:
         return _REGISTRY
+    if not force and abspath in _UNREADABLE:
+        return _REGISTRY
 
     names = set()
     lane_groups = set()
     try:
         import pandas as pd
+        # MiSeq submission workbooks carry no Summary sheet at all; that is a
+        # format, not a fault, so it leaves the registry empty without a note.
+        if "Summary" not in pd.ExcelFile(path).sheet_names:
+            _UNREADABLE.add(abspath)
+            return _REGISTRY
         df = pd.read_excel(path, sheet_name="Summary", header=2)
         if "Sample sheet tab" in df.columns:
             for _, row in df.iterrows():
@@ -110,9 +125,13 @@ def load_single_cell_registry(metadata_file=None, force=False):
                 except Exception:
                     pass
     except Exception as e:
+        # Reported once per workbook: the retry guard above keeps later projects
+        # from re-opening a file already known to be unreadable.
+        _UNREADABLE.add(abspath)
         print(f"Note: could not read single-cell tabs from {path}: {e}")
         return _REGISTRY
 
+    _UNREADABLE.discard(abspath)
     _REGISTRY["loaded_from"] = abspath
     _REGISTRY["names"] = names
     _REGISTRY["lane_groups"] = lane_groups
