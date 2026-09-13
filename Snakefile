@@ -1756,6 +1756,8 @@ rule summarize_project_reads:
                 print(f"Error reading {demux_path}: {e}")
                 demux_df = pd.DataFrame()
 
+            demux_df = drop_no_demux_decoy_rows(demux_df)
+
             if 'Sample_Project' in demux_df.columns:
                 matches = demux_df[demux_df['Sample_Project'].astype(str).isin(target_projects)]
                 for _, row in matches.iterrows():
@@ -3252,7 +3254,9 @@ rule bcl_convert:
         tiles = TILES,
         scratch_dir = SCRATCH_DIR,
         keep_undetermined_configs = KEEP_UNDETERMINED_CONFIGS,
-        dragen_bin = DRAGEN_BIN
+        dragen_bin = DRAGEN_BIN,
+        no_demux = "1" if NO_DEMUX else "",
+        no_demux_decoy = NO_DEMUX_DECOY_SAMPLE
     shell:
         """
         (
@@ -3352,6 +3356,30 @@ rule bcl_convert:
         if [ "$dragen_status" -ne 0 ]; then
             cleanup
             exit $dragen_status
+        fi
+
+        # no_demux: the sheet's decoy sample exists only to make DRAGEN route every read
+        # to Undetermined, which is the copy that carries the I1/I2 index FASTQs. If the
+        # decoy caught anything, its index collided with real data and that slice of the
+        # run is missing from the delivery — fail rather than ship a short set.
+        if [ -n "{params.no_demux}" ]; then
+            demux_stats="$dragen_out/Reports/Demultiplex_Stats.csv"
+            if [ ! -f "$demux_stats" ]; then
+                echo "ERROR: no_demux: $demux_stats not found; cannot verify the decoy caught no reads."
+                exit 1
+            fi
+            decoy_reads=$(awk -F, -v s="{params.no_demux_decoy}" \
+                'NR>1 && $2==s {{total+=$5}} END{{print total+0}}' "$demux_stats")
+            if [ "$decoy_reads" -ne 0 ]; then
+                echo "ERROR: no_demux: decoy sample {params.no_demux_decoy} collected $decoy_reads reads."
+                echo "Its index collides with real data in this run, so those reads are missing from"
+                echo "the Undetermined set that gets delivered. Change NO_DEMUX_DECOY_I7/I5 in"
+                echo "src/workflow_defs.smk to sequences absent from Reports/Top_Unknown_Barcodes.csv."
+                exit 1
+            fi
+            echo "no_demux: decoy {params.no_demux_decoy} collected 0 reads, as required."
+            # The decoy still gets an empty FASTQ written for it; it is not deliverable.
+            find "$dragen_out" -name "{params.no_demux_decoy}_S*_*.fastq.gz" -delete
         fi
 
         if [ ! -z "{params.scratch_dir}" ]; then
@@ -3647,6 +3675,8 @@ rule check_low_reads:
                 _log(f"Could not read {demux_path}: {e}")
                 log_fh.close()
             else:
+                df = drop_no_demux_decoy_rows(df)
+
                 # Accept both old Sample_Project and new-name project
                 target_projects = {project}
                 for (cid, old_p), new_p in PROJECT_RENAME_MAP.items():

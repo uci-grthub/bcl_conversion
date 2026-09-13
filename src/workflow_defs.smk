@@ -572,6 +572,44 @@ def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name)
         print(f"Could not parse RunInfo for OverrideCycles: {e}")
     
     df_samples['OverrideCycles'] = override_cycles
+
+    # A no_demux workbook carries a placeholder (NNNNNNNN) where the barcodes would be,
+    # which is deliberate: DRAGEN rejects any index outside ACGT, so the placeholder cannot
+    # be silently demultiplexed if no_demux is ever turned off. Catch that here, naming the
+    # workbook and the flag, instead of letting it surface as a DRAGEN sample-sheet error
+    # a few rules later with no indication of which cell is at fault.
+    if not NO_DEMUX:
+        _bad = sorted({str(v).strip().upper()
+                       for v in list(df_samples['index']) + list(df_samples['index2'])
+                       if str(v).strip() and set(str(v).strip().upper()) - set("ACGT")})
+        if _bad:
+            raise ValueError(
+                f"Non-ACGT barcode(s) in {metadata_file}, sheet 'Barcode Entries': "
+                f"{', '.join(_bad)}. DRAGEN accepts only A, C, G, T. If this run is not "
+                f"meant to be demultiplexed, set no_demux: true in the project config; "
+                f"otherwise correct the barcode cells."
+            )
+
+    # no_demux: replace the workbook's samples with a single decoy whose index matches
+    # nothing, so every read lands in Undetermined and is delivered from there with its
+    # I1/I2 index FASTQs intact. See no_demux_decoy_indexes() for why this is the only
+    # shape DRAGEN accepts. BarcodeMismatchesIndex is pinned to 0 so the decoy cannot
+    # collect near-misses either; bcl_convert asserts afterwards that it collected none.
+    if NO_DEMUX:
+        _decoy_i7, _decoy_i5 = no_demux_decoy_indexes(run_info_path)
+        _decoy = {
+            'Lane': 1,
+            'Sample_ID': NO_DEMUX_DECOY_SAMPLE,
+            'Sample_Name': NO_DEMUX_DECOY_SAMPLE,
+            'index': _decoy_i7,
+            'index2': _decoy_i5,
+            'Sample_Project': project_name,
+            'OverrideCycles': override_cycles,
+            'BarcodeMismatchesIndex1': 0,
+        }
+        if _decoy_i5:
+            _decoy['BarcodeMismatchesIndex2'] = 0
+        df_samples = pd.DataFrame([_decoy])
     
     # Generate sample sheet file
     config_id = "lane1"
@@ -604,6 +642,8 @@ def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name)
         
         f.write("[BCLConvert_Data]\n")
         cols = ['Lane', 'Sample_ID', 'Sample_Name', 'index', 'index2', 'Sample_Project', 'OverrideCycles']
+        cols += [c for c in ('BarcodeMismatchesIndex1', 'BarcodeMismatchesIndex2')
+                 if c in df_samples.columns]
         df_samples[cols].to_csv(f, index=False)
     
     print(f"Generated MiSeq sample sheet: {outfile}")
@@ -624,11 +664,83 @@ def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name)
     positions = [f"P{i+1:03d}" for i in range(len(df_samples))]
     map_df['Position'] = positions
     
+    # no_demux: the decoy sample is a sheet-only construct that receives no reads, so it
+    # must not appear in the renaming map. The lane's single delivered sample is the
+    # Undetermined pseudo-sample, named here directly; write_renaming_map's own injection
+    # for report_undetermined_configs then sees the row already present and leaves it be.
+    if NO_DEMUX:
+        map_df = pd.DataFrame([{
+            'Sample_ID': 'Undetermined',
+            'Sample_Name': 'Undetermined',
+            'Sample_Project': project_name,
+            'Lane': 1,
+            'index': 'Undetermined',
+            'index2': '',
+            'Run': run_name,
+            'Group': '1',
+            'Position': 'P001',
+        }])
+
     map_file = os.path.join(out_dir, config_id, f"renaming_map_{config_id}.csv")
     write_renaming_map(map_df, map_file)
     print(f"Generated renaming map: {map_file}")
 
     return {config_id: outfile}
+
+# A no_demux run delivers every cluster undemultiplexed, with the index cycles as real
+# I1/I2 FASTQs. DRAGEN cannot do that directly: it requires index/index2 columns whenever
+# RunInfo declares indexed reads, and it only writes per-sample I1/I2 for reads assigned
+# through a real index. The way through is the Undetermined pseudo-sample, which DRAGEN
+# always writes with I1/I2 when CreateFastqForIndexReads=1. So the sheet carries a single
+# decoy sample whose index matches nothing; every read falls through to Undetermined, and
+# report_undetermined_configs delivers that as a normal sample.
+#
+# The decoy must not be a homopolymer. On 2-channel chemistry no signal reads out as G, so
+# GGGGGGGG matches the dark clusters on weak tiles and quietly pulls them out of the
+# delivery (measured: ~3.5% of a dead tile, ~0% of a healthy one). These two high-entropy
+# sequences are balanced across both channels and cannot be produced by absent signal.
+NO_DEMUX_DECOY_SAMPLE = "NoDemuxDecoy"
+NO_DEMUX_DECOY_I7 = "CGATCGAT"
+NO_DEMUX_DECOY_I5 = "TAGCTAGC"
+
+
+def no_demux_decoy_indexes(run_info_path):
+    """(i7, i5) decoy sequences cut to this run's index-read lengths.
+
+    DRAGEN rejects an index whose length disagrees with the cycle count it expects, so
+    the pattern is cycled to the length RunInfo declares rather than assumed to be 8.
+    An index read the run does not have comes back as "".
+    """
+    index_lengths = [r["NumCycles"] for r in get_run_read_lengths(run_info_path)
+                     if r["IsIndexedRead"] == "Y"]
+
+    def _fit(pattern, length):
+        if not length:
+            return ""
+        return (pattern * (length // len(pattern) + 1))[:length]
+
+    i7_len = index_lengths[0] if len(index_lengths) > 0 else 0
+    i5_len = index_lengths[1] if len(index_lengths) > 1 else 0
+    return _fit(NO_DEMUX_DECOY_I7, i7_len), _fit(NO_DEMUX_DECOY_I5, i5_len)
+
+
+def drop_no_demux_decoy_rows(demux_df):
+    """Demultiplex_Stats rows with the no_demux decoy removed.
+
+    The decoy is a sample-sheet construct that exists only to push every read into
+    Undetermined. It carries the lane's real Sample_Project and always reports 0 reads,
+    so anything reading Demultiplex_Stats.csv by project sees it as a delivered sample
+    that got nothing: it lands in the read-counts table and trips the zero-read alert.
+    Returns the frame untouched when no_demux is off.
+    """
+    if not NO_DEMUX or demux_df is None or len(demux_df) == 0:
+        return demux_df
+    for column in ("SampleID", "Sample_ID"):
+        if column in demux_df.columns:
+            keep = demux_df[column].astype(str).str.strip() != NO_DEMUX_DECOY_SAMPLE
+            return demux_df[keep]
+    return demux_df
+
 
 def get_run_read_lengths(run_info_path):
     if not os.path.exists(run_info_path):
