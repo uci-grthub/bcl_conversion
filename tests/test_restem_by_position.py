@@ -143,3 +143,67 @@ def test_dry_run_writes_nothing(tmp_path):
 
     assert planned, "dry run reported no work"
     assert sorted(os.listdir(work)) == before, "dry run modified the directory"
+
+
+def _undetermined_row():
+    """The pseudo-sample row write_renaming_map injects for report_undetermined_configs."""
+    return {
+        "Sample_ID": "Undetermined",
+        "Sample_Name": "Undetermined",
+        "Sample_Project": FIXTURE_DUAL_PROJECT,
+        "Lane": 5,
+        "index": "Undetermined",
+        "index2": "",
+        "Run": FIXTURE_RUN,
+        "Group": "1",
+        "Position": "P099",
+    }
+
+
+def test_undetermined_delivery_names_are_not_doubled(tmp_path):
+    """Its 'barcode' is the literal string Undetermined, not an ACGTN run.
+
+    A barcode pattern that only knows ACGTN matches nothing here, leaves the token in
+    the tail and prepends it again, producing -P099-UndeterminedUndetermined-R1.fastq.gz.
+    fastp then looks for the correct name and the run dies after conversion.
+    """
+    row = _undetermined_row()
+    work = os.path.join(str(tmp_path), "project")
+    os.makedirs(work, exist_ok=True)
+    stem = f"{FIXTURE_RUN}-L5-G1-P099-Undetermined"
+    for read_type in ("R1", "I1", "I2"):
+        open(os.path.join(work, f"{stem}-{read_type}.fastq.gz"), "w").close()
+
+    restem_by_position(work, [row])
+
+    for read_type in ("R1", "I1", "I2"):
+        assert os.path.exists(os.path.join(work, f"{stem}-{read_type}.fastq.gz"))
+    assert not [f for f in os.listdir(work) if "UndeterminedUndetermined" in f]
+
+
+def test_undetermined_restem_is_idempotent(tmp_path):
+    """Second pass must rename nothing, or repeated runs keep growing the name."""
+    row = _undetermined_row()
+    work = os.path.join(str(tmp_path), "project")
+    os.makedirs(work, exist_ok=True)
+    stem = f"{FIXTURE_RUN}-L5-G1-P099-Undetermined"
+    open(os.path.join(work, f"{stem}-R1.fastq.gz"), "w").close()
+
+    restem_by_position(work, [row])
+    assert restem_by_position(work, [row]) == []
+
+
+def test_undetermined_sidecars_keep_their_suffix(tmp_path):
+    """fastp JSON/HTML and plot PNGs go through the same path as the FASTQs."""
+    row = _undetermined_row()
+    work = os.path.join(str(tmp_path), "project")
+    os.makedirs(work, exist_ok=True)
+    stem = f"{FIXTURE_RUN}-L5-G1-P099-Undetermined"
+    names = [f"{stem}.fastp.json", f"{stem}.fastp.html", f"{stem}-base_comp.png"]
+    for name in names:
+        open(os.path.join(work, name), "w").close()
+
+    restem_by_position(work, [row])
+
+    for name in names:
+        assert os.path.exists(os.path.join(work, name)), f"{name} was mangled"
