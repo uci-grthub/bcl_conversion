@@ -20,7 +20,10 @@
 #   DRY_RUN=1              show what would transfer, move nothing
 #   KEEP_THUMBNAILS=1      include Thumbnail_Images (~2.6 G, excluded by default)
 #   BWLIMIT=50M            pass --bwlimit to rsync (shared uplink courtesy)
-#   BACKUP_GROUP=ucightf   group to own the copy on the share (empty to disable)
+#   BACKUP_GROUP=<grp>     group to own the copy on the share, default ucightf_lab_share
+#                          (empty to disable). NOT "ucightf": that resolves on HPC3
+#                          to a different group with no dfs3b allocation, so every
+#                          write fails with "Disk quota exceeded (122)".
 #
 # example:
 #   ssh -fN hpc3                                    # DUO once, then:
@@ -66,7 +69,7 @@ raw_novaseqx_backup() {
     local run="${1:-}"
     local dest_base="${2:-/dfs3b/ucightf_lab/NSRaw}"
     local host="${3:-hpc3}"
-    local backup_group="${BACKUP_GROUP-ucightf}"
+    local backup_group="${BACKUP_GROUP-ucightf_lab_share}"
 
     # No run given: take it from the processed run dir we were invoked in. Its
     # snakemake_config_project.yaml records the raw run that was converted, so
@@ -151,10 +154,15 @@ raw_novaseqx_backup() {
     local -a excludes=()
     [[ -z "${KEEP_THUMBNAILS:-}" ]] && excludes+=(--exclude 'Thumbnail_Images')
 
-    # The copy has to land in the lab group so anyone in ucightf can read it.
+    # The copy has to land in the lab group so anyone in the lab can read it.
     # -a preserves the source group, and 'grthcloud' means nothing on HPC3, so
     # without this every file arrives owned by the transferring user's default
     # group and the share is a backup only that one person can use.
+    #
+    # The group is 'ucightf_lab_share', NOT the local 'ucightf'. Both names
+    # resolve on HPC3, but only ucightf_lab_share owns the share's dfs3b quota;
+    # mapping to ucightf charges a group with no allocation, and every write
+    # dies with "Disk quota exceeded (122)" a couple of gigabytes in.
     #
     # This has to be an rsync option rather than a chgrp afterwards: access-hpc3
     # is a restricted transfer node and refuses arbitrary remote commands, which

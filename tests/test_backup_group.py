@@ -41,7 +41,7 @@ def transfer_rsyncs(path):
 def test_both_scripts_default_to_the_lab_group():
     for name, path in SCRIPTS.items():
         source = open(path).read()
-        assert 'backup_group="${BACKUP_GROUP-ucightf}"' in source, name
+        assert 'backup_group="${BACKUP_GROUP-ucightf_lab_share}"' in source, name
 
 
 def test_every_remote_rsync_maps_the_group():
