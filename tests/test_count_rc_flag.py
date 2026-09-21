@@ -2,8 +2,8 @@
 
 Recipients of the per-run read-count email are promised a flag naming the
 projects whose submitted indexes had to be reverse-complemented. That flag is a
-column in results/{LIBRARY}-count.csv, one value per lane/group block, so it can
-be read without cross-referencing the orientation summary attachment.
+column in results/{LIBRARY}-count.csv, one value per lane/group block, and is the
+only place the run records which projects were reverse-complemented.
 """
 import csv
 import os

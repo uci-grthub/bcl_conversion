@@ -893,7 +893,6 @@ rule all:
         # expand("logs/{config_id}/project_link_{config_id}_{project}.log", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         expand("logs/{config_id}/project_links_{config_id}---{project}.yaml", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
         f"results/{LIBRARY}-count.csv",
-        "Reports/rc_orientation_summary.csv",
         f"Reports/{LIBRARY}_read_counts_email.done",
         expand("Reports/order_{order_id}/email_sent.done", order_id=ACTIVE_ORDER_IDS + FLEXBAR_ACTIVE_ORDER_IDS),
         expand("output/{config_id}/{project}/.low_reads_checked", zip, config_id=[c for c, p in CONFIG_PROJECT_PAIRS], project=[p for c, p in CONFIG_PROJECT_PAIRS]),
@@ -1374,7 +1373,6 @@ rule send_order_email:
         html = "Reports/order_{order_id}/index.html",
         md5  = "Reports/order_{order_id}/md5sums.txt",
         pdf  = "Reports/order_{order_id}/Download_Instructions.pdf",
-        rc_summary = "Reports/rc_orientation_summary.csv",
         flexbar_extras = lambda wildcards: [
             f"Reports/order_{wildcards.order_id}/{prefix}_{cid}.{ext}"
             for cid in FLEXBAR_CONFIG_BY_ORDER_ID.get(wildcards.order_id, [])
@@ -1393,7 +1391,6 @@ rule send_order_email:
         cc_email = EMAIL_CC,
         subject  = lambda wildcards: (
             f"Sequencing Report for Order {wildcards.order_id}"
-            f"{rc_orientation_tag(wildcards.order_id)}"
         )
     run:
         import subprocess, os, datetime
@@ -2233,7 +2230,6 @@ rule compile_read_counts:
 rule send_read_counts_email:
     input:
         csv = f"results/{LIBRARY}-count.csv",
-        rc_summary = "Reports/rc_orientation_summary.csv",
         order_reports = ORDER_ID_REPORTS
     output:
         touch(f"Reports/{LIBRARY}_read_counts_email.done")
@@ -2248,20 +2244,17 @@ rule send_read_counts_email:
         receiver = EMAIL_RECIPIENT,
         subject = f"Read counts for {LIBRARY}",
         body = lambda wildcards: (
-            f"Attached: per-lane read counts for {LIBRARY}, and the "
-            f"reverse-complement orientation summary.\n\n"
+            f"Attached: per-lane read counts for {LIBRARY}.\n\n"
             f"The read-count table now carries an 'index_rc' column alongside "
             f"'counts' in each lane/group block. It is blank when the project was "
             f"demultiplexed and delivered on the barcodes as submitted, and reads "
             f"'i7', 'i5', or 'i7+i5' when that index had to be reverse-complemented "
             f"to match the index reads. The FASTQ filenames for those projects carry "
-            f"the sequence actually observed, not the submitted one.\n\n"
-            f"The orientation summary lists only the flagged projects, with the "
-            f"submitted and delivered barcode for each."
+            f"the sequence actually observed, not the submitted one."
         ),
         cc_email = EMAIL_CC
     shell:
-        "python3 {params.script} {params.sender} {params.receiver} \"{params.subject}\" \"{params.body}\" \"{input.csv};{input.rc_summary}\" {params.cc_email} > {log} 2>&1"
+        "python3 {params.script} {params.sender} {params.receiver} \"{params.subject}\" \"{params.body}\" \"{input.csv}\" {params.cc_email} > {log} 2>&1"
 
 rule fastp_plots_lane:
     input:
@@ -4187,107 +4180,6 @@ checkpoint pick_orientation:
                     elif os_mod.path.isdir(item_path) and item in rc_projects:
                         lf.write(f"Removing original staging dir for RC-winning project: {item_path}\n")
                         _shutil_rc.rmtree(item_path)
-
-def rc_orientation_tag(order_id):
-    """Subject-line tag naming the RC flavours applied to an order, or ''.
-
-    Operator-facing only: the manager needs to know an RC workflow ran so he can
-    add his own wording for the client, and the report body the client reads is
-    deliberately left untouched.
-    """
-    summary_path = "Reports/rc_orientation_summary.csv"
-    if not os.path.exists(summary_path):
-        return ""
-    try:
-        df = pd.read_csv(summary_path, dtype=str, keep_default_na=False)
-    except Exception:
-        return ""
-    if df.empty or 'order_id' not in df.columns:
-        return ""
-    orientations = set(df.loc[df['order_id'].astype(str).str.strip() == str(order_id).strip(),
-                              'orientation'])
-    flipped = set()
-    for orientation in orientations:
-        flipped.update(tag for tag in rc_index_label(orientation).split('+') if tag)
-    if not flipped:
-        return ""
-    return f" [{rc_tags_label(flipped)} reverse-complement applied]"
-
-rule rc_orientation_summary:
-    """Run-level record of every project that was delivered on a reverse-complemented
-    barcode, so the operator can flag the client's barcode list when reports go out.
-    """
-    input:
-        decisions = expand("logs/{config_id}/orientation_decision_{config_id}.json", config_id=CONFIG_IDS),
-        candidates = expand("logs/{config_id}/rc_candidates_{config_id}.json", config_id=CONFIG_IDS),
-        maps = expand("results/{config_id}/renaming_map_{config_id}_effective.csv", config_id=CONFIG_IDS)
-    output:
-        csv = "Reports/rc_orientation_summary.csv"
-    log:
-        "logs/rc_orientation_summary.log"
-    run:
-        import json as json_mod
-
-        COLUMNS = ["order_id", "config_id", "project", "group", "orientation",
-                   "workbook_i7", "delivered_i7", "workbook_i5", "delivered_i5",
-                   "rc_fraction", "n_samples"]
-        rows = []
-
-        for decision_path in input.decisions:
-            config_id = os.path.basename(os.path.dirname(decision_path))
-            with open(decision_path) as f:
-                decision = json_mod.load(f)
-            rc_projects = {p: o for p, o in decision.items() if str(o).startswith("rc")}
-            if not rc_projects:
-                continue
-
-            # rc_fraction is the evidence behind the decision, carried per index pair.
-            # Keep the strongest pair per project.
-            fractions = {}
-            candidates_path = f"logs/{config_id}/rc_candidates_{config_id}.json"
-            if os.path.exists(candidates_path):
-                with open(candidates_path) as f:
-                    for record in json_mod.load(f):
-                        project = record.get("project")
-                        try:
-                            fraction = float(record.get("rc_fraction", 0) or 0)
-                        except (TypeError, ValueError):
-                            fraction = 0.0
-                        fractions[project] = max(fractions.get(project, 0.0), fraction)
-
-            map_df = pd.read_csv(f"results/{config_id}/renaming_map_{config_id}_effective.csv",
-                                 dtype=str, keep_default_na=False)
-            for project, orientation in sorted(rc_projects.items()):
-                project_rows = map_df[map_df["Sample_Project"].str.strip() == project]
-                if project_rows.empty:
-                    continue
-                first = project_rows.iloc[0]
-                group = str(first.get("Group", "")).strip()
-                try:
-                    lane = int(float(first.get("Lane", 0)))
-                    order_id = ORDER_ID_LOOKUP.get((lane, int(float(group))), "")
-                except (TypeError, ValueError):
-                    order_id = ""
-                rows.append({
-                    "order_id": order_id,
-                    "config_id": config_id,
-                    "project": project,
-                    "group": group,
-                    "orientation": orientation,
-                    "workbook_i7": first.get("index_workbook", ""),
-                    "delivered_i7": first.get("index", ""),
-                    "workbook_i5": first.get("index2_workbook", ""),
-                    "delivered_i5": first.get("index2", ""),
-                    "rc_fraction": f"{fractions.get(project, 0.0):.4f}",
-                    "n_samples": len(project_rows),
-                })
-
-        pd.DataFrame(rows, columns=COLUMNS).to_csv(output.csv, index=False)
-        with open(log[0], "w") as lf:
-            lf.write(f"{len(rows)} project(s) delivered on a reverse-complemented barcode\n")
-            for row in rows:
-                lf.write(f"{row['config_id']} {row['project']} (order {row['order_id']}): "
-                         f"{row['orientation']}, {row['n_samples']} samples\n")
 
 rule generate_effective_renaming_map:
     """Rewrite the renaming map with the barcodes DRAGEN actually demultiplexed with.

@@ -195,7 +195,7 @@ snakemake --cores 1 results/iR011-count.csv
 ```bash
 snakemake --cores 1 Reports/iR011_read_counts_email.done
 ```
-- Sends the read count CSV and `Reports/rc_orientation_summary.csv` as attachments
+- Sends the read count CSV as an attachment
 - Uses SMTP (Gmail SSL, `smtp.gmail.com:465`, `GMAIL_APP_PASSWORD` from the environment)
 - `SEND_EMAIL_DRY_RUN=1` composes the message without sending it
 
