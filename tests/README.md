@@ -24,7 +24,6 @@ added.
 |---|---|
 | `test_effective_map.py` | `apply_orientation_to_map` — workbook barcodes to delivered barcodes |
 | `test_restem_by_position.py` | `restem_by_position` — renaming delivered files onto the new barcode |
-| `test_rc_notice.py` | `rc_orientation_summary` rule body and the `rc_orientation_tag` subject tag |
 | `test_backfill.py` | `scripts/backfill_rc_barcode_names.py` end to end |
 | `_helpers.py` | Loads pipeline code that is not importable (see below) |
 | `fixtures/renaming_map_lane5.csv` | Synthetic 5-sample renaming map |
