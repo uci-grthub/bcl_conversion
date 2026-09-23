@@ -92,6 +92,11 @@ LIBRARY = config.get("library_name", "xR079")  # From merged config (project-spe
 START_S = config.get("start_s", 1)
 DRYRUN = _cfg_truthy(config.get("dryrun", False))
 DATA_DIR = config.get("data_dir", "/staging/nextcloud/NovaseqX/20260115_LH00626_0088_A233NM2LT4")  # From merged config
+# The instrument writes CopyComplete.txt once the run has finished copying to data_dir.
+# Both demux rules take it as an input so a run launched early (e.g. a manual
+# `pixi run all` instead of the cron monitor) fails at DAG build instead of
+# converting a partial run. ancient(): its mtime must never reschedule a demux.
+COPY_COMPLETE = os.path.join(DATA_DIR, "CopyComplete.txt")
 TILES = config.get("tiles", "1_1101")
 FLEXBAR_BIN = config.get("flexbar_bin", "")
 DRAGEN_BIN = config.get("dragen_bin", "/opt/dragen/4.4.7/bin/dragen")
@@ -3224,6 +3229,7 @@ rule bcl_convert:
         sample_sheet=lambda wildcards: f"results/{wildcards.config_id}/SampleSheet_{wildcards.config_id}_validated.csv",
         renaming_map = maybe_ancient("results/{config_id}/renaming_map_{config_id}.csv"),
         data_dir=DATA_DIR,
+        copy_complete=ancient(COPY_COMPLETE),
         _sheet_done=lambda wildcards: maybe_ancient(f"logs/{wildcards.config_id}/generate_samplesheets_{wildcards.config_id}.done"),
         run_info = "src/RunInfo_nn.xml",
         prev_done = get_prev_bcl_done
@@ -3985,6 +3991,7 @@ rule bcl_convert_rc:
         renaming_map = maybe_ancient("results/{config_id}/renaming_map_{config_id}.csv"),
         candidates = maybe_ancient("logs/{config_id}/rc_candidates_{config_id}.json"),
         data_dir = DATA_DIR,
+        copy_complete = ancient(COPY_COMPLETE),
         run_info = "src/RunInfo_nn.xml",
         orig_done = maybe_ancient(".output/{config_id}/.done")
     output:
