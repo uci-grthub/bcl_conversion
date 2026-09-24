@@ -1,26 +1,41 @@
-Set up a cron job to monitor for CopyComplete.txt and trigger Snakemake (via pixi) in a
-new tmux session named after the run's library.
+Set up a cron job that waits for CopyComplete.txt, then runs `pixi run all` followed by
+`pixi run publish`, exactly once, directly from cron (no tmux).
 
-The monitor_and_run_snakemake.sh script already handles everything: it reads data_dir and
-library_name from snakemake_config_project.yaml, waits for CopyComplete.txt in data_dir,
-and launches `pixi run all` inside a tmux session. pixi activation loads .env and sets
+run_when_ready.sh handles everything: it reads data_dir from snakemake_config_project.yaml,
+exits quietly until CopyComplete.txt appears in data_dir, then runs `pixi run all` and, only
+if that succeeds, `pixi run publish`. pixi activation loads .env and sets
 SNAKEMAKE_PROFILE=profiles/default, so no --profile flag or manual env sourcing is needed.
 
-1. Ensure 'data_dir' and 'library_name' are set in snakemake_config_project.yaml, e.g.:
-     data_dir: /staging/nextcloud/Miseqi100/20260626_SH00564_0020_ASC2231455-SC3
-     library_name: iR011
+1. Ensure 'data_dir' is set in snakemake_config_project.yaml, e.g.:
+     data_dir: /staging/nextcloud/NovaseqX/20260922_LH00626_0134_B22MWJHLT1
 
 2. Provision the environment once (creates .pixi/ from pixi.toml / pixi.lock):
      pixi install
 
-3. Make the script executable:
-     chmod +x /staging/nextcloud/testing_illumina/MiSeqi100/iR011/monitor_and_run_snakemake.sh
+3. Make the script executable and check it by hand (it should print "waiting for ..."
+   until the sequencer finishes, and must not create .auto_launched):
+     chmod +x <run_dir>/run_when_ready.sh
+     <run_dir>/run_when_ready.sh
 
-4. Add the following line to your crontab ('crontab -e') to check every hour:
-     0 * * * * /staging/nextcloud/testing_illumina/MiSeqi100/iR011/monitor_and_run_snakemake.sh >> /staging/nextcloud/testing_illumina/MiSeqi100/iR011/monitor_and_run_snakemake.log 2>&1
+4. Add half-hourly entries with 'crontab -e'. cron has no start date, so bound the schedule with
+   day-of-month/month fields. Example: start at 06:00 on Sep 24, keep checking through Sep 30:
+     */30 6-23 24 9 * <run_dir>/run_when_ready.sh >> <run_dir>/logs/cron_run.log 2>&1
+     */30 * 25-30 9 * <run_dir>/run_when_ready.sh >> <run_dir>/logs/cron_run.log 2>&1
+   where <run_dir> is e.g. /staging/nextcloud/testing_illumina/NovaSeqX/xR118
+
+5. After the run has published, remove its lines from the crontab. A dated entry such as
+   `0 6 24 9 *` fires again every year if left behind.
 
 Notes:
+- Publish really sends the per-order emails. The .auto_launched sentinel (created just
+  before `pixi run all`) makes every later cron tick a no-op, so customers are never
+  re-mailed. Delete it only to deliberately re-run all + publish.
+- .auto_launch.lock (flock) stops an hourly tick from starting a second copy while a long
+  run is still in progress.
+- Logs: logs/cron_run.log (cron wrapper), logs/driver/ (snakemake), logs/publish_*.log.
 - cron runs with a minimal PATH. The script resolves pixi automatically, falling back to
-  $HOME/.pixi/bin/pixi when pixi is not on PATH, so no PATH edits are required in crontab.
-- DRAGEN must be available on the system PATH for the cron user (bcl-convert is not
-  provisioned by pixi).
+  $HOME/.pixi/bin/pixi, so no PATH edits are required in crontab.
+- DRAGEN is referenced by absolute path (dragen_bin in the project config); it must be
+  installed on this host (not provisioned by pixi). This is why the job runs here via cron
+  and not under Slurm: bcl-convert needs this machine's DRAGEN FPGA and local /staging.
+- monitor_and_run_snakemake.sh (tmux launcher, `pixi run all` only) is the older approach.
