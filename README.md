@@ -226,6 +226,16 @@ pixi run publish NovaSeqx xR101 /mnt/usb false              # custom dest, paral
 Set the 4th argument to `false` for USB/local-disk destinations — there is no network
 latency to hide and concurrent writes to one drive only cause seek contention.
 
+Standalone, `sync_run` also takes a 5th `dest_name` (rename the mirrored run dir) and a
+6th lane subset (`4-6`, `7,8`, `lane3`, …) for splitting a run across drives or resuming
+a transfer. Lanes not named are neither copied nor deleted at the destination. `publish`
+refuses a lane subset, since it would mail orders for lanes missing from the mirror:
+
+```bash
+bash scripts/sync_run.sh NovaSeqX xR108 /mnt/extusb3 false '' 4-6
+bash scripts/sync_run.sh NovaSeqX xR108 /mnt/extusb4 false xR108_part2 7,8
+```
+
 Notes:
 
 - Run it **from the run directory**, so the `snakemake` steps see the right config.
@@ -234,7 +244,7 @@ Notes:
   `bash scripts/sync_run.sh NovaSeqx xR101`.
 - `sync_run` rewrites `nextcloud_dir_name`/`nextcloud_dir_path` in the **mirrored** copy
   of `snakemake_config_project.yaml` so links point at the JBOD share, and excludes
-  `.snakemake`, `Reports`, and link logs from the transfer.
+  `.snakemake`, the top-level `Reports/`, and link logs from the transfer.
 - Instrument/run casing is resolved case-insensitively (`NovaSeqx` matches `NovaSeqX`).
 
 ## Common Commands
