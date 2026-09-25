@@ -6,7 +6,7 @@
 #   PARALLEL=4 pixi run publish NovaSeqx xR101 /mnt/usb false   # extra sync_run args pass through
 #
 # Steps 3-6 run IN THE MIRROR, not in the source run dir:
-#   1. sync_run <instrument> <run_id> [dest] [parallel]  -- rsync mirror to share
+#   1. sync_run <instrument> <run_id> [dest] [parallel] [dest_name]  -- rsync mirror to share
 #   2. verify_mirror.py              -- every FASTQ in the mirror's md5sums.txt is
 #                                       present and matches the source size
 #   3. dedupe_mirror.py --apply      -- hardlink byte-identical FASTQs together
@@ -78,6 +78,14 @@ if [[ $# -eq 0 ]]; then
     fi
     say "no run given; using instrument=$derived_instrument run_id=$derived_run_id (from $run_dir)"
     set -- "$derived_instrument" "$derived_run_id" "$@"
+fi
+
+# sync_run's 6th arg copies only some lanes. That is for splitting a run across
+# drives, never for publishing: steps 4-5 would --touch and mail orders whose
+# lanes are not in the mirror. Run `bash scripts/sync_run.sh` directly for that.
+if [[ -n "${6:-}" ]]; then
+    echo "ERROR: lane subset ($6) not allowed in publish -- it would mail orders for lanes missing from the mirror" >&2
+    exit 1
 fi
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
