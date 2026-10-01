@@ -18,10 +18,25 @@ sync_run() {
     # destination is a USB / local disk: there is no network latency to hide and
     # concurrent writes to a single drive just cause seek contention, so a single
     # sequential stream is faster.
-    local instrument="${1:?Usage: sync_run <instrument> <run_id> [dest_base] [parallel]  (instrument: MiSeqi100 | NovaSeqx)}"
-    local run_id="${2:?Usage: sync_run <instrument> <run_id> [dest_base] [parallel]}"
+    #
+    # The 5th arg renames the destination run dir (default: the run_id as cased
+    # on disk), e.g. to tag a copy `<run_id>_rerun` without touching the source.
+    #
+    # The 6th arg restricts which output/ lanes are copied (default: all). Useful
+    # when one run has to be split across drives, or to resume a transfer that
+    # died partway. Accepts bare numbers, `laneN` names, ranges, and any mix,
+    # comma- or space-separated:
+    #     sync_run NovaSeqX xR108 /mnt/extusb3 false '' 4-6
+    #     sync_run NovaSeqX xR108 /mnt/extusb4 false '' 7,8
+    # Lanes that were not asked for are neither copied nor deleted at the
+    # destination; everything outside output/ is still copied in full.
+    local usage="sync_run <instrument> <run_id> [dest_base] [parallel] [dest_name] [lanes]"
+    local instrument="${1:?Usage: $usage  (instrument: MiSeqi100 | NovaSeqx)}"
+    local run_id="${2:?Usage: $usage}"
     local dest_base="${3:-/mnt/jbod_localdisk/nextshare/bcl_convert}"
     local parallel_enabled="${4:-true}"
+    local dest_name="${5:-}"
+    local lanes_arg="${6:-}"
     # Resolve run dir case-insensitively: the instrument dir on disk may be
     # cased differently than the arg (e.g. NovaSeqX vs NovaSeqx).
     local src="" base hit
@@ -41,8 +56,37 @@ sync_run() {
     # NovaSeqX) so the dest path matches the existing, writable share dirs.
     run_id=$(basename "$src")
     instrument=$(basename "$(dirname "$src")")
-    local dest="${dest_base}/${instrument}/${run_id}"
+    local dest="${dest_base}/${instrument}/${dest_name:-$run_id}"
     local parallel="${PARALLEL:-2}"
+
+    # Expand the lane arg into output/ subdir names: "4-6" -> lane4 lane5 lane6,
+    # "7,8" -> lane7 lane8. Empty stays empty, meaning "all lanes". Validated
+    # before anything is created at the destination.
+    local -a lane_dirs=()
+    if [[ -n "$lanes_arg" ]]; then
+        local tok lo hi n
+        for tok in ${lanes_arg//,/ }; do
+            tok="${tok#lane}"
+            if [[ "$tok" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+                lo="${BASH_REMATCH[1]}"
+                hi="${BASH_REMATCH[2]}"
+                for ((n = lo; n <= hi; n++)); do
+                    lane_dirs+=("lane$n")
+                done
+            elif [[ "$tok" =~ ^[0-9]+$ ]]; then
+                lane_dirs+=("lane$tok")
+            else
+                echo "ERROR: bad lane spec '$tok' in '$lanes_arg' (want e.g. 4-6, 7,8, lane3)" >&2
+                return 1
+            fi
+        done
+        for n in "${lane_dirs[@]}"; do
+            if [[ ! -d "$src/output/$n" ]]; then
+                echo "ERROR: no such lane dir: $src/output/$n" >&2
+                return 1
+            fi
+        done
+    fi
 
     mkdir -p "$dest"
 
@@ -53,12 +97,18 @@ sync_run() {
     echo "[sync_run] src:      $src"
     echo "[sync_run] dest:     $dest"
     echo "[sync_run] parallel: $parallel_enabled (PARALLEL=$parallel)"
+    echo "[sync_run] lanes:    ${lane_dirs[*]:-all}"
     echo "[sync_run] excluded from mirror (rebuilt there): .snakemake, Reports, logs/*link*"
     echo "[sync_run] hardlinks preserved within the sequential pass (-H); across passes, see dedupe_mirror.py"
 
     if [[ "$parallel_enabled" != "false" && -d "$src/output" ]]; then
         mkdir -p "$dest/output"
-        echo "[sync_run] output/ subdirs to sync: $(ls "$src/output" | wc -l)"
+        # With a lane subset, only those subdirs; otherwise everything in output/.
+        local -a subdirs=("${lane_dirs[@]}")
+        if ((${#subdirs[@]} == 0)); then
+            mapfile -t subdirs < <(ls "$src/output")
+        fi
+        echo "[sync_run] output/ subdirs to sync: ${#subdirs[@]}"
         # Per-subdir start/finish lines with size and duration -- concurrent
         # rsync progress meters would scramble each other, so the transfers stay
         # quiet and each worker reports around its own rsync instead.
@@ -67,7 +117,7 @@ sync_run() {
         # any of them failed. Without this the worker printed DONE regardless, the
         # failure scrolled past in a parallel log, and publish_run.sh went on to
         # --touch the missing outputs current and mail links for them.
-        if ! ls "$src/output" | xargs -P"$parallel" -I{} \
+        if ! printf '%s\n' "${subdirs[@]}" | xargs -P"$parallel" -I{} \
             sh -c '
                 started=$(date +%s)
                 echo "[sync_run $(date +%H:%M:%S)] START  output/{} ($(du -sh "$1/output/{}" 2>/dev/null | cut -f1))"
@@ -105,12 +155,27 @@ sync_run() {
     # found no Demultiplex_Stats.csv and printed "N/A" for every sample's paired
     # reads. Only the top-level order reports are meant to be excluded here, for the
     # run and for each variant, because publish rebuilds those in the mirror.
+    #
+    # With a lane subset, every lane dir that was NOT asked for is excluded here,
+    # so it is neither copied nor (on a resumed/split copy) disturbed at the
+    # destination. The wanted lanes are left in: when parallel is off this pass is
+    # what copies them; when it is on they are already done and rsync skips them.
+    local -a lane_excludes=()
+    if ((${#lane_dirs[@]} > 0)); then
+        local d
+        for d in "$src"/output/*/; do
+            d=$(basename "$d")
+            [[ " ${lane_dirs[*]} " == *" $d "* ]] && continue
+            lane_excludes+=(--exclude "/output/$d/")
+        done
+    fi
     if ! rsync -aWH --info=progress2 --stats -h \
         --exclude '.snakemake' \
         --exclude 'logs/*link*' \
         --exclude 'logs/**/*link*' \
         --exclude '/Reports' \
         --exclude '/sweeps/*/Reports' \
+        ${lane_excludes[@]+"${lane_excludes[@]}"} \
         "$src/" "$dest/"
     then
         echo "[sync_run] ERROR: rsync of the remaining run files failed" >&2
