@@ -39,3 +39,7 @@ recover_flexbar_r2.sh
 recover_lane6_r2.sh
 # pixi: track manifest + lockfile, ignore the solved environment
 .pixi/
+
+# run_when_ready.sh cron state
+.auto_launched
+.auto_launch.lock

@@ -100,6 +100,11 @@ COPY_COMPLETE = os.path.join(DATA_DIR, "CopyComplete.txt")
 TILES = config.get("tiles", "1_1101")
 FLEXBAR_BIN = config.get("flexbar_bin", "")
 DRAGEN_BIN = config.get("dragen_bin", "/opt/dragen/4.4.7/bin/dragen")
+# Host-wide lock around every DRAGEN invocation. serial_operation=1 only
+# serializes within one snakemake process; two run dirs (e.g. xR118 and xR119,
+# or a MiSeqi100 run) converting at once would contend for the FPGA. A second
+# run blocks here until the first run's DRAGEN job exits.
+DRAGEN_HOST_LOCK = config.get("dragen_host_lock", "/staging/nextcloud/testing_illumina/.dragen.lock")
 USE_ANCIENT = _cfg_truthy(config.get("use_ancient", True))
 REPORT_UNDETERMINED_CONFIGS = config.get("report_undetermined_configs", [])
 _effective_keep = list(config.get("keep_undetermined_configs", []))
@@ -3251,7 +3256,8 @@ rule bcl_convert:
         tiles = TILES,
         scratch_dir = SCRATCH_DIR,
         keep_undetermined_configs = KEEP_UNDETERMINED_CONFIGS,
-        dragen_bin = DRAGEN_BIN
+        dragen_bin = DRAGEN_BIN,
+        host_lock = DRAGEN_HOST_LOCK
     shell:
         """
         (
@@ -3295,6 +3301,23 @@ rule bcl_convert:
             echo "       Refusing to start: concurrent runs share DRAGEN board 0 and"
             echo "       the same output directory. Stop the other run first."
             exit 1
+        fi
+
+        # Then wait for any OTHER run dir's DRAGEN job (DRAGEN_HOST_LOCK). Unlike
+        # the per-config lock above this one blocks rather than failing, so an
+        # overlapping run just queues. Opened read-only: flock works on any fd,
+        # and the lock file may belong to another operator. fd 8 is inherited by
+        # dragen for the same reason as fd 9. The blocking flock runs as a
+        # background child so `wait` keeps the INT/TERM trap responsive; the lock
+        # belongs to the shared open file description, so it stays held after
+        # that child exits.
+        touch "{params.host_lock}" 2>/dev/null && chmod a+rw "{params.host_lock}" 2>/dev/null || true
+        exec 8<"{params.host_lock}"
+        if ! flock -n 8; then
+            echo "$(date) waiting for DRAGEN host lock {params.host_lock} (another run is converting)"
+            flock 8 &
+            wait $!
+            echo "$(date) acquired DRAGEN host lock"
         fi
 
         run_dragen() {{
@@ -4011,9 +4034,10 @@ rule bcl_convert_rc:
         lane = lambda wildcards: wildcards.config_id.split('_')[0].replace('lane', ''),
         run_info_path = "src/RunInfo_nn.xml",
         tiles = TILES,
-        dragen_bin = DRAGEN_BIN
+        dragen_bin = DRAGEN_BIN,
+        host_lock = DRAGEN_HOST_LOCK
     run:
-        import json as json_mod, subprocess, sys as sys_mod, os as os_mod
+        import json as json_mod, subprocess, sys as sys_mod, os as os_mod, fcntl
         with open(input.candidates) as f:
             suspects = json_mod.load(f)
         os_mod.makedirs(output.output_dir, exist_ok=True)
@@ -4040,7 +4064,18 @@ rule bcl_convert_rc:
             ] + tiles_args
             lf.write(f"Running: {' '.join(cmd)}\n")
             lf.flush()
-            result = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, timeout=7200)
+            # Host-wide DRAGEN lock, see DRAGEN_HOST_LOCK and rule bcl_convert.
+            lock_fd = os_mod.open(params.host_lock, os_mod.O_RDONLY | os_mod.O_CREAT, 0o666)
+            try:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    lf.write(f"Waiting for DRAGEN host lock {params.host_lock} (another run is converting)\n")
+                    lf.flush()
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                result = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, timeout=7200)
+            finally:
+                os_mod.close(lock_fd)
             if result.returncode != 0:
                 raise RuntimeError(f"DRAGEN RC run failed for {wildcards.config_id}")
 
