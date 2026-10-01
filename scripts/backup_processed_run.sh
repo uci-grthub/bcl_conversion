@@ -68,6 +68,21 @@ _backup_report_group() {
     fi
 }
 
+# Log the transfer's wall time and byte counts to the shared transfer-times
+# database (scripts/transfer_db.py; TRANSFER_DB overrides its location). A
+# warning, never a failure, for the same reason as the group check: bookkeeping
+# must not fail a backup, nor mask how the backup itself turned out.
+_backup_record_transfer() {
+    local tag="$1"
+    shift
+    local out
+    if out=$(python3 "$(dirname "${BASH_SOURCE[0]}")/transfer_db.py" record "$@" 2>&1); then
+        echo "[$tag] $out"
+    else
+        echo "[$tag] WARNING: transfer time not recorded: ${out##*$'\n'}" >&2
+    fi
+}
+
 processed_novaseqx_backup() {
     local run="${1:?Usage: processed_novaseqx_backup <run> [dest_base] [host]}"
     local dest_base="${2:-/dfs3b/ucightf_lab/NSProcessed}"
@@ -189,9 +204,28 @@ processed_novaseqx_backup() {
         return $?
     fi
 
-    if ! rsync "${rsync_opts[@]}" --info=progress2 --stats -h \
-        "${group_opts[@]}" "${excludes[@]}" "$src" "${host}:${dest_base}/"
-    then
+    # The output is teed to a temp file so the --stats byte counts can go to the
+    # transfer-times database. The brace group keeps rsync's own exit status
+    # (not tee's) and stops set -e aborting before the failure is recorded.
+    local stats_file started finished rsync_status=0
+    stats_file=$(mktemp "${TMPDIR:-/tmp}/proc_backup_stats.XXXXXX")
+    started=$(date +%s)
+    {
+        rsync "${rsync_opts[@]}" --info=progress2 --stats -h \
+            "${group_opts[@]}" "${excludes[@]}" "$src" "${host}:${dest_base}/" \
+            | tee "$stats_file"
+        rsync_status=${PIPESTATUS[0]}
+    } || true
+    finished=$(date +%s)
+    local -a record=(--kind processed --name "$name" --run-id "$name"
+                     --src "$src" --dest "${host}:${dest}"
+                     --started "$started" --finished "$finished"
+                     --rsync-exit "$rsync_status" --stats-file "$stats_file"
+                     --bwlimit "${BWLIMIT:-}")
+
+    if [[ "$rsync_status" -ne 0 ]]; then
+        _backup_record_transfer proc_backup "${record[@]}" --status failed
+        rm -f "$stats_file"
         echo "[proc_backup] ERROR: transfer failed -- rerun to resume" >&2
         return 1
     fi
@@ -203,10 +237,15 @@ processed_novaseqx_backup() {
     diff=$(rsync -anH --itemize-changes "${group_opts[@]}" "${excludes[@]}" \
            "$src" "${host}:${dest_base}/")
     if [[ -n "$diff" ]]; then
+        _backup_record_transfer proc_backup "${record[@]}" --status incomplete
+        rm -f "$stats_file"
         echo "[proc_backup] ERROR: mirror incomplete, still differing:" >&2
         echo "$diff" | head -20 >&2
         return 1
     fi
+
+    _backup_record_transfer proc_backup "${record[@]}" --status ok
+    rm -f "$stats_file"
 
     _backup_report_group "$host" "$dest_base" "$name" "$backup_group" proc_backup
 
