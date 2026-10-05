@@ -127,9 +127,12 @@ processed_novaseqx_backup() {
     fi
 
     # One multiplexed SSH connection carries every command below, so DUO is
-    # answered once rather than per-rsync.
-    if ! ssh -O check "$host" >/dev/null 2>&1; then
-        echo "ERROR: no SSH master connection to '$host'." >&2
+    # answered once rather than per-rsync. With no master open, try to start one
+    # by key auth: BatchMode never prompts, so cron fails fast instead of
+    # hanging on DUO when the key is not accepted (or not loaded in an agent).
+    if ! ssh -O check "$host" >/dev/null 2>&1 \
+       && ! ssh -fN -o BatchMode=yes "$host" 2>/dev/null; then
+        echo "ERROR: no SSH master connection to '$host' and key auth failed." >&2
         echo "       Run 'ssh -fN $host' first and answer the DUO prompt." >&2
         return 1
     fi

@@ -203,8 +203,17 @@ else
 fi
 
 say "emails sent this run:"
-find Reports sweeps/*/Reports -name email_sent.done -newermt "@$PUBLISH_START" \
-    -printf '    %p\n' 2>/dev/null | sort
+# Only search Reports dirs that exist: with no sweep variants, sweeps/*/Reports
+# stays a literal path, find exits 1, and pipefail would fail the whole publish
+# after every email had already gone out.
+report_dirs=()
+for d in Reports sweeps/*/Reports; do
+    [[ -d "$d" ]] && report_dirs+=("$d")
+done
+if (( ${#report_dirs[@]} )); then
+    find "${report_dirs[@]}" -name email_sent.done -newermt "@$PUBLISH_START" \
+        -printf '    %p\n' | sort
+fi
 
 say "PUBLISH COMPLETE in $(elapsed "$PUBLISH_START" "$(date +%s)")  mirror: $SYNC_RUN_DEST"
 say "log: $PUBLISH_LOG"
