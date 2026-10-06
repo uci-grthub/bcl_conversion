@@ -225,29 +225,41 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
             elif 'Sample Name' in df.columns:
                 sample_name_col = 'Sample Name'
             
+            # Duplicates only count within one lane: DRAGEN requires Sample_ID to be
+            # unique per lane, and a sample sequenced on several lanes keeps one name.
+            # Without a usable Lane column, fall back to per-project uniqueness.
+            lane_col = next((c for c in ('Lane', 'Lane.1') if c in df.columns), None)
+
+            def _lane_key(val):
+                try:
+                    return int(float(val))
+                except (TypeError, ValueError):
+                    return None
+
+            lane_keys = df[lane_col].map(_lane_key) if lane_col else pd.Series(None, index=df.index)
+
             # If we have both project and sample name columns, make sample names unique
             if project_col and sample_name_col:
                 for project in df[project_col].unique():
                     if pd.isna(project) or str(project).strip() == '' or str(project).lower() == 'nan':
                         continue
-                    
+
                     project_mask = df[project_col] == project
-                    project_indices = df[project_mask].index
-                    
-                    # Count occurrences of each Sample_Name within this project
-                    sample_names_in_project = df.loc[project_indices, sample_name_col]
-                    sample_name_counts = sample_names_in_project.value_counts()
-                    
-                    # For Sample_Names that appear more than once, add suffixes
-                    for sample_name, count in sample_name_counts.items():
-                        if count > 1 and pd.notna(sample_name):
-                            # Find all occurrences of this Sample_Name in this project
-                            dup_mask = (df[project_col] == project) & (df[sample_name_col] == sample_name)
-                            dup_indices = df[dup_mask].index
-                            
-                            # Append suffix to each duplicate (_1, _2, etc.)
-                            for i, idx in enumerate(dup_indices, start=1):
-                                df.loc[idx, sample_name_col] = f"{sample_name}_{i}"
+
+                    for lane in lane_keys[project_mask].unique():
+                        scope_mask = project_mask & (lane_keys.isna() if pd.isna(lane) else lane_keys == lane)
+
+                        # Count occurrences of each Sample_Name within this lane + project
+                        sample_name_counts = df.loc[scope_mask, sample_name_col].value_counts()
+
+                        # For Sample_Names that appear more than once, add suffixes
+                        for sample_name, count in sample_name_counts.items():
+                            if count > 1 and pd.notna(sample_name):
+                                dup_indices = df[scope_mask & (df[sample_name_col] == sample_name)].index
+
+                                # Append suffix to each duplicate (_1, _2, etc.)
+                                for i, idx in enumerate(dup_indices, start=1):
+                                    df.loc[idx, sample_name_col] = f"{sample_name}_{i}"
         except Exception:
             # If uniqueness logic fails, continue with filled but non-unique sample names
             pass

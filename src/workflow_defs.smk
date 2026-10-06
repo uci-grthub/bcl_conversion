@@ -365,6 +365,21 @@ def write_renaming_map(map_df, map_file):
     map_df = map_df[required_cols]
     map_df.to_csv(map_file, index=False, quoting=csv.QUOTE_MINIMAL)
 
+def sanitize_sample_name(name):
+    """Make a workbook sample name safe for a DRAGEN Sample_ID.
+
+    Only alphanumerics, '-' and '_' are allowed. Each run of other characters
+    (spaces, '&', '/', ',', line breaks) becomes '_', runs of '_' collapse to one,
+    and leading/trailing '_' are dropped. Blank names become "Sample".
+    """
+    name = str(name).strip()
+    if not name or name.lower() == 'nan':
+        return "Sample"
+    name = re.sub(r'[^a-zA-Z0-9\-_]+', '_', name)
+    name = re.sub(r'_+', '_', name).strip('_')
+    return name or "Sample"
+
+
 def filldown_and_make_unique_sample_names(df):
     """
     Fill down missing Sample Names and make them unique within each project.
@@ -408,11 +423,23 @@ def filldown_and_make_unique_sample_names(df):
                             df.loc[idx, 'Sample_Name'] = prev_val
                             break
     
-    # Make Sample_Name unique within each project by appending suffixes.
+    # Make Sample_Name unique within each (Lane, Project) by appending suffixes.
+    # DRAGEN only requires Sample_ID to be unique within a lane; the same sample
+    # sequenced on several lanes keeps one name (the lane is already in the FASTQ
+    # name), so duplicates are only counted inside a lane. Without a usable Lane
+    # column, fall back to per-project uniqueness.
     # Skip 10x/BD/Parse projects: CellRanger/BD tools rely on the Illumina lane
     # number embedded in the FASTQ filename (L001, L002, …) to distinguish
     # multi-lane replicates, so adding _1/_2 suffixes here would break that
     # auto-merging convention and confuse clients.
+    def _lane_key(val):
+        try:
+            return int(float(val))
+        except (TypeError, ValueError):
+            return None
+
+    lane_keys = df['Lane'].map(_lane_key) if 'Lane' in df.columns else pd.Series(None, index=df.index)
+
     for project in df['Project'].unique():
         if pd.isna(project) or str(project).strip() == '' or str(project).lower() == 'nan':
             continue
@@ -421,22 +448,22 @@ def filldown_and_make_unique_sample_names(df):
             continue
 
         project_mask = df['Project'] == project
-        project_indices = df[project_mask].index
 
-        # Count occurrences of each Sample_Name within this project
-        sample_name_counts = df.loc[project_indices, 'Sample_Name'].value_counts()
+        for lane in lane_keys[project_mask].unique():
+            scope_mask = project_mask & (lane_keys.isna() if pd.isna(lane) else lane_keys == lane)
 
-        # For Sample_Names that appear more than once, add suffixes
-        for sample_name, count in sample_name_counts.items():
-            if count > 1:
-                # Find all occurrences of this Sample_Name in this project
-                dup_mask = (df['Project'] == project) & (df['Sample_Name'] == sample_name)
-                dup_indices = df[dup_mask].index
+            # Count occurrences of each Sample_Name within this lane + project
+            sample_name_counts = df.loc[scope_mask, 'Sample_Name'].value_counts()
 
-                # Append suffix to each duplicate (_1, _2, etc.)
-                for i, idx in enumerate(dup_indices, start=1):
-                    df.loc[idx, 'Sample_Name'] = f"{sample_name}_{i}"
-    
+            # For Sample_Names that appear more than once, add suffixes
+            for sample_name, count in sample_name_counts.items():
+                if count > 1:
+                    dup_indices = df[scope_mask & (df['Sample_Name'] == sample_name)].index
+
+                    # Append suffix to each duplicate (_1, _2, etc.)
+                    for i, idx in enumerate(dup_indices, start=1):
+                        df.loc[idx, 'Sample_Name'] = f"{sample_name}_{i}"
+
     return df
 
 def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name):
@@ -1253,13 +1280,8 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             final_names = []
             seen = set()
             for name in lane_df['Sample_Name']:
-                name = str(name).strip()
-                if not name or name.lower() == 'nan':
-                    name = "Sample"
-                
-                # Sanitize name: allow only alphanumeric, -, _
-                name = re.sub(r'[^a-zA-Z0-9\-_]', '_', name)
-                
+                name = sanitize_sample_name(name)
+
                 # Prevent "Undetermined" as Sample_ID
                 if name.lower() == "undetermined":
                     name = "Sample_Undetermined"

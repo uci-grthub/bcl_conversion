@@ -6,6 +6,7 @@ than duplicating that logic here — which would let a test keep passing after t
 real code changed — these loaders extract the shipped source and exec it.
 """
 import os
+import re
 import sys
 import textwrap
 
@@ -50,6 +51,25 @@ def load_workflow_defs_helpers():
     start = source.index("def revcomp(seq):")
     end = source.index("# Sanitize Masking strings for filenames")
     return _exec_source(source[start:end], {"pd": pd})
+
+
+def load_workflow_defs_function(name, end_marker):
+    """A module-level function from workflow_defs.smk, by name.
+
+    The 10x/Parse/BD detector block is exec'd first so the function sees the
+    same is_parse_or_10x the pipeline uses.
+    """
+    import pandas as pd
+
+    path = os.path.join(REPO, "src", "workflow_defs.smk")
+    with open(path) as handle:
+        source = handle.read()
+    detector_start = source.index("# 10x/Parse/BD naming:")
+    detector_end = source.index("def is_special_atac_project_or_sheet(")
+    start = source.index(f"def {name}(")
+    namespace = _exec_source(source[detector_start:detector_end]
+                             + source[start:source.index(end_marker, start)], {"pd": pd, "re": re})
+    return namespace[name]
 
 
 def load_snakefile_function(name, end_marker):
