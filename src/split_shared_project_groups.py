@@ -25,6 +25,8 @@ import sys
 import pandas as pd
 from pathlib import Path
 
+from naming import normalize_project_name
+
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
@@ -44,6 +46,9 @@ def main():
     df_summary = df_summary.dropna(subset=["Lane", "Gr"])
     df_summary["Lane"] = df_summary["Lane"].apply(lambda x: int(float(x)))
     df_summary["Gr"] = df_summary["Gr"].apply(lambda x: int(float(x)))
+    # Same key the sample sheets use for Sample_Project, so the renaming-map
+    # match below sees the name DRAGEN actually wrote.
+    df_summary["Project Name"] = df_summary["Project Name"].map(normalize_project_name)
 
     # Find project names that appear in >1 group on the same lane
     counts = df_summary.groupby(["Lane", "Project Name"]).size()
