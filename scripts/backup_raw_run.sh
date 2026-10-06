@@ -26,7 +26,8 @@
 #                          write fails with "Disk quota exceeded (122)".
 #
 # example:
-#   ssh -fN hpc3                                    # DUO once, then:
+#   (no login step needed: the script opens its own hpc3 connection by key
+#   auth. Only if the key is rejected does it ask for `ssh -fN hpc3` + DUO.)
 #   raw_novaseqx_backup                             # from the run dir
 #   raw_novaseqx_backup 20260826_LH00626_0126_A257TG5LT4
 #
@@ -144,10 +145,10 @@ raw_novaseqx_backup() {
         fi
     done
 
-    # One multiplexed SSH connection carries every command below, so DUO is
-    # answered once rather than per-rsync. With no master open, try to start one
-    # by key auth: BatchMode never prompts, so cron fails fast instead of
-    # hanging on DUO when the key is not accepted (or not loaded in an agent).
+    # One multiplexed SSH connection carries every command below. With no master
+    # open, start one by key auth (the normal path, cron included). BatchMode never
+    # prompts, so if the key is rejected this fails fast instead of hanging on DUO,
+    # and the operator opens the master by hand with `ssh -fN hpc3`.
     if ! ssh -O check "$host" >/dev/null 2>&1 \
        && ! ssh -fN -o BatchMode=yes "$host" 2>/dev/null; then
         echo "ERROR: no SSH master connection to '$host' and key auth failed." >&2
