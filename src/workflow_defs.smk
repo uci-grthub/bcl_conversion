@@ -375,9 +375,23 @@ def sanitize_sample_name(name):
     name = str(name).strip()
     if not name or name.lower() == 'nan':
         return "Sample"
-    name = re.sub(r'[^a-zA-Z0-9\-_]+', '_', name)
-    name = re.sub(r'_+', '_', name).strip('_')
-    return name or "Sample"
+    return _dragen_safe_name(name) or "Sample"
+
+
+def _dragen_safe_name(s):
+    """Runs of characters outside A-Z a-z 0-9 - _ become one '_'; no '__', no edge '_'."""
+    s = re.sub(r'[^a-zA-Z0-9\-_]+', '_', s)
+    return re.sub(r'_+', '_', s).strip('_')
+
+
+def normalize_project_name(value):
+    """Project name as used for Sample_Project, DRAGEN's project folder and lookup keys.
+
+    Every place that turns a workbook project name into a key goes through this,
+    so Summary lookups and sample-sheet Sample_Project values always agree.
+    A missing value comes back as 'nan', which callers already filter.
+    """
+    return _dragen_safe_name(str(value).strip())
 
 
 def filldown_and_make_unique_sample_names(df):
@@ -777,7 +791,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 try:
                     lane = int(float(row.get('Lane', pd.NA)))
                     group = int(float(row.get('Group', pd.NA)))
-                    project = str(row.get('Project name', '')).strip().replace(' ', '_')
+                    project = normalize_project_name(row.get('Project name', ''))
                     if project and project.lower() != 'nan':
                         barcode_list_lookup[(lane, group)] = project
                 except:
@@ -905,13 +919,13 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 # Project
                 if 'Project' in df.columns and not (df['Project'].isna() | (df['Project'].astype(str).str.strip() == '')).all():
                     df['Project'] = df['Project'].ffill()
-                    sheet_samples['Project'] = df['Project'].astype(str).str.strip().str.replace(' ', '_', regex=False)
+                    sheet_samples['Project'] = df['Project'].map(normalize_project_name)
                 elif 'Project name' in df.columns:
                     df['Project name'] = df['Project name'].ffill()
-                    sheet_samples['Project'] = df['Project name'].astype(str).str.strip().str.replace(' ', '_', regex=False)
+                    sheet_samples['Project'] = df['Project name'].map(normalize_project_name)
                 elif 'Sample_Project' in df.columns:
                     df['Sample_Project'] = df['Sample_Project'].ffill()
-                    sheet_samples['Project'] = df['Sample_Project'].astype(str).str.strip().str.replace(' ', '_', regex=False)
+                    sheet_samples['Project'] = df['Sample_Project'].map(normalize_project_name)
                 else:
                     sheet_samples['Project'] = pd.NA
                 
@@ -1258,9 +1272,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             try:
                 if pd.isna(v):
                     return ''
-                s = str(v).strip()
-                # Replace any character not in A-Z a-z 0-9 - _ with '_'
-                s = re.sub(r'[^a-zA-Z0-9\-_]', '_', s)
+                s = normalize_project_name(v)
                 if s == '':
                     return ''
                 if s.lower() == 'undetermined':
@@ -1546,7 +1558,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         # ss_data above and are delivered through their own post-hoc paths, which never
         # consult the rename map.
         def _norm_proj(p):
-            return str(p).strip().replace(' ', '_')
+            return normalize_project_name(p)
 
         _lane_projects = {}
         for (_l, _g), _p in (project_lookup or {}).items():

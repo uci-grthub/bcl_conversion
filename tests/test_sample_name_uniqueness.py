@@ -63,7 +63,8 @@ def test_without_lane_column_falls_back_to_per_project():
 
 
 sanitize_sample_name = load_workflow_defs_function(
-    "sanitize_sample_name", "def filldown_and_make_unique_sample_names(")
+    "sanitize_sample_name", "def filldown_and_make_unique_sample_names(",
+    start_marker="def sanitize_sample_name(")
 
 
 def test_sanitized_name_has_no_repeated_underscores():
@@ -83,3 +84,19 @@ def test_sanitize_blank_or_symbol_only_falls_back_to_sample():
     assert sanitize_sample_name("") == "Sample"
     assert sanitize_sample_name(float("nan")) == "Sample"
     assert sanitize_sample_name("&&//") == "Sample"
+
+
+normalize_project_name = load_workflow_defs_function(
+    "normalize_project_name", "def filldown_and_make_unique_sample_names(",
+    start_marker="def sanitize_sample_name(")
+
+
+def test_project_name_has_no_repeated_underscores():
+    assert normalize_project_name("MaccF RNAseq, 32plex ") == "MaccF_RNAseq_32plex"
+    assert normalize_project_name("KessK__10x3V4  GEX/Masrilab_4") == "KessK_10x3V4_GEX_Masrilab_4"
+
+
+def test_clean_project_name_is_unchanged():
+    """Names that were already safe keep their exact folder name."""
+    assert normalize_project_name("BeieK_10xMultiome_GEX_072126") == "BeieK_10xMultiome_GEX_072126"
+    assert normalize_project_name("Acme-C_WGS_8plex") == "Acme-C_WGS_8plex"

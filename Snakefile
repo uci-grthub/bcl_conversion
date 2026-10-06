@@ -280,14 +280,14 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
                         if m:
                             order_ids.append(m.group(1).replace('i', 'I'))
                         else:
-                            project_candidates.append(s.replace(' ', '_'))
+                            project_candidates.append(normalize_project_name(s))
 
                     if project_col is not None:
                         for v in df_first.iloc[header_row + 1:, project_col].tolist():
                             s = str(v).strip()
                             if not s or s.lower() == 'nan':
                                 continue
-                            project_candidates.append(s.replace(' ', '_'))
+                            project_candidates.append(normalize_project_name(s))
 
                     order_ids = _uniq_keep_order(order_ids)
                     project_candidates = _uniq_keep_order(project_candidates)
@@ -320,7 +320,7 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
                          g = int(float(row['Gr']))
                          
                          if 'Project Name' in df.columns:
-                            p = str(row['Project Name']).strip().replace(' ', '_')
+                            p = normalize_project_name(row['Project Name'])
                             PROJECT_LOOKUP[(l, g)] = p
                             
                             # Check for Fastq Link
@@ -398,7 +398,7 @@ try:
             df_barcode = pd.read_excel(METADATA_FILE, sheet_name='Barcode List', header=1)
             for idx, row in df_barcode.iterrows():
                 try:
-                    project = str(row.get('Project name', '')).strip().replace(' ', '_')
+                    project = normalize_project_name(row.get('Project name', ''))
                     order_id = str(row.get('Order ID', '')).strip().replace(' ', '_')
                     lane_val = row.get('Lane', None)
                     if project and project.lower() != 'nan' and order_id and order_id.lower() != 'nan':

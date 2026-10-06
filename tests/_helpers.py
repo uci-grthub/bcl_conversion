@@ -53,11 +53,12 @@ def load_workflow_defs_helpers():
     return _exec_source(source[start:end], {"pd": pd})
 
 
-def load_workflow_defs_function(name, end_marker):
+def load_workflow_defs_function(name, end_marker, start_marker=None):
     """A module-level function from workflow_defs.smk, by name.
 
     The 10x/Parse/BD detector block is exec'd first so the function sees the
-    same is_parse_or_10x the pipeline uses.
+    same is_parse_or_10x the pipeline uses. Pass start_marker when the function
+    calls helpers defined above it, so the slice includes them.
     """
     import pandas as pd
 
@@ -66,7 +67,7 @@ def load_workflow_defs_function(name, end_marker):
         source = handle.read()
     detector_start = source.index("# 10x/Parse/BD naming:")
     detector_end = source.index("def is_special_atac_project_or_sheet(")
-    start = source.index(f"def {name}(")
+    start = source.index(start_marker or f"def {name}(")
     namespace = _exec_source(source[detector_start:detector_end]
                              + source[start:source.index(end_marker, start)], {"pd": pd, "re": re})
     return namespace[name]
