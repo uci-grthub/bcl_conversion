@@ -23,6 +23,13 @@ SNAKEMAKE_PROFILE=profiles/default, so no --profile flag or manual env sourcing 
      */30 * 25-30 9 * <run_dir>/run_when_ready.sh >> <run_dir>/logs/cron_run.log 2>&1
    where <run_dir> is e.g. /staging/nextcloud/testing_illumina/NovaSeqX/xR118
 
+   To also back the run up after it publishes, point cron at run_and_backup_when_ready.sh
+   instead. It calls run_when_ready.sh, then (only once all + publish succeeded) runs the
+   HPC3 raw backup, the HPC3 processed backup and, if a destination is given, sync_run to
+   that drive. A failed step is retried on the next tick; finished steps are skipped
+   (.post_<step>.done markers). The backups open their own hpc3 connection by key auth:
+     */30 * 25-30 9 * <run_dir>/run_and_backup_when_ready.sh /mnt/extusb3 >> <run_dir>/logs/cron_run.log 2>&1
+
 5. After the run has published, remove its lines from the crontab. A dated entry such as
    `0 6 24 9 *` fires again every year if left behind.
 

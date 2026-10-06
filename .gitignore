@@ -43,3 +43,5 @@ recover_lane6_r2.sh
 # run_when_ready.sh cron state
 .auto_launched
 .auto_launch.lock
+.published_ok
+.post_publish.lock
