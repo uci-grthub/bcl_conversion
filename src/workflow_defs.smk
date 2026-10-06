@@ -365,6 +365,10 @@ def write_renaming_map(map_df, map_file):
     map_df = map_df[required_cols]
     map_df.to_csv(map_file, index=False, quoting=csv.QUOTE_MINIMAL)
 
+# Shared with the standalone scripts (src/naming.py) so every name and key agrees.
+from naming import dragen_safe_name, normalize_project_name
+
+
 def sanitize_sample_name(name):
     """Make a workbook sample name safe for a DRAGEN Sample_ID.
 
@@ -375,23 +379,7 @@ def sanitize_sample_name(name):
     name = str(name).strip()
     if not name or name.lower() == 'nan':
         return "Sample"
-    return _dragen_safe_name(name) or "Sample"
-
-
-def _dragen_safe_name(s):
-    """Runs of characters outside A-Z a-z 0-9 - _ become one '_'; no '__', no edge '_'."""
-    s = re.sub(r'[^a-zA-Z0-9\-_]+', '_', s)
-    return re.sub(r'_+', '_', s).strip('_')
-
-
-def normalize_project_name(value):
-    """Project name as used for Sample_Project, DRAGEN's project folder and lookup keys.
-
-    Every place that turns a workbook project name into a key goes through this,
-    so Summary lookups and sample-sheet Sample_Project values always agree.
-    A missing value comes back as 'nan', which callers already filter.
-    """
-    return _dragen_safe_name(str(value).strip())
+    return dragen_safe_name(name) or "Sample"
 
 
 def filldown_and_make_unique_sample_names(df):

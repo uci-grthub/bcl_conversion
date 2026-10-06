@@ -29,6 +29,8 @@ import os
 import re
 import glob
 
+from naming import normalize_project_name
+
 # Tokens shared by project names and Summary sheet tabs.
 SINGLE_CELL_TOKENS = ("10x", "parse", "bd")
 
@@ -56,6 +58,13 @@ def _norm(value):
         return str(value if value is not None else "").strip().lower()
     except Exception:
         return ""
+
+
+def _project_key(value):
+    """Registry key: the pipeline's project name (src/naming.py), case-folded."""
+    if value is None:
+        return ""
+    return normalize_project_name(value).lower()
 
 
 def name_indicates_single_cell(project_name):
@@ -117,7 +126,7 @@ def load_single_cell_registry(metadata_file=None, force=False):
             for _, row in df.iterrows():
                 if not sheet_tab_indicates_single_cell(row.get("Sample sheet tab")):
                     continue
-                project = _norm(row.get("Project Name"))
+                project = _project_key(row.get("Project Name"))
                 if project and project != "nan":
                     names.add(project)
                 try:
@@ -157,7 +166,7 @@ def is_single_cell_project(project_name, lane=None, group=None, metadata_file=No
         return True
     try:
         load_single_cell_registry(metadata_file)
-        if _norm(project_name) in _REGISTRY["names"]:
+        if _project_key(project_name) in _REGISTRY["names"]:
             return True
         if lane is None or group is None:
             m = _RENAMED_SUFFIX_RE.search(str(project_name or ""))

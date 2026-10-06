@@ -64,7 +64,7 @@ def test_without_lane_column_falls_back_to_per_project():
 
 sanitize_sample_name = load_workflow_defs_function(
     "sanitize_sample_name", "def filldown_and_make_unique_sample_names(",
-    start_marker="def sanitize_sample_name(")
+    start_marker="from naming import")
 
 
 def test_sanitized_name_has_no_repeated_underscores():
@@ -88,7 +88,7 @@ def test_sanitize_blank_or_symbol_only_falls_back_to_sample():
 
 normalize_project_name = load_workflow_defs_function(
     "normalize_project_name", "def filldown_and_make_unique_sample_names(",
-    start_marker="def sanitize_sample_name(")
+    start_marker="from naming import")
 
 
 def test_project_name_has_no_repeated_underscores():
