@@ -6,11 +6,301 @@ import os
 import re
 import pandas as pd
 
+from barcode_collisions import find_unresolvable_pairs
+from naming import dragen_safe_name, normalize_project_name
+
 try:
     import openpyxl
     from openpyxl.styles import PatternFill, Font
 except Exception:
     openpyxl = None
+
+
+_SEQ_RE = re.compile(r'^[ACGTN]+$')
+_GROUP_COLS = ('Group', 'Gr', 'group', 'gr')
+_SAMPLE_NAME_COLS = ('Sample Name', 'Sample_Name')
+# Raw project-name columns; the canonical 'Project' column is already normalized.
+_RAW_PROJECT_COLS = ('Project Name', 'Project name', 'Sample_Project')
+# Projects demultiplexed post-hoc rather than by DRAGEN (see _prepare_lane_df).
+_POST_HOC_PROJECT_RE = re.compile(r'flexbar|pareseq|fqtk', re.IGNORECASE)
+
+
+def _norm_key(val):
+    if pd.isna(val):
+        return None
+    try:
+        num = float(val)
+        if num.is_integer():
+            return str(int(num))
+    except Exception:
+        pass
+    return str(val).strip()
+
+
+def _cell(val):
+    """Cell value as a stripped string; blanks, NaN and 'none' come back as ''."""
+    if val is None or (not isinstance(val, str) and pd.isna(val)):
+        return ''
+    s = str(val).strip()
+    return '' if s.lower() in ('nan', 'none') else s
+
+
+def _first_col(df, names):
+    return next((c for c in names if c in df.columns), None)
+
+
+def _is_summary_tab(sheet):
+    return isinstance(sheet, str) and 'summary' in sheet.lower()
+
+
+def _norm_sheet_ref(s):
+    return re.sub(r'[\s_]+', '', str(s)).lower()
+
+
+def check_name_safety(sheet, df, examples=3):
+    """Flag sample and project names that DRAGEN-safe renaming will change.
+
+    The pipeline rewrites every name through naming.dragen_safe_name, so a name
+    with spaces, punctuation or doubled underscores is delivered under a different
+    spelling than the customer submitted. Sample renames are reported once per
+    project with a few examples. Two names that differ only in those characters
+    collapse to one delivered name within a lane and project; that is reported
+    for every such pair.
+    """
+    issues = []
+    lane_col = 'Lane' if 'Lane' in df.columns else None
+    proj_col = _first_col(df, _RAW_PROJECT_COLS)
+    sample_col = _first_col(df, _SAMPLE_NAME_COLS)
+
+    for col in [c for c in _RAW_PROJECT_COLS if c in df.columns]:
+        seen = set()
+        for ridx, val in df[col].items():
+            name = _cell(val)
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            safe = normalize_project_name(name)
+            if safe != name:
+                issues.append({
+                    'sheet': sheet, 'row': int(ridx), 'col': col,
+                    'message': f"Project name '{name}' will be delivered as '{safe}'",
+                })
+
+    if not sample_col:
+        return issues
+
+    renamed = {}       # project -> (first row, [(name, safe), ...])
+    first_raw = {}     # (lane, project, safe name) -> first submitted spelling
+    reported = set()
+    for ridx, row in df.iterrows():
+        name = _cell(row[sample_col])
+        if not name:
+            continue
+        project = _cell(row[proj_col]) if proj_col else ''
+        safe = dragen_safe_name(name)
+        if safe != name:
+            first_row, pairs = renamed.setdefault(project, (int(ridx), []))
+            if (name, safe) not in pairs:
+                pairs.append((name, safe))
+        scope = (_norm_key(row[lane_col]) if lane_col else None,
+                 normalize_project_name(project), safe)
+        other = first_raw.setdefault(scope, name)
+        if other != name and (scope, name) not in reported:
+            reported.add((scope, name))
+            issues.append({
+                'sheet': sheet, 'row': int(ridx), 'col': sample_col,
+                'message': f"Sample names '{other}' and '{name}' both become "
+                           f"'{safe}' after DRAGEN-safe renaming",
+            })
+
+    for project, (first_row, pairs) in renamed.items():
+        shown = ', '.join(f"'{n}' -> '{s}'" for n, s in pairs[:examples])
+        more = f" (+{len(pairs) - examples} more)" if len(pairs) > examples else ''
+        where = f" in {project}" if project else ''
+        count = f"{len(pairs)} sample name" + ('s' if len(pairs) > 1 else '')
+        issues.append({
+            'sheet': sheet, 'row': first_row, 'col': sample_col,
+            'message': f"{count}{where} will be renamed for DRAGEN: {shown}{more}",
+        })
+    return issues
+
+
+# (label, Summary columns, other-sheet columns, comparison normalizer)
+_CONSISTENCY_FIELDS = (
+    ('Project name', ('Project Name', 'Project name'), _RAW_PROJECT_COLS, normalize_project_name),
+    ('Lab ID', ('Lab ID', 'LabID'), ('LabID', 'Lab ID'), str),
+    ('Order ID', ('Order ID', 'order ID'), ('Order ID', 'order ID', 'OrderID'), str),
+    ('Contact', ('Contact (E-mail)', 'Contact', 'Email'), ('Contact', 'Email'), str.lower),
+)
+
+
+def check_lane_group_consistency(sheet_dfs):
+    """Flag project name, Lab ID, Order ID or contact that disagree with the Summary.
+
+    Rows are matched to the Summary by (lane, group). The Summary is authoritative,
+    so a mismatch on a sample tab means the tab carries a typo or a value copied
+    from the wrong column.
+    """
+    summary = {}
+    for sheet, df in sheet_dfs.items():
+        if not _is_summary_tab(sheet):
+            continue
+        gc = _first_col(df, _GROUP_COLS)
+        if 'Lane' not in df.columns or not gc:
+            continue
+        for _, row in df.iterrows():
+            lk, gk = _norm_key(row['Lane']), _norm_key(row[gc])
+            if lk is None or gk is None:
+                continue
+            entry = summary.setdefault((lk, gk), {})
+            for label, s_cols, _, norm in _CONSISTENCY_FIELDS:
+                col = _first_col(df, s_cols)
+                val = _cell(row[col]) if col else ''
+                if val and label not in entry:
+                    entry[label] = (val, norm(val))
+    if not summary:
+        return []
+
+    issues = []
+    reported = set()
+    for sheet, df in sheet_dfs.items():
+        if _is_summary_tab(sheet):
+            continue
+        # Lane.1 is the project lane on 10x tabs; plain Lane may be the BCL lane.
+        lc = _first_col(df, ('Lane.1', 'Lane'))
+        gc = _first_col(df, _GROUP_COLS)
+        if not lc or not gc:
+            continue
+        for ridx, row in df.iterrows():
+            lk, gk = _norm_key(row[lc]), _norm_key(row[gc])
+            expected = summary.get((lk, gk))
+            if not expected:
+                continue
+            for label, _, o_cols, norm in _CONSISTENCY_FIELDS:
+                col = _first_col(df, o_cols)
+                val = _cell(row[col]) if col else ''
+                if not val or label not in expected:
+                    continue
+                s_raw, s_norm = expected[label]
+                key = (sheet, lk, gk, label, val)
+                if norm(val) == s_norm or key in reported:
+                    continue
+                reported.add(key)
+                issues.append({
+                    'sheet': sheet, 'row': int(ridx), 'col': col,
+                    'message': f"{label} '{val}' does not match Summary '{s_raw}' "
+                               f"for lane {lk} group {gk}",
+                    'lane': lk, 'group': gk, 'excel_row': int(ridx) + 2,
+                })
+    return issues
+
+
+def _prefix_hamming(a, b):
+    n = min(len(a), len(b))
+    return sum(x != y for x, y in zip(a[:n], b[:n]))
+
+
+def check_index_collisions(sheet_dfs, mismatches=1):
+    """Flag same-lane index pairs that DRAGEN cannot separate at `mismatches`.
+
+    Every masking group on a lane goes into one sample sheet, so all of a lane's
+    samples are compared regardless of tab or index length. Uses the pairing rule
+    of scripts/validate_barcode_hamming_distance.py: mixed lengths compare over
+    their common prefix, and i5 only separates a pair when both samples have one.
+    Prefix collisions (no mismatch setting helps) come from barcode_collisions.
+    """
+    rows = []
+    for sheet, df in sheet_dfs.items():
+        if _is_summary_tab(sheet):
+            continue
+        i7_col = _first_col(df, ('i7 Barcode Sequence', 'index'))
+        if 'Lane' not in df.columns or not i7_col:
+            continue
+        i5_col = _first_col(df, ('i5 Barcode Sequence', 'index2'))
+        sample_col = _first_col(df, _SAMPLE_NAME_COLS)
+        gc = _first_col(df, _GROUP_COLS)
+        for ridx, row in df.iterrows():
+            i7 = _cell(row[i7_col]).upper()
+            i5 = _cell(row[i5_col]).upper() if i5_col else ''
+            lane = _norm_key(row['Lane'])
+            project = _cell(row.get('Project'))
+            if lane is None or not _SEQ_RE.match(i7) or _POST_HOC_PROJECT_RE.search(project):
+                continue
+            rows.append({
+                'Lane': lane, 'index': i7, 'index2': i5 if _SEQ_RE.match(i5) else '',
+                'Sample_Project': project,
+                'Sample_Name': _cell(row[sample_col]) if sample_col else '',
+                'group': _norm_key(row[gc]) if gc else '',
+                'sheet': sheet, 'row': int(ridx),
+            })
+
+    # Same project + same index pair is one sample on several rows, as in the sheet.
+    seen = set()
+    unique = []
+    for r in rows:
+        key = (r['Lane'], r['Sample_Project'], r['index'], r['index2'])
+        if key not in seen:
+            seen.add(key)
+            unique.append(r)
+    rows = unique
+
+    def _issue(a, message):
+        return {'sheet': a['sheet'], 'row': a['row'], 'col': 'index', 'message': message,
+                'lane': a['Lane'], 'group': a['group'], 'excel_row': a['row'] + 2}
+
+    def _label(r):
+        idx = f"{r['index']}+{r['index2']}" if r['index2'] else r['index']
+        return f"{r['Sample_Project']}/{r['Sample_Name']} ({idx})"
+
+    issues = []
+    unresolvable = set()
+    for a, b, description in find_unresolvable_pairs(rows):
+        unresolvable.add((a, b))
+        ra, rb = rows[a], rows[b]
+        if ra['Sample_Project'] == rb['Sample_Project']:
+            outcome = 'both are in one project, so these libraries need different indexes'
+        else:
+            short = ra if len(ra['index']) < len(rb['index']) else rb
+            outcome = (f"the pipeline will demultiplex project '{short['Sample_Project']}' "
+                       f"from Undetermined with fqtk")
+        issues.append(_issue(ra, f"Unresolvable index collision: {description}; {outcome}"))
+
+    # Near collisions: one issue per lane and project pair, naming the closest pair,
+    # so a pooled project with dozens of indexes does not flood the report.
+    limit = 2 * mismatches
+    close = {}
+    for a in range(len(rows)):
+        for b in range(a + 1, len(rows)):
+            ra, rb = rows[a], rows[b]
+            if ra['Lane'] != rb['Lane'] or (a, b) in unresolvable:
+                continue
+            d7 = _prefix_hamming(ra['index'], rb['index'])
+            if d7 > limit:
+                continue
+            d5 = None
+            if ra['index2'] and rb['index2']:
+                d5 = _prefix_hamming(ra['index2'], rb['index2'])
+                if d5 > limit:
+                    continue
+            key = (ra['Lane'],) + tuple(sorted((ra['Sample_Project'], rb['Sample_Project'])))
+            entry = close.setdefault(key, {'count': 0, 'best': None})
+            entry['count'] += 1
+            score = d7 + (d5 or 0)
+            if entry['best'] is None or score < entry['best'][0]:
+                entry['best'] = (score, ra, rb, d7, d5)
+
+    for (lane, proj_a, proj_b), entry in close.items():
+        _, ra, rb, d7, d5 = entry['best']
+        dist = f"i7 distance {d7}, " + (f"i5 distance {d5}" if d5 is not None else "no i5 to separate them")
+        projects = f"project {proj_a}" if proj_a == proj_b else f"projects {proj_a} and {proj_b}"
+        more = f" ({entry['count']} close pairs in all)" if entry['count'] > 1 else ''
+        issues.append(_issue(ra, (
+            f"Lane {lane}: indexes in {projects} are too close for {mismatches}-mismatch "
+            f"demultiplexing; closest is {_label(ra)} vs {_label(rb)}, {dist}{more}. "
+            f"The pipeline will demultiplex these samples with 0 index mismatches, "
+            f"which assigns fewer reads"
+        )))
+    return issues
 
 
 def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
@@ -28,17 +318,6 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
         if not vals:
             return False
         return all(seq_pattern.match(v) for v in vals)
-
-    def _norm_key(val):
-        if pd.isna(val):
-            return None
-        try:
-            num = float(val)
-            if num.is_integer():
-                return str(int(num))
-        except Exception:
-            pass
-        return str(val).strip()
 
     def _norm_project_name(val):
         """Normalize a project name: replace spaces and underscores with a single underscore."""
@@ -207,6 +486,9 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
         except Exception:
             # If filling fails, continue with unfilled data
             pass
+
+        # Name safety is judged on the submitted names, before the _N suffixes below.
+        issues.extend(check_name_safety(sheet, df))
 
         # Make Sample_Name values unique within each project by appending suffixes
         # This handles cases where multiple barcodes belong to the same sample (merged cells)
@@ -430,6 +712,11 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
     _clean_project_name = _norm_project_name
 
     summary_projects = set()
+    # Summary projects whose 'Sample sheet tab' names another existing tab (10x,
+    # Visium, ...) keep their samples there, so they are not expected in Barcode List.
+    summary_projects_on_other_tabs = set()
+    _other_tab_refs = {_norm_sheet_ref(s) for s in sheet_dfs
+                       if not _is_summary_tab(s) and _norm_sheet_ref(s) != 'barcodelist'}
     non_summary_projects = set()
     non_summary_project_sheets = {}
     summary_proj_orig = {}
@@ -457,13 +744,16 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
         if not is_summary_tab and not is_barcode_list_tab:
             continue
 
-        for raw_proj in df[proj_col].tolist():
+        _tab_col = next((c for c in df.columns if str(c).strip().lower() == 'sample sheet tab'), None)
+        for ridx, raw_proj in df[proj_col].items():
             proj = _clean_project_name(raw_proj)
             if not proj:
                 continue
             raw_str = str(raw_proj).strip() if not pd.isna(raw_proj) else ''
             if is_summary_tab:
                 summary_projects.add(proj)
+                if _tab_col and _norm_sheet_ref(_cell(df.at[ridx, _tab_col])) in _other_tab_refs:
+                    summary_projects_on_other_tabs.add(proj)
                 if proj not in summary_proj_orig:
                     summary_proj_orig[proj] = raw_str
             else:
@@ -474,7 +764,7 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
 
     # Only compare if Barcode List (the canonical non-summary project-name source) has data.
     if non_summary_projects:
-        missing_in_tabs = sorted(summary_projects - non_summary_projects)
+        missing_in_tabs = sorted(summary_projects - summary_projects_on_other_tabs - non_summary_projects)
         for proj in missing_in_tabs:
             orig = summary_proj_orig.get(proj, proj).replace(' ', '_')
             issues.append({
@@ -521,9 +811,6 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                     _sheet_to_lane_groups[_sheet].add((_lk, _gk))
         except Exception:
             continue
-
-    def _norm_sheet_ref(s):
-        return re.sub(r'[\s_]+', '', str(s)).lower()
 
     for _sheet, _df in sheet_dfs.items():
         try:
@@ -862,6 +1149,9 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
                         'excel_row': int(pos) + 2
                     })
 
+    # Compare sample tabs to the Summary before propagation fills their blanks from it.
+    issues.extend(check_lane_group_consistency(sheet_dfs))
+
     # Build (lane_key, group_key) -> {Lane, Group, Project, Order ID} lookup for column propagation.
     # Summary sheets are the authoritative source: their values always overwrite any previously set
     # values from non-Summary sheets. Non-Summary sheets only fill keys not already present.
@@ -973,6 +1263,9 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
             _rest = [c for c in _df.columns if c not in set(_front)]
             _df = _df[_front + _rest]
         sheet_dfs[_sheet] = _df
+
+    # After propagation, so 10x tabs carry their project name from the Summary.
+    issues.extend(check_index_collisions(sheet_dfs))
 
     # Write validation workbook if possible
     os.makedirs('metadata', exist_ok=True)
