@@ -515,6 +515,31 @@ _dest_runinfo = "src/RunInfo_nn.xml"
 if not os.path.exists(_dest_runinfo) or (os.path.exists(_src_runinfo) and os.path.getmtime(_src_runinfo) > os.path.getmtime(_dest_runinfo)):
     fix_runinfo_reverse_complement()
 
+def _runinfo_data_read_count(run_info_path):
+    """Number of non-index reads RunInfo declares (1 = single-read, 2 = paired), or
+    None when RunInfo is missing or unreadable.
+
+    num_reads used to come only from config, defaulting to 2. A single-read run left
+    at that default demuxed fine and then failed in fastp_sample looking for an R2
+    that bcl-convert never writes (iR027: I8;I8;Y151 with num_reads: 2).
+    """
+    reads = get_run_read_lengths(run_info_path)
+    if not reads:
+        return None
+    return sum(1 for r in reads if r.get("IsIndexedRead") != "Y")
+
+# End of _runinfo_data_read_count.
+# RunInfo is authoritative for how many data reads exist; config can only agree with it.
+_runinfo_num_reads = _runinfo_data_read_count(_dest_runinfo)
+if _runinfo_num_reads:
+    if "num_reads" in config and int(config["num_reads"]) != _runinfo_num_reads:
+        print(
+            f"WARNING: num_reads={config['num_reads']} in config, but {_dest_runinfo} "
+            f"declares {_runinfo_num_reads} data read(s); using {_runinfo_num_reads}.",
+            file=sys.stderr,
+        )
+    NUM_READS = _runinfo_num_reads
+
 # Invalidate stale barcode-validation artifacts here, at PARSE time, before the DAG is
 # built.
 #
