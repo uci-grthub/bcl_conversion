@@ -134,3 +134,18 @@ def test_artifacts_are_scoped_to_the_config_id():
     for path in _stale_artifacts("lane7"):
         assert "lane7" in path
         assert "{config_id}" not in path
+
+
+def _sheet_config_ids():
+    return load_snakefile_function("_sheet_config_ids", "# End of _sheet_config_ids.")
+
+
+def test_miseq_sheet_is_tracked_without_lane_configs():
+    """A MiSeq workbook leaves LANE_CONFIGS empty but still writes lane1's sheet."""
+    assert _sheet_config_ids()([], True) == ["lane1"]
+
+
+def test_lane_configs_drive_the_tracked_ids():
+    fn = _sheet_config_ids()
+    assert fn([{"id": "lane2"}, {"id": "lane3"}], False) == ["lane2", "lane3"]
+    assert fn([], False) == []
