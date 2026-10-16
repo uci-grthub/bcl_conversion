@@ -106,7 +106,7 @@ DRAGEN_BIN = config.get("dragen_bin", "/opt/dragen/4.4.7/bin/dragen")
 # run blocks here until the first run's DRAGEN job exits.
 DRAGEN_HOST_LOCK = config.get("dragen_host_lock", "/staging/nextcloud/testing_illumina/.dragen.lock")
 USE_ANCIENT = _cfg_truthy(config.get("use_ancient", True))
-REPORT_UNDETERMINED_CONFIGS = config.get("report_undetermined_configs", [])
+REPORT_UNDETERMINED_CONFIGS = list(config.get("report_undetermined_configs", []))
 _effective_keep = list(config.get("keep_undetermined_configs", []))
 for _c in REPORT_UNDETERMINED_CONFIGS:
     if _c not in _effective_keep:
@@ -222,6 +222,18 @@ if METADATA_FILE and os.path.exists(METADATA_FILE):
         xl = pd.ExcelFile(METADATA_FILE)
         is_miseq_format = 'Barcode Entries' in xl.sheet_names and 'Summary' not in xl.sheet_names
         IS_MISEQ_FORMAT = is_miseq_format
+
+        # A no_demux MiSeq sheet holds only a decoy sample, so every read lands in
+        # Undetermined and is delivered from there (see no_demux_decoy_indexes). That
+        # needs report_undetermined_configs to include lane1; without it bcl_convert
+        # deletes Undetermined and the run delivers nothing. Imply it rather than rely
+        # on the per-run config remembering to set it.
+        if is_miseq_format and NO_DEMUX and "lane1" not in REPORT_UNDETERMINED_CONFIGS:
+            print("no_demux: delivering lane1 from Undetermined (report_undetermined_configs += lane1)")
+            REPORT_UNDETERMINED_CONFIGS.append("lane1")
+            if "lane1" not in _effective_keep:
+                _effective_keep.append("lane1")
+            KEEP_UNDETERMINED_CONFIGS = " ".join(_effective_keep)
 
         if is_miseq_format:
             # MiSeq: simple format, assume single lane
@@ -503,6 +515,31 @@ _dest_runinfo = "src/RunInfo_nn.xml"
 if not os.path.exists(_dest_runinfo) or (os.path.exists(_src_runinfo) and os.path.getmtime(_src_runinfo) > os.path.getmtime(_dest_runinfo)):
     fix_runinfo_reverse_complement()
 
+def _runinfo_data_read_count(run_info_path):
+    """Number of non-index reads RunInfo declares (1 = single-read, 2 = paired), or
+    None when RunInfo is missing or unreadable.
+
+    num_reads used to come only from config, defaulting to 2. A single-read run left
+    at that default demuxed fine and then failed in fastp_sample looking for an R2
+    that bcl-convert never writes (iR027: I8;I8;Y151 with num_reads: 2).
+    """
+    reads = get_run_read_lengths(run_info_path)
+    if not reads:
+        return None
+    return sum(1 for r in reads if r.get("IsIndexedRead") != "Y")
+
+# End of _runinfo_data_read_count.
+# RunInfo is authoritative for how many data reads exist; config can only agree with it.
+_runinfo_num_reads = _runinfo_data_read_count(_dest_runinfo)
+if _runinfo_num_reads:
+    if "num_reads" in config and int(config["num_reads"]) != _runinfo_num_reads:
+        print(
+            f"WARNING: num_reads={config['num_reads']} in config, but {_dest_runinfo} "
+            f"declares {_runinfo_num_reads} data read(s); using {_runinfo_num_reads}.",
+            file=sys.stderr,
+        )
+    NUM_READS = _runinfo_num_reads
+
 # Invalidate stale barcode-validation artifacts here, at PARSE time, before the DAG is
 # built.
 #
@@ -556,9 +593,23 @@ _IS_SPAWNED_JOB = any(
     a == "subprocess" and i and sys.argv[i - 1] == "--mode"
     for i, a in enumerate(sys.argv)
 )
+def _sheet_config_ids(lane_configs, is_miseq_format):
+    """Config ids whose sample sheets parse-time generation writes.
+
+    A MiSeq workbook has no Summary sheet, so LANE_CONFIGS stays empty while
+    generate_miseq_samplesheets still writes lane1. Keying the before-digests on
+    LANE_CONFIGS alone left MiSeq runs with nothing to compare, so a corrected sheet
+    never invalidated its validated copy and bcl_convert replayed the old barcodes.
+    """
+    ids = [c["id"] for c in (lane_configs or [])]
+    if not ids and is_miseq_format:
+        ids = ["lane1"]
+    return ids
+
+# End of _sheet_config_ids.
 _SHEET_DIGESTS_BEFORE = {
-    _c["id"]: _samplesheet_digest(f"results/{_c['id']}/SampleSheet_{_c['id']}.csv")
-    for _c in (LANE_CONFIGS or [])
+    _cid: _samplesheet_digest(f"results/{_cid}/SampleSheet_{_cid}.csv")
+    for _cid in _sheet_config_ids(LANE_CONFIGS, IS_MISEQ_FORMAT)
 }
 
 # Generate sample sheets during parse time (needed for function calls below)
@@ -1762,6 +1813,8 @@ rule summarize_project_reads:
             except Exception as e:
                 print(f"Error reading {demux_path}: {e}")
                 demux_df = pd.DataFrame()
+
+            demux_df = drop_no_demux_decoy_rows(demux_df)
 
             if 'Sample_Project' in demux_df.columns:
                 matches = demux_df[demux_df['Sample_Project'].astype(str).isin(target_projects)]
@@ -3257,7 +3310,9 @@ rule bcl_convert:
         scratch_dir = SCRATCH_DIR,
         keep_undetermined_configs = KEEP_UNDETERMINED_CONFIGS,
         dragen_bin = DRAGEN_BIN,
-        host_lock = DRAGEN_HOST_LOCK
+        host_lock = DRAGEN_HOST_LOCK,
+        no_demux = "1" if NO_DEMUX else "",
+        no_demux_decoy = NO_DEMUX_DECOY_SAMPLE
     shell:
         """
         (
@@ -3374,6 +3429,30 @@ rule bcl_convert:
         if [ "$dragen_status" -ne 0 ]; then
             cleanup
             exit $dragen_status
+        fi
+
+        # no_demux: the sheet's decoy sample exists only to make DRAGEN route every read
+        # to Undetermined, which is the copy that carries the I1/I2 index FASTQs. If the
+        # decoy caught anything, its index collided with real data and that slice of the
+        # run is missing from the delivery — fail rather than ship a short set.
+        if [ -n "{params.no_demux}" ]; then
+            demux_stats="$dragen_out/Reports/Demultiplex_Stats.csv"
+            if [ ! -f "$demux_stats" ]; then
+                echo "ERROR: no_demux: $demux_stats not found; cannot verify the decoy caught no reads."
+                exit 1
+            fi
+            decoy_reads=$(awk -F, -v s="{params.no_demux_decoy}" \
+                'NR>1 && $2==s {{total+=$5}} END{{print total+0}}' "$demux_stats")
+            if [ "$decoy_reads" -ne 0 ]; then
+                echo "ERROR: no_demux: decoy sample {params.no_demux_decoy} collected $decoy_reads reads."
+                echo "Its index collides with real data in this run, so those reads are missing from"
+                echo "the Undetermined set that gets delivered. Change NO_DEMUX_DECOY_I7/I5 in"
+                echo "src/workflow_defs.smk to sequences absent from Reports/Top_Unknown_Barcodes.csv."
+                exit 1
+            fi
+            echo "no_demux: decoy {params.no_demux_decoy} collected 0 reads, as required."
+            # The decoy still gets an empty FASTQ written for it; it is not deliverable.
+            find "$dragen_out" -name "{params.no_demux_decoy}_S*_*.fastq.gz" -delete
         fi
 
         if [ ! -z "{params.scratch_dir}" ]; then
@@ -3669,6 +3748,8 @@ rule check_low_reads:
                 _log(f"Could not read {demux_path}: {e}")
                 log_fh.close()
             else:
+                df = drop_no_demux_decoy_rows(df)
+
                 # Accept both old Sample_Project and new-name project
                 target_projects = {project}
                 for (cid, old_p), new_p in PROJECT_RENAME_MAP.items():

@@ -121,7 +121,15 @@ def row_stem(row: dict, default_run: str = "") -> Tuple[str, int, str, str]:
 # follows the prefix, so the trailing suffix (-R1.fastq.gz, .fastp.json,
 # -base_comp.png, ...) is whatever the match does not consume. None of those
 # suffixes begin with an ACGTN run, so the match cannot eat into them.
-_BARCODE_RE = re.compile(r'^(?:[ACGTN]+(?:-[ACGTN]+)?)?')
+#
+# 'Undetermined' is a barcode too: the Undetermined pseudo-sample delivered for
+# report_undetermined_configs lanes carries that literal string in the map's index
+# column. Without it here the match is empty for those files, the existing token is
+# left in the tail, and the barcode is prepended a second time — turning
+# ...-P001-Undetermined-R1.fastq.gz into ...-P001-UndeterminedUndetermined-R1.fastq.gz.
+# It is listed first so the alternation cannot stop at a shorter ACGTN prefix, and it
+# can never collide with a real barcode, which is ACGTN-only.
+_BARCODE_RE = re.compile(r'^(?:Undetermined|[ACGTN]+(?:-[ACGTN]+)?)?')
 
 
 def restem_by_position(directory: str, rows: List[dict], dry_run: bool = False,
