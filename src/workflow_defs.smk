@@ -108,9 +108,11 @@ def await_orientation_decision(config_id):
     No-ops outside a Snakemake workflow (unit tests, standalone scripts).
     """
     checkpoints_obj = globals().get('checkpoints')
-    if checkpoints_obj is None or not hasattr(checkpoints_obj, 'pick_orientation'):
+    if checkpoints_obj is None or not hasattr(checkpoints_obj, 'generate_effective_renaming_map'):
         return
-    checkpoints_obj.pick_orientation.get(config_id=config_id)
+    # Gate on the effective map, which depends on pick_orientation: waiting on the
+    # decision alone leaves a window where the effective map is not written yet.
+    checkpoints_obj.generate_effective_renaming_map.get(config_id=config_id)
 
 
 # Sanitize Masking strings for filenames: strip appended project-like suffixes

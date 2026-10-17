@@ -3567,7 +3567,9 @@ rule bcl_project_done:
                     continue
                 src_item = os.path.join(staging, item)
                 dst_item = os.path.join(dest_base, item)
-                if os.path.isdir(src_item) and item in old_project_dirs:
+                # Match on name alone: a concurrent bcl_project_done may already have
+                # moved the dir out, and an isdir() test would then send it to copy2.
+                if item in old_project_dirs:
                     continue  # handled by that project's bcl_project_done
                 if item.startswith('Undetermined') and not deliver_undetermined:
                     _plog(f"Skipping staging-only Undetermined file: {item}")
@@ -4223,8 +4225,12 @@ checkpoint pick_orientation:
                         lf.write(f"Removing original staging dir for RC-winning project: {item_path}\n")
                         _shutil_rc.rmtree(item_path)
 
-rule generate_effective_renaming_map:
+checkpoint generate_effective_renaming_map:
     """Rewrite the renaming map with the barcodes DRAGEN actually demultiplexed with.
+
+    A checkpoint so barcode-bearing targets wait for this map, not just for
+    pick_orientation: between the two, effective_renaming_map_path() falls back
+    to the workbook map and would expand targets with the pre-RC barcode.
 
     The workbook map holds what the client submitted. When an RC orientation wins,
     the sequence present in the index reads is the reverse complement of that, and
