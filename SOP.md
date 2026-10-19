@@ -17,7 +17,7 @@ cp /path/to/SampleSheet.xlsx metadata/
 
 # 3. Set up the run: builds the pixi env on first use, then creates
 #    snakemake_config_project.yaml and prefills from the metadata .xlsx
-pixi run init                 # add --sequencer novaseqx|miseqi100 if the path is ambiguous
+pixi run init                 # add --sequencer novaseqx|miseqi100|miseq if the path is ambiguous
 
 # 4. Confirm the prefilled config (secrets come from the shared ../.env — no copy needed)
 $EDITOR snakemake_config_project.yaml         # confirm data_dir; set email_* to YOUR address

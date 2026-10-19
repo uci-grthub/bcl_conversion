@@ -1,6 +1,6 @@
 [workspace]
 name = "bcl-convert-pipeline"
-description = "Snakemake BCL conversion pipeline for Illumina MiSeq i100 / NovaSeqX runs"
+description = "Snakemake BCL conversion pipeline for Illumina MiSeq / MiSeq i100 / NovaSeqX runs"
 channels = ["conda-forge", "bioconda"]
 platforms = ["linux-64"]
 
