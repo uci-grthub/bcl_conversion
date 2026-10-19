@@ -159,9 +159,17 @@ processed_novaseqx_backup() {
     # with the run dir -- 1.2 G of binaries that are the one thing here nobody
     # needs a copy of. Everything else (metadata, logs, benchmarks, .snakemake
     # provenance, Reports) is small and is kept.
-    local -a excludes=(--exclude '.DS_Store')
-    [[ -z "${KEEP_PIXI:-}" ]] && excludes+=(--exclude '/.pixi')
-    [[ -n "${SKIP_SWEEPS:-}" ]] && excludes+=(--exclude '/sweeps')
+    #
+    # Anchored patterns name the run dir: $src goes over without a trailing slash,
+    # so the transfer root is its parent and '/.pixi' alone would never match.
+    #
+    # The .post_*/.auto_launch lock files are cron bookkeeping whose mtime every
+    # tick bumps (`exec N>lock`), so the verify pass would always see them differ.
+    local -a excludes=(--exclude '.DS_Store'
+                       --exclude "/${name}/.post_*.lock"
+                       --exclude "/${name}/.auto_launch.lock")
+    [[ -z "${KEEP_PIXI:-}" ]] && excludes+=(--exclude "/${name}/.pixi")
+    [[ -n "${SKIP_SWEEPS:-}" ]] && excludes+=(--exclude "/${name}/sweeps")
 
     # The copy has to land in the lab group so anyone in the lab can read it.
     # -a preserves the source group, and 'grthcloud' means nothing on HPC3, so
@@ -234,11 +242,28 @@ processed_novaseqx_backup() {
         return 1
     fi
 
+    # --append-verify skips any file already the same size on the remote, so a
+    # same-size file that changed (a git ref, a rewritten pack, an edited script)
+    # is never updated and the verify below flags it on every run. One ordinary
+    # pass fixes those by delta; it only touches files whose size/mtime still
+    # differ, so after a full transfer it is a quick file-list walk.
+    local -a update_opts=(-a -H)
+    [[ -n "${BWLIMIT:-}" ]] && update_opts+=(--bwlimit="$BWLIMIT")
+    if ! rsync "${update_opts[@]}" "${group_opts[@]}" "${excludes[@]}" "$src" "${host}:${dest_base}/"; then
+        _backup_record_transfer proc_backup "${record[@]}" --status failed
+        rm -f "$stats_file"
+        echo "[proc_backup] ERROR: same-size update pass failed -- rerun to resume" >&2
+        return 1
+    fi
+
     # Verify by re-running as a dry run: anything still listed did not land.
     # No --delete here; this must never be able to remove anything on the share.
     echo "[proc_backup] verifying..."
     local diff
+    # logs/cron_run.log is copied but not verified: the cron wrapper appends this
+    # very backup's output to it, so it always differs by the time we check.
     diff=$(rsync -anH --itemize-changes "${group_opts[@]}" "${excludes[@]}" \
+           --exclude "/${name}/logs/cron_run.log" \
            "$src" "${host}:${dest_base}/")
     if [[ -n "$diff" ]]; then
         _backup_record_transfer proc_backup "${record[@]}" --status incomplete

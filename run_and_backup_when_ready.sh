@@ -43,11 +43,14 @@ run_step() {
   local name="$1"; shift
   [ -f ".post_${name}.done" ] && return 0
   echo "$(date) [$name] starting: $*"
-  if "$@"; then
+  local rc=0
+  "$@" || rc=$?
+  if [ "$rc" -eq 0 ]; then
     touch ".post_${name}.done"
     echo "$(date) [$name] done"
   else
-    echo "$(date) [$name] FAILED (exit $?); will retry next tick"
+    # rc captured above: the $(date) here would otherwise reset $? to 0.
+    echo "$(date) [$name] FAILED (exit $rc); will retry next tick"
   fi
 }
 
