@@ -46,10 +46,12 @@ def test_both_scripts_default_to_the_lab_group():
 
 def test_every_remote_rsync_maps_the_group():
     """Including the verify pass -- see the module docstring."""
+    # dry-run preview, the real transfer, and the verification pass; processed adds
+    # the plain pass that updates same-size files --append-verify skips.
+    expected = {"raw": 3, "processed": 4}
     for name, path in SCRIPTS.items():
         invocations = transfer_rsyncs(path)
-        # dry-run preview, the real transfer, and the verification pass
-        assert len(invocations) == 3, (name, invocations)
+        assert len(invocations) == expected[name], (name, invocations)
         for command in invocations:
             assert '"${group_opts[@]}"' in command, (name, command)
 
