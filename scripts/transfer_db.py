@@ -163,7 +163,9 @@ def cmd_report(args):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--db", default=os.environ.get("TRANSFER_DB") or DEFAULT_DB)
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    # No required= on add_subparsers: cron runs the system python3 (3.6 on EL8),
+    # which predates that keyword. The missing-subcommand check is done below.
+    sub = ap.add_subparsers(dest="cmd")
 
     rec = sub.add_parser("record", help="insert one transfer")
     rec.add_argument("--kind", required=True, choices=["raw", "processed"])
@@ -191,6 +193,8 @@ def main():
     rep.set_defaults(func=cmd_report)
 
     args = ap.parse_args()
+    if not args.cmd:
+        ap.error("a subcommand is required (record, report)")
     args.func(args)
 
 
