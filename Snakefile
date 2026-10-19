@@ -941,6 +941,41 @@ ORDER_ID_MD5S = [f"Reports/order_{oid}/md5sums.txt" for oid in ACTIVE_ORDER_IDS]
 
 # print("CONFIG_PROJECT_PAIRS:", CONFIG_PROJECT_PAIRS)
 
+def _project_link_order_id(config_id, project):
+    """Order ID for one (config_id, project) pair, as project_link records it."""
+    # Prefer (lane, group)-keyed lookup so duplicate project names on the same lane
+    # each resolve to their own order_id rather than the last-written shared entry.
+    raw_project = PROJECT_RENAME_MAP_INV.get((config_id, project), project)
+    lane_m = re.match(r'lane(\d+)', config_id)
+    lane = int(lane_m.group(1)) if lane_m else 0
+    grp_m = re.search(r'_G(\d+)$', project)
+    if lane_m and grp_m:
+        return ORDER_ID_LOOKUP.get(
+            (lane, int(grp_m.group(1))),
+            PROJECT_ORDER_ID.get((raw_project, lane), ""))
+    return PROJECT_ORDER_ID.get((raw_project, lane), "")
+
+# Order emails go out in reverse sample-sheet order: lane N's last group first,
+# lane 1 group 1 last. The lever is project_link, not send_order_email: links are
+# made one at a time (serial_operation) and every order's report waits on its
+# links, so link order is the order in which emails become ready. Ranking the
+# email rule itself does nothing -- it holds no cores or resources, so Snakemake
+# launches every ready email in one batch regardless of priority.
+#
+# Priority is per rule in Snakemake, so project_link is generated once per
+# (config_id, project) below with the rank from src/send_order.py. A rank only
+# chooses among links that are ready at once; nothing waits on an unready one.
+from send_order import send_priorities, lanes_from_config_ids, rule_suffix
+ORDER_PRIORITY = send_priorities(
+    ACTIVE_ORDER_IDS + FLEXBAR_ACTIVE_ORDER_IDS,
+    ORDER_ID_LOOKUP,
+    {oid: lanes_from_config_ids(cids) for oid, cids in FLEXBAR_CONFIG_BY_ORDER_ID.items()},
+)
+PROJECT_LINK_PRIORITY = {
+    (c, p): ORDER_PRIORITY.get(_project_link_order_id(c, p), 0)
+    for c, p in dict.fromkeys(CONFIG_PROJECT_PAIRS)
+}
+
 rule all:
     input:
         expand("results/{config_id}/fastp_plots_{config_id}.done", config_id=CONFIG_IDS),
@@ -4381,306 +4416,299 @@ rule check_index_rc_swap:
         python3 {params.script} --samples {input.samples} --undetermined {input.undetermined} > {output} 2> {log}
         """
 
-rule project_link:
-    input:
-        done = "output/{config_id}/{project}/.project_done"
-    output:
-        log = "logs/{config_id}/project_link_{config_id}---{project}.log",
-        yaml_file = "logs/{config_id}/project_links_{config_id}---{project}.yaml"
-    benchmark:
-        "benchmarks/project_link_{config_id}---{project}.bench"
-    wildcard_constraints:
-        # Relaxed to accept any lane-prefixed config with additional underscore-separated tokens
-        config_id = "[^/]+",
-        project = ".+"
-    resources:
-        serial_operation=1
-    params:
-        work_dir = os.getcwd(),
-        order_id = lambda wildcards: (
-            # Prefer (lane, group)-keyed lookup so duplicate project names on the same lane
-            # each resolve to their own order_id rather than the last-written shared entry.
-            ORDER_ID_LOOKUP.get(
-                (int(lane_m.group(1)), int(grp_m.group(1))),
-                PROJECT_ORDER_ID.get(
-                    (PROJECT_RENAME_MAP_INV.get((wildcards.config_id, wildcards.project), wildcards.project),
-                     int(lane_m.group(1))), "")
+for _pair in [None] + list(PROJECT_LINK_PRIORITY):
+    # Ranked by the order it belongs to (see ORDER_PRIORITY). Every copy keeps
+    # serial_operation=1, so links are still made one at a time -- the rank only
+    # picks which ready project goes next. _pair None is the unranked fallback.
+    rule:
+        name: "project_link" if _pair is None else f"project_link_{rule_suffix(*_pair)}"
+        priority: 0 if _pair is None else PROJECT_LINK_PRIORITY[_pair]
+        wildcard_constraints:
+            # Relaxed to accept any lane-prefixed config with additional underscore-separated tokens
+            config_id = "[^/]+" if _pair is None else re.escape(_pair[0]),
+            project = ".+" if _pair is None else re.escape(_pair[1])
+        input:
+            done = "output/{config_id}/{project}/.project_done"
+        output:
+            log = "logs/{config_id}/project_link_{config_id}---{project}.log",
+            yaml_file = "logs/{config_id}/project_links_{config_id}---{project}.yaml"
+        benchmark:
+            "benchmarks/project_link_{config_id}---{project}.bench"
+        resources:
+            serial_operation=1
+        params:
+            work_dir = os.getcwd(),
+            order_id = lambda wildcards: _project_link_order_id(wildcards.config_id, wildcards.project),
+            group = lambda wildcards: (
+                # Extract group directly from the renamed project folder name (_G{n} suffix)
+                # to avoid the reverse-lookup bug where duplicate project names on the same
+                # lane always resolve to the first group in PROJECT_LOOKUP.
+                m.group(1) if (m := re.search(r'_G(\d+)$', wildcards.project))
+                else get_project_group(
+                    PROJECT_RENAME_MAP_INV.get((wildcards.config_id, wildcards.project), wildcards.project),
+                    wildcards.config_id)
             )
-            if (lane_m := re.match(r'lane(\d+)', wildcards.config_id))
-            and (grp_m := re.search(r'_G(\d+)$', wildcards.project))
-            else PROJECT_ORDER_ID.get(
-                (PROJECT_RENAME_MAP_INV.get((wildcards.config_id, wildcards.project), wildcards.project),
-                 int(re.match(r'lane(\d+)', wildcards.config_id).group(1))
-                 if re.match(r'lane(\d+)', wildcards.config_id) else 0), "")
-        ),
-        group = lambda wildcards: (
-            # Extract group directly from the renamed project folder name (_G{n} suffix)
-            # to avoid the reverse-lookup bug where duplicate project names on the same
-            # lane always resolve to the first group in PROJECT_LOOKUP.
-            m.group(1) if (m := re.search(r'_G(\d+)$', wildcards.project))
-            else get_project_group(
-                PROJECT_RENAME_MAP_INV.get((wildcards.config_id, wildcards.project), wildcards.project),
-                wildcards.config_id)
-        )
-    run:
-        import traceback
-        import subprocess
-        import sys
-        from pathlib import Path
-        import time
-        import urllib.parse
-        import re
-        import os
-        import shlex
-        import glob as _glob
+        run:
+            import traceback
+            import subprocess
+            import sys
+            from pathlib import Path
+            import time
+            import urllib.parse
+            import re
+            import os
+            import shlex
+            import glob as _glob
         
-        config_id = wildcards.config_id
-        project = wildcards.project
-        order_id = params.order_id
-        group = params.group
-        fastq_dir = f"output/{config_id}/{project}"
-        log_file = output.log
-        yaml_file = output.yaml_file
+            config_id = wildcards.config_id
+            project = wildcards.project
+            order_id = params.order_id
+            group = params.group
+            fastq_dir = f"output/{config_id}/{project}"
+            log_file = output.log
+            yaml_file = output.yaml_file
 
-        if not str(order_id).strip():
-            msg = (
-                f"Missing order_id for project link generation "
-                f"(config_id={config_id}, project={project}, group={group}). "
-                "Check metadata order-id mapping for this project/lane."
-            )
-            Path(log_file).write_text(msg + "\n")
-            raise RuntimeError(msg)
+            if not str(order_id).strip():
+                msg = (
+                    f"Missing order_id for project link generation "
+                    f"(config_id={config_id}, project={project}, group={group}). "
+                    "Check metadata order-id mapping for this project/lane."
+                )
+                Path(log_file).write_text(msg + "\n")
+                raise RuntimeError(msg)
 
-        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+            os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
-        yaml_data = {project: {config_id: {}}}
+            yaml_data = {project: {config_id: {}}}
         
-        # Helper: Extract Browser URL
-        def extract_share_url(xml_text):
-            if not xml_text: return None
-            match = re.search(r'<url>(.*?)</url>', xml_text)
-            return match.group(1) if match else None
+            # Helper: Extract Browser URL
+            def extract_share_url(xml_text):
+                if not xml_text: return None
+                match = re.search(r'<url>(.*?)</url>', xml_text)
+                return match.group(1) if match else None
 
-        # Helper: Extract Token (This is your WebDAV Username)
-        def extract_share_token(xml_text):
-            if not xml_text: return None
-            match = re.search(r'<token>(.*?)</token>', xml_text)
-            return match.group(1) if match else None
+            # Helper: Extract Token (This is your WebDAV Username)
+            def extract_share_token(xml_text):
+                if not xml_text: return None
+                match = re.search(r'<token>(.*?)</token>', xml_text)
+                return match.group(1) if match else None
 
-        def extract_share_owner(xml_text):
-            if not xml_text: return None
-            m = re.search(r'<uid_owner>(.*?)</uid_owner>', xml_text)
-            if m:
-                return m.group(1)
-            # fallback: sometimes owner is in <id> or <owner>
-            m2 = re.search(r'<owner>(.*?)</owner>', xml_text)
-            if m2:
-                return m2.group(1)
-            return None
+            def extract_share_owner(xml_text):
+                if not xml_text: return None
+                m = re.search(r'<uid_owner>(.*?)</uid_owner>', xml_text)
+                if m:
+                    return m.group(1)
+                # fallback: sometimes owner is in <id> or <owner>
+                m2 = re.search(r'<owner>(.*?)</owner>', xml_text)
+                if m2:
+                    return m2.group(1)
+                return None
 
-        def extract_internal_path(xml_text):
-            if not xml_text: return None
-            m = re.search(r'<path>(.*?)</path>', xml_text)
-            if m:
-                return m.group(1)
-            # fallback: sometimes in <folder>
-            m2 = re.search(r'<folder>(.*?)</folder>', xml_text)
-            if m2:
-                return m2.group(1)
-            return None
+            def extract_internal_path(xml_text):
+                if not xml_text: return None
+                m = re.search(r'<path>(.*?)</path>', xml_text)
+                if m:
+                    return m.group(1)
+                # fallback: sometimes in <folder>
+                m2 = re.search(r'<folder>(.*?)</folder>', xml_text)
+                if m2:
+                    return m2.group(1)
+                return None
 
-        def extract_share_id(xml_text):
-            if not xml_text: return None
-            m = re.search(r'<id>(\d+)</id>', xml_text)
-            return m.group(1) if m else None
+            def extract_share_id(xml_text):
+                if not xml_text: return None
+                m = re.search(r'<id>(\d+)</id>', xml_text)
+                return m.group(1) if m else None
 
-        # Capture executed commands for logging
-        executed_cmds = []
+            # Capture executed commands for logging
+            executed_cmds = []
 
-        def fetch_existing_share(path, log_handle):
-            encoded_path = urllib.parse.quote(path, safe="/")
-            cmd = [
-                'curl', '-s', '-X', 'GET',
-                '-u', f'{NEXTCLOUD_USER}:{NEXTCLOUD_PASSWORD}',
-                '-H', 'OCS-APIRequest: true',
-                f'{NEXTCLOUD_URL}/ocs/v2.php/apps/files_sharing/api/v1/shares?path={encoded_path}&reshares=true'
-            ]
-            executed_cmds.append(cmd)
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            return result.stdout
+            def fetch_existing_share(path, log_handle):
+                encoded_path = urllib.parse.quote(path, safe="/")
+                cmd = [
+                    'curl', '-s', '-X', 'GET',
+                    '-u', f'{NEXTCLOUD_USER}:{NEXTCLOUD_PASSWORD}',
+                    '-H', 'OCS-APIRequest: true',
+                    f'{NEXTCLOUD_URL}/ocs/v2.php/apps/files_sharing/api/v1/shares?path={encoded_path}&reshares=true'
+                ]
+                executed_cmds.append(cmd)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                return result.stdout
 
-        try:
-            if os.path.isdir(fastq_dir):
-                abs_path = os.path.abspath(fastq_dir)
-                nc_path = f"/{NEXTCLOUD_DIR_NAME}/" + abs_path.split(f"/{NEXTCLOUD_DIR_PATH}/", 1)[1] if f"/{NEXTCLOUD_DIR_PATH}/" in abs_path else abs_path
+            try:
+                if os.path.isdir(fastq_dir):
+                    abs_path = os.path.abspath(fastq_dir)
+                    nc_path = f"/{NEXTCLOUD_DIR_NAME}/" + abs_path.split(f"/{NEXTCLOUD_DIR_PATH}/", 1)[1] if f"/{NEXTCLOUD_DIR_PATH}/" in abs_path else abs_path
                 
-                max_retries = 30  # Retry up to 30 times with exponential backoff
-                retry_count = 0
-                share_url = None
-                share_token = None
-                share_id_num = None
-                share_xml = None
-                rate_limited = False
-                last_error = None
+                    max_retries = 30  # Retry up to 30 times with exponential backoff
+                    retry_count = 0
+                    share_url = None
+                    share_token = None
+                    share_id_num = None
+                    share_xml = None
+                    rate_limited = False
+                    last_error = None
                 
-                while retry_count < max_retries and not share_url:
-                    retry_count += 1
-                    wait_time = min(3 * (2 ** (retry_count - 1)), 60)
-                    if rate_limited: time.sleep(10)
+                    while retry_count < max_retries and not share_url:
+                        retry_count += 1
+                        wait_time = min(3 * (2 ** (retry_count - 1)), 60)
+                        if rate_limited: time.sleep(10)
                     
-                    try:
-                        cmd = [
-                            'curl', '-s', '-w', '\nHTTP_CODE:%{http_code}',
-                            '-X', 'POST',
-                            '-u', f'{NEXTCLOUD_USER}:{NEXTCLOUD_PASSWORD}',
-                            '-H', 'OCS-APIRequest: true',
-                            '-d', f'path={nc_path}',
-                            '-d', 'shareType=3', # 3 = Public Link
-                            f'{NEXTCLOUD_URL}/ocs/v2.php/apps/files_sharing/api/v1/shares'
-                        ]
-                        executed_cmds.append(cmd)
-                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                        try:
+                            cmd = [
+                                'curl', '-s', '-w', '\nHTTP_CODE:%{http_code}',
+                                '-X', 'POST',
+                                '-u', f'{NEXTCLOUD_USER}:{NEXTCLOUD_PASSWORD}',
+                                '-H', 'OCS-APIRequest: true',
+                                '-d', f'path={nc_path}',
+                                '-d', 'shareType=3', # 3 = Public Link
+                                f'{NEXTCLOUD_URL}/ocs/v2.php/apps/files_sharing/api/v1/shares'
+                            ]
+                            executed_cmds.append(cmd)
+                            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
                         
-                        stdout_split = result.stdout.split('\n')
-                        http_code = next((l.split(':')[1] for l in stdout_split if l.startswith('HTTP_CODE:')), None)
-                        share_xml = '\n'.join([l for l in stdout_split if not l.startswith('HTTP_CODE:')])
+                            stdout_split = result.stdout.split('\n')
+                            http_code = next((l.split(':')[1] for l in stdout_split if l.startswith('HTTP_CODE:')), None)
+                            share_xml = '\n'.join([l for l in stdout_split if not l.startswith('HTTP_CODE:')])
 
-                        if http_code == '429':
-                            rate_limited = True
-                            last_error = f"Rate limited (HTTP {http_code})"
-                        elif http_code == '200' or http_code == '201':
-                            # Success - extract data from response
-                            share_url = extract_share_url(share_xml)
-                            share_token = extract_share_token(share_xml)
-                            share_id_num = extract_share_id(share_xml)
-                            if share_url and share_token:
-                                try:
-                                    owner = extract_share_owner(share_xml)
-                                    internal_path = extract_internal_path(share_xml)
-                                except Exception:
-                                    owner = None
-                                    internal_path = None
-                                share_owner = owner
-                                share_internal_path = internal_path
-                                break
-                            else:
-                                last_error = f"Valid response but could not extract URL/token (HTTP {http_code})"
-                        elif http_code == '400' or http_code == '403':
-                            # 403 usually means "already exists" - try GET to fetch existing share
-                            share_xml = fetch_existing_share(nc_path, None)
-                            share_url = extract_share_url(share_xml)
-                            share_token = extract_share_token(share_xml)
-                            share_id_num = extract_share_id(share_xml)
-                            if share_url and share_token:
-                                try:
-                                    owner = extract_share_owner(share_xml)
-                                    internal_path = extract_internal_path(share_xml)
-                                except Exception:
-                                    owner = None
-                                    internal_path = None
-                                share_owner = owner
-                                share_internal_path = internal_path
-                                break
-                            else:
-                                last_error = f"Share may exist but could not fetch via GET (HTTP {http_code})"
-                        else:
-                            last_error = f"HTTP {http_code}: {share_xml[:100] if share_xml else 'No response'}"
-
-                        if retry_count < max_retries and not share_url:
-                            time.sleep(wait_time)
-
-                    except subprocess.TimeoutExpired:
-                        last_error = "Request timed out (30 seconds)"
-                        if retry_count < max_retries:
-                            time.sleep(wait_time)
-                    except Exception as e:
-                        last_error = f"Exception: {str(e)}"
-                        if retry_count < max_retries:
-                            time.sleep(wait_time)
-
-                # --- RESTORE PRIOR TOKEN FROM EXISTING LOGS ---
-                if share_url and share_token and share_id_num:
-                    old_token = None
-                    for lp in sorted(_glob.glob("logs/**/project_link_*.log", recursive=True)):
-                        if os.path.abspath(lp) == os.path.abspath(log_file):
-                            continue
-                        try:
-                            content = Path(lp).read_text()
-                            if f"NC_PATH: {nc_path}" in content and "Status: SUCCESS" in content:
-                                m = re.search(r'^WebDAV Token: (\S+)', content, re.MULTILINE)
-                                if m:
-                                    old_token = m.group(1)
+                            if http_code == '429':
+                                rate_limited = True
+                                last_error = f"Rate limited (HTTP {http_code})"
+                            elif http_code == '200' or http_code == '201':
+                                # Success - extract data from response
+                                share_url = extract_share_url(share_xml)
+                                share_token = extract_share_token(share_xml)
+                                share_id_num = extract_share_id(share_xml)
+                                if share_url and share_token:
+                                    try:
+                                        owner = extract_share_owner(share_xml)
+                                        internal_path = extract_internal_path(share_xml)
+                                    except Exception:
+                                        owner = None
+                                        internal_path = None
+                                    share_owner = owner
+                                    share_internal_path = internal_path
                                     break
-                        except Exception:
-                            pass
-                    if old_token and old_token != share_token:
-                        put_cmd = [
-                            sys.executable, "scripts/test_nextcloud_token.py",
-                            "--share-id", share_id_num,
-                            "--token", old_token
-                        ]
-                        executed_cmds.append(put_cmd)
-                        put_result = subprocess.run(put_cmd, capture_output=True, text=True, timeout=30)
-                        m_token = re.search(r'New Token\s*:\s*(\S+)', put_result.stdout)
-                        m_url = re.search(r'New URL\s*:\s*(\S+)', put_result.stdout)
-                        if m_token:
-                            share_token = m_token.group(1)
-                        if m_url:
-                            share_url = m_url.group(1)
+                                else:
+                                    last_error = f"Valid response but could not extract URL/token (HTTP {http_code})"
+                            elif http_code == '400' or http_code == '403':
+                                # 403 usually means "already exists" - try GET to fetch existing share
+                                share_xml = fetch_existing_share(nc_path, None)
+                                share_url = extract_share_url(share_xml)
+                                share_token = extract_share_token(share_xml)
+                                share_id_num = extract_share_id(share_xml)
+                                if share_url and share_token:
+                                    try:
+                                        owner = extract_share_owner(share_xml)
+                                        internal_path = extract_internal_path(share_xml)
+                                    except Exception:
+                                        owner = None
+                                        internal_path = None
+                                    share_owner = owner
+                                    share_internal_path = internal_path
+                                    break
+                                else:
+                                    last_error = f"Share may exist but could not fetch via GET (HTTP {http_code})"
+                            else:
+                                last_error = f"HTTP {http_code}: {share_xml[:100] if share_xml else 'No response'}"
 
-                # --- LOGGING WEB DAV CREDENTIALS AND EXECUTED COMMANDS ---
-                with open(log_file, 'w') as f:
-                    f.write(f"Project: {project}\n")
-                    f.write(f"Config ID: {config_id}\n")
-                    # Always write Order ID and Group (needed for report generation)
-                    f.write(f"Order ID: {order_id}\n")
-                    f.write(f"Group: {group}\n")
-                    # Write the Nextcloud path we attempted to share (for rescan parsing)
-                    try:
-                        f.write(f"NC_PATH: {nc_path}\n")
-                    except Exception:
-                        pass
-                    if share_url and share_token:
-                        f.write(f"Status: SUCCESS\n")
-                        f.write(f"Browser URL: {share_url}\n")
-                        f.write(f"WebDAV URL: {NEXTCLOUD_URL}/public.php/dav/\n")
-                        f.write(f"WebDAV Token: {share_token}\n")
-                        # If available, record Nextcloud owner and internal storage path
-                        try:
-                            if share_owner:
-                                f.write(f"NC_OWNER: {share_owner}\n")
-                            if share_internal_path:
-                                f.write(f"NC_INTERNAL_PATH: {share_internal_path}\n")
-                        except Exception:
-                            pass
-                        # Populate individual project yaml
-                        yaml_data[project][config_id][order_id] = {"link": share_url, "group": group}
-                    else:
-                        f.write(f"Status: FAILED\n")
-                        f.write(f"Reason: {last_error}\n")
-                        f.write(f"Retries: {retry_count}/{max_retries}\n")
+                            if retry_count < max_retries and not share_url:
+                                time.sleep(wait_time)
 
-                    # Record the actual commands executed (quoted for copy/paste)
-                    if executed_cmds:
-                        f.write("\nCommands executed:\n")
-                        for c in executed_cmds:
+                        except subprocess.TimeoutExpired:
+                            last_error = "Request timed out (30 seconds)"
+                            if retry_count < max_retries:
+                                time.sleep(wait_time)
+                        except Exception as e:
+                            last_error = f"Exception: {str(e)}"
+                            if retry_count < max_retries:
+                                time.sleep(wait_time)
+
+                    # --- RESTORE PRIOR TOKEN FROM EXISTING LOGS ---
+                    if share_url and share_token and share_id_num:
+                        old_token = None
+                        for lp in sorted(_glob.glob("logs/**/project_link_*.log", recursive=True)):
+                            if os.path.abspath(lp) == os.path.abspath(log_file):
+                                continue
                             try:
-                                quoted = shlex.join(c)
+                                content = Path(lp).read_text()
+                                if f"NC_PATH: {nc_path}" in content and "Status: SUCCESS" in content:
+                                    m = re.search(r'^WebDAV Token: (\S+)', content, re.MULTILINE)
+                                    if m:
+                                        old_token = m.group(1)
+                                        break
                             except Exception:
-                                quoted = ' '.join(shlex.quote(p) for p in c)
-                            f.write(quoted + "\n")
-            else:
-                Path(log_file).write_text(f"Directory {fastq_dir} not found.")
+                                pass
+                        if old_token and old_token != share_token:
+                            put_cmd = [
+                                sys.executable, "scripts/test_nextcloud_token.py",
+                                "--share-id", share_id_num,
+                                "--token", old_token
+                            ]
+                            executed_cmds.append(put_cmd)
+                            put_result = subprocess.run(put_cmd, capture_output=True, text=True, timeout=30)
+                            m_token = re.search(r'New Token\s*:\s*(\S+)', put_result.stdout)
+                            m_url = re.search(r'New URL\s*:\s*(\S+)', put_result.stdout)
+                            if m_token:
+                                share_token = m_token.group(1)
+                            if m_url:
+                                share_url = m_url.group(1)
 
-        except Exception as e:
-            Path(log_file).write_text(f"Error: {str(e)}\n{traceback.format_exc()}")
+                    # --- LOGGING WEB DAV CREDENTIALS AND EXECUTED COMMANDS ---
+                    with open(log_file, 'w') as f:
+                        f.write(f"Project: {project}\n")
+                        f.write(f"Config ID: {config_id}\n")
+                        # Always write Order ID and Group (needed for report generation)
+                        f.write(f"Order ID: {order_id}\n")
+                        f.write(f"Group: {group}\n")
+                        # Write the Nextcloud path we attempted to share (for rescan parsing)
+                        try:
+                            f.write(f"NC_PATH: {nc_path}\n")
+                        except Exception:
+                            pass
+                        if share_url and share_token:
+                            f.write(f"Status: SUCCESS\n")
+                            f.write(f"Browser URL: {share_url}\n")
+                            f.write(f"WebDAV URL: {NEXTCLOUD_URL}/public.php/dav/\n")
+                            f.write(f"WebDAV Token: {share_token}\n")
+                            # If available, record Nextcloud owner and internal storage path
+                            try:
+                                if share_owner:
+                                    f.write(f"NC_OWNER: {share_owner}\n")
+                                if share_internal_path:
+                                    f.write(f"NC_INTERNAL_PATH: {share_internal_path}\n")
+                            except Exception:
+                                pass
+                            # Populate individual project yaml
+                            yaml_data[project][config_id][order_id] = {"link": share_url, "group": group}
+                        else:
+                            f.write(f"Status: FAILED\n")
+                            f.write(f"Reason: {last_error}\n")
+                            f.write(f"Retries: {retry_count}/{max_retries}\n")
 
-        Path(log_file).touch(exist_ok=True)
+                        # Record the actual commands executed (quoted for copy/paste)
+                        if executed_cmds:
+                            f.write("\nCommands executed:\n")
+                            for c in executed_cmds:
+                                try:
+                                    quoted = shlex.join(c)
+                                except Exception:
+                                    quoted = ' '.join(shlex.quote(p) for p in c)
+                                f.write(quoted + "\n")
+                else:
+                    Path(log_file).write_text(f"Directory {fastq_dir} not found.")
 
-        # Write individual project yaml (empty dict if sharing failed)
-        import yaml as _yaml
-        with open(yaml_file, 'w') as yf:
-            _yaml.dump(yaml_data, yf, default_flow_style=False)
+            except Exception as e:
+                Path(log_file).write_text(f"Error: {str(e)}\n{traceback.format_exc()}")
+
+            Path(log_file).touch(exist_ok=True)
+
+            # Write individual project yaml (empty dict if sharing failed)
+            import yaml as _yaml
+            with open(yaml_file, 'w') as yf:
+                _yaml.dump(yaml_data, yf, default_flow_style=False)
+    if _pair is not None:
+        workflow.ruleorder(f"project_link_{rule_suffix(*_pair)}", "project_link")
 
 rule rescan_nextcloud:
     input:
