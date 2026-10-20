@@ -956,15 +956,18 @@ def _project_link_order_id(config_id, project):
     return PROJECT_ORDER_ID.get((raw_project, lane), "")
 
 # Order emails go out in reverse sample-sheet order: lane N's last group first,
-# lane 1 group 1 last. The lever is project_link, not send_order_email: links are
-# made one at a time (serial_operation) and every order's report waits on its
-# links, so link order is the order in which emails become ready. Ranking the
-# email rule itself does nothing -- it holds no cores or resources, so Snakemake
-# launches every ready email in one batch regardless of priority.
+# lane 1 group 1 last. Two rules carry the rank:
+#   project_link  -- links are made one at a time (serial_operation) and every
+#                    order's report waits on its links, so on a fresh run link
+#                    order is the order in which emails become ready.
+#   send_order_email -- when several emails are ready together (a resend, or
+#                    publish), the order_email=1 slot sends them one at a time,
+#                    highest rank first. Without that slot Snakemake launches
+#                    every ready email in one batch and priority cannot order them.
 #
-# Priority is per rule in Snakemake, so project_link is generated once per
-# (config_id, project) below with the rank from src/send_order.py. A rank only
-# chooses among links that are ready at once; nothing waits on an unready one.
+# Priority is per rule in Snakemake, so both are generated once per project /
+# order below with the rank from src/send_order.py. A rank only chooses among
+# jobs that are ready at once; nothing waits on an unready one.
 from send_order import send_priorities, lanes_from_config_ids, rule_suffix
 ORDER_PRIORITY = send_priorities(
     ACTIVE_ORDER_IDS + FLEXBAR_ACTIVE_ORDER_IDS,
@@ -1464,76 +1467,90 @@ rule collect_flexbar_report_extras:
                 _fout.write('\t'.join(_parts) + '\n')
 
 
-rule send_order_email:
-    input:
-        html = "Reports/order_{order_id}/index.html",
-        md5  = "Reports/order_{order_id}/md5sums.txt",
-        pdf  = "Reports/order_{order_id}/Download_Instructions.pdf",
-        flexbar_extras = lambda wildcards: [
-            f"Reports/order_{wildcards.order_id}/{prefix}_{cid}.{ext}"
-            for cid in FLEXBAR_CONFIG_BY_ORDER_ID.get(wildcards.order_id, [])
-            for prefix, ext in [("flexbarOut", "log"), ("flexbar_barcodes", "txt"), ("flexbar_filesizes", "txt")]
-        ]
-    output:
-        touch("Reports/order_{order_id}/email_sent.done")
-    log:
-        "logs/send_order_email_{order_id}.log"
-    benchmark:
-        "benchmarks/send_order_email_{order_id}.bench"
-    params:
-        script   = "src/send_email.py",
-        sender   = EMAIL_SENDER,
-        receiver = EMAIL_RECIPIENT,
-        cc_email = EMAIL_CC,
-        subject  = lambda wildcards: (
-            f"Sequencing Report for Order {wildcards.order_id}"
-        )
-    run:
-        import subprocess, os, datetime
-        order_id = wildcards.order_id
-
-        # Sending mail is not idempotent, and this rule is scheduled on every DAG
-        # build whether or not it has anything to do: its inputs come from behind the
-        # pick_orientation checkpoint (see get_fastp_plots_targets in workflow_defs),
-        # so Snakemake re-instantiates the producing jobs each time and flags this one
-        # as "input files updated by another job". No file state clears that -- not
-        # mtime, not --touch, not provenance -- so a bare `snakemake` on a finished run
-        # re-sends every order email, and does so again on the run after that.
-        #
-        # The receipt is deliberately NOT a declared output. Snakemake never manages
-        # it, so it survives whatever the scheduler decides to redo. Delete an order's
-        # receipt to deliberately send its mail again.
-        receipt = f"Reports/order_{order_id}/.email_receipt"
-        if os.path.exists(receipt):
-            with open(log[0], "w") as logf:
-                logf.write(f"Email for order {order_id} already sent.\n")
-                logf.write(f"Receipt: {receipt}\n")
-                with open(receipt) as rf:
-                    logf.write(rf.read())
-                logf.write(f"Delete that receipt to send this order's email again.\n")
-        else:
-            attachments = f"{input.md5};{input.pdf}"
-            for cid in FLEXBAR_CONFIG_BY_ORDER_ID.get(order_id, []):
-                for prefix, ext in [("flexbarOut", "log"), ("flexbar_barcodes", "txt"), ("flexbar_filesizes", "txt")]:
-                    extra = f"Reports/order_{order_id}/{prefix}_{cid}.{ext}"
-                    if os.path.exists(extra):
-                        attachments += f";{extra}"
-            cmd = [
-                sys.executable, "src/send_email_retry.py",
-                params.script, params.sender, params.receiver,
-                params.subject, input.html, attachments,
-                params.cc_email, order_id
+for _oid in [None] + list(ORDER_PRIORITY):
+    # Ranked like project_link (see ORDER_PRIORITY). order_email=1 (profile) sends
+    # one at a time: without it Snakemake launches every ready email in one batch
+    # and priority cannot order them. A ready email still never waits on an unready
+    # one -- the slot only queues emails that are ready together, a few seconds each.
+    # _oid None is the unranked fallback; ruleorder below lets each ranked copy win.
+    rule:
+        name: "send_order_email" if _oid is None else f"send_order_email_{rule_suffix(_oid)}"
+        priority: 0 if _oid is None else ORDER_PRIORITY[_oid]
+        wildcard_constraints:
+            order_id = ".+" if _oid is None else re.escape(_oid)
+        input:
+            html = "Reports/order_{order_id}/index.html",
+            md5  = "Reports/order_{order_id}/md5sums.txt",
+            pdf  = "Reports/order_{order_id}/Download_Instructions.pdf",
+            flexbar_extras = lambda wildcards: [
+                f"Reports/order_{wildcards.order_id}/{prefix}_{cid}.{ext}"
+                for cid in FLEXBAR_CONFIG_BY_ORDER_ID.get(wildcards.order_id, [])
+                for prefix, ext in [("flexbarOut", "log"), ("flexbar_barcodes", "txt"), ("flexbar_filesizes", "txt")]
             ]
-            with open(log[0], "w") as logf:
-                result = subprocess.run(cmd, stdout=logf, stderr=logf)
-            if result.returncode != 0:
-                raise RuntimeError(f"Email send failed (see {log[0]})")
-            # Only after a confirmed send: a failure must leave the order re-sendable.
-            with open(receipt, "w") as rf:
-                rf.write(f"sent_at: {datetime.datetime.now().isoformat(timespec='seconds')}\n")
-                rf.write(f"subject: {params.subject}\n")
-                rf.write(f"to: {params.receiver}\n")
-                rf.write(f"cc: {params.cc_email}\n")
+        output:
+            touch("Reports/order_{order_id}/email_sent.done")
+        log:
+            "logs/send_order_email_{order_id}.log"
+        benchmark:
+            "benchmarks/send_order_email_{order_id}.bench"
+        resources:
+            order_email=1
+        params:
+            script   = "src/send_email.py",
+            sender   = EMAIL_SENDER,
+            receiver = EMAIL_RECIPIENT,
+            cc_email = EMAIL_CC,
+            subject  = lambda wildcards: (
+                f"Sequencing Report for Order {wildcards.order_id}"
+            )
+        run:
+            import subprocess, os, datetime
+            order_id = wildcards.order_id
+
+            # Sending mail is not idempotent, and this rule is scheduled on every DAG
+            # build whether or not it has anything to do: its inputs come from behind the
+            # pick_orientation checkpoint (see get_fastp_plots_targets in workflow_defs),
+            # so Snakemake re-instantiates the producing jobs each time and flags this one
+            # as "input files updated by another job". No file state clears that -- not
+            # mtime, not --touch, not provenance -- so a bare `snakemake` on a finished run
+            # re-sends every order email, and does so again on the run after that.
+            #
+            # The receipt is deliberately NOT a declared output. Snakemake never manages
+            # it, so it survives whatever the scheduler decides to redo. Delete an order's
+            # receipt to deliberately send its mail again.
+            receipt = f"Reports/order_{order_id}/.email_receipt"
+            if os.path.exists(receipt):
+                with open(log[0], "w") as logf:
+                    logf.write(f"Email for order {order_id} already sent.\n")
+                    logf.write(f"Receipt: {receipt}\n")
+                    with open(receipt) as rf:
+                        logf.write(rf.read())
+                    logf.write(f"Delete that receipt to send this order's email again.\n")
+            else:
+                attachments = f"{input.md5};{input.pdf}"
+                for cid in FLEXBAR_CONFIG_BY_ORDER_ID.get(order_id, []):
+                    for prefix, ext in [("flexbarOut", "log"), ("flexbar_barcodes", "txt"), ("flexbar_filesizes", "txt")]:
+                        extra = f"Reports/order_{order_id}/{prefix}_{cid}.{ext}"
+                        if os.path.exists(extra):
+                            attachments += f";{extra}"
+                cmd = [
+                    sys.executable, "src/send_email_retry.py",
+                    params.script, params.sender, params.receiver,
+                    params.subject, input.html, attachments,
+                    params.cc_email, order_id
+                ]
+                with open(log[0], "w") as logf:
+                    result = subprocess.run(cmd, stdout=logf, stderr=logf)
+                if result.returncode != 0:
+                    raise RuntimeError(f"Email send failed (see {log[0]})")
+                # Only after a confirmed send: a failure must leave the order re-sendable.
+                with open(receipt, "w") as rf:
+                    rf.write(f"sent_at: {datetime.datetime.now().isoformat(timespec='seconds')}\n")
+                    rf.write(f"subject: {params.subject}\n")
+                    rf.write(f"to: {params.receiver}\n")
+                    rf.write(f"cc: {params.cc_email}\n")
+    if _oid is not None:
+        workflow.ruleorder(f"send_order_email_{rule_suffix(_oid)}", "send_order_email")
 
 rule fastp_sample:
     input:

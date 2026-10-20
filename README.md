@@ -213,8 +213,18 @@ pixi run publish <instrument> <run_id>        # e.g. pixi run publish NovaSeqx x
    directory to the share (default `dest_base`:
    `/mnt/jbod_localdisk/nextshare/bcl_convert/<instrument>/<run_id>`).
 2. `snakemake --touch all` — rsync bumps mtimes, so outputs are re-marked current.
-3. `snakemake --forcerun send_order_email` — re-sends the per-order download emails,
-   now that the data is actually reachable on the share.
+3. `scripts/send_order_emails.sh` — re-sends the per-order download emails, now
+   that the data is actually reachable on the share. There is one
+   `send_order_email_<order_id>` rule per order, so this forces them all;
+   `--forcerun send_order_email` alone forces only the unranked fallback.
+
+Emails go out one at a time (`order_email=1` in the profile), in reverse
+sample-sheet order: lane N's last group first, lane 1 group 1 last. To resend
+outside publish, delete the receipts you want and run `pixi run send-emails`:
+
+```bash
+rm Reports/order_*/.email_receipt && pixi run send-emails
+```
 
 Extra arguments pass straight through to `sync_run`:
 
