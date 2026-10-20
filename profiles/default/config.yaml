@@ -8,10 +8,13 @@
 
 # Serialize the rules that must not overlap: bcl_convert, bcl_convert_rc,
 # project_link, flexbar_project_link.
+# order_email=1 sends order emails one at a time, so their priorities (reverse
+# sample-sheet order) decide who goes first; see ORDER_PRIORITY in the Snakefile.
 resources:
   - serial_operation=1
   - nextcloud_api=3
   - precision_ssh=3
+  - order_email=1
 
 # JBOD/NFS can take a while to make outputs visible after a job exits.
 latency-wait: 120

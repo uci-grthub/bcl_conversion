@@ -11,7 +11,8 @@
 #                                       present and matches the source size
 #   3. dedupe_mirror.py --apply      -- hardlink byte-identical FASTQs together
 #   4. snakemake --touch all         -- mark outputs current (rsync bumps mtimes)
-#   5. snakemake --forcerun send_order_email  -- re-send the per-order emails
+#   5. send_order_emails.sh          -- re-send the per-order emails (--forcerun of
+#                                       every per-order send_order_email rule)
 #   6. the same, once per masking-sweep variant under sweeps/
 #
 # Step 2 exists because step 4 is dangerous on an incomplete mirror: --touch
@@ -150,7 +151,7 @@ snakemake --touch --show-failed-logs all
 t1=$(date +%s)
 say "step 4/6 done in $(elapsed "$t0" "$t1")"
 
-step "step 5/6: snakemake --forcerun send_order_email (in $SYNC_RUN_DEST)"
+step "step 5/6: send_order_emails.sh (in $SYNC_RUN_DEST)"
 # send_order_email short-circuits on Reports/order_*/.email_receipt. That receipt
 # exists so a bare `snakemake` on a finished run stops re-mailing every order:
 # the rule sits behind the pick_orientation checkpoint and is scheduled on every
@@ -158,12 +159,15 @@ step "step 5/6: snakemake --forcerun send_order_email (in $SYNC_RUN_DEST)"
 # Publishing is the deliberate case, so clear the receipts first -- otherwise
 # --forcerun would run the rule and the rule would decline to send. Step 6 clears
 # each variant's for the same reason.
+#
+# There is one send_order_email rule per order (each carries its reverse
+# sample-sheet priority), so send_order_emails.sh lists and forces them all.
 say "clearing email receipts so --forcerun really sends"
 rm -f Reports/order_*/.email_receipt
 say "pending work after touch:"
-snakemake -n --quiet rules --forcerun send_order_email 2>&1 | sed 's/^/    /'
+bash "$REPO_DIR/scripts/send_order_emails.sh" -n --quiet rules 2>&1 | sed 's/^/    /'
 t0=$(date +%s)
-snakemake -p --show-failed-logs --forcerun send_order_email
+bash "$REPO_DIR/scripts/send_order_emails.sh" -p --show-failed-logs
 t1=$(date +%s)
 say "step 5/6 done in $(elapsed "$t0" "$t1")"
 
@@ -193,8 +197,13 @@ else
         # report_order_id is forced alongside the email: --touch above stamps an
         # existing index.html current, so without this a variant whose report was
         # built from incomplete data would simply be re-mailed unchanged.
+        if ! sweep_email_list=$(bash "$REPO_DIR/scripts/send_order_emails.sh" --list -d "$sweep"); then
+            say "WARNING: could not list email rules for $sweep; skipping its email"
+            continue
+        fi
+        mapfile -t sweep_email_rules <<< "$sweep_email_list"
         if ! snakemake -d "$sweep" -p --show-failed-logs \
-                --forcerun report_order_id send_order_email; then
+                --forcerun report_order_id "${sweep_email_rules[@]}"; then
             say "WARNING: send_order_email failed for $sweep"
         fi
     done
