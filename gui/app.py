@@ -3,7 +3,8 @@
     pixi run gui                      # from the control clone, e.g. NovaSeqX/.bcl_gui
 
 It listens on 127.0.0.1 only, on a per-user port, and prints the SSH tunnel
-command and a one-time login link. It runs as the operator, so the cron entries
+command and a login link. The link's token is kept in ~/.config/bclgui, so it
+stays the same across restarts (`pixi run gui-link` prints it again). It runs as the operator, so the cron entries
 it writes are theirs and use their ~/.env and hpc3 key, the same as running the
 scripts by hand. See docs/GUI.md.
 
@@ -38,8 +39,13 @@ EDITABLE = ("data_dir", "email_sender", "email_recipient", "email_cc")
 
 app = Flask(__name__)
 app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024   # sheet uploads
 PLATFORM_DIR = os.path.dirname(CONTROL_DIR)
-LOGIN_TOKEN = secrets.token_urlsafe(24)
+STATE_DIR = os.path.expanduser("~/.config/bclgui")
+TOKEN_FILE = os.path.join(STATE_DIR, "token")
+COOKIE_DAYS = 30
+LOGIN_TOKEN = None   # set in main()
+PORT = None
 
 # run_id -> Job; one background action per run at a time.
 jobs = {}
@@ -153,17 +159,44 @@ def sample_sheets():
 
 # --- login ------------------------------------------------------------------
 
+def load_or_create(path, make):
+    """Read a secret from a file only the operator can read, creating it if missing."""
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    try:
+        with open(path) as handle:
+            value = handle.read().strip()
+        if value:
+            return value
+    except FileNotFoundError:
+        pass
+    value = make()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(value + "\n")
+    return value
+
+
+def token_matches(value):
+    return bool(value) and secrets.compare_digest(value.encode(), LOGIN_TOKEN.encode())
+
+
 @app.before_request
 def require_login():
+    # Only a browser that asked for localhost by name gets through; a page that
+    # rebinds its own domain to 127.0.0.1 sends its own Host and is refused.
+    if request.host not in (f"localhost:{PORT}", f"127.0.0.1:{PORT}"):
+        abort(400)
     # Bound to 127.0.0.1, but every account on this host can reach that port,
     # and the app acts as the operator (crontab, credentials). The token is the
     # operator's proof of being the operator.
-    if request.args.get("token") == LOGIN_TOKEN:
+    if token_matches(request.args.get("token")):
         response = redirect(request.path)
-        response.set_cookie("bclgui", LOGIN_TOKEN, httponly=True, samesite="Strict")
+        response.set_cookie("bclgui", LOGIN_TOKEN, max_age=COOKIE_DAYS * 86400,
+                            httponly=True, samesite="Strict")
         return response
-    if request.cookies.get("bclgui") != LOGIN_TOKEN:
-        return ("Open the login link printed in the terminal where `pixi run gui` was started.", 403)
+    if not token_matches(request.cookies.get("bclgui")):
+        return ("Not logged in. On the server, run `pixi run gui-link` in the .bcl_gui folder "
+                "and open the link it prints.", 403)
 
 
 # --- pages ------------------------------------------------------------------
@@ -391,27 +424,48 @@ def ssh_host():
     return parts[2] if len(parts) == 4 else socket.getfqdn()
 
 
+def print_link(port, host):
+    user = os.environ.get("USER", "you")
+    print("1. On your own computer, open a terminal and run:")
+    print(f"     ssh -N -L {port}:localhost:{port} {user}@{host}")
+    print("2. Then open this link in your browser (once; after that, bookmark")
+    print(f"   http://localhost:{port}/ ):")
+    print(f"     http://localhost:{port}/?token={LOGIN_TOKEN}\n")
+
+
 def main():
-    global PLATFORM_DIR
+    global PLATFORM_DIR, LOGIN_TOKEN, PORT
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=8000 + os.getuid() % 1000)
     parser.add_argument("--platform-dir", default=os.environ.get("BCL_GUI_PLATFORM_DIR", PLATFORM_DIR),
                         help="folder holding the run dirs and SampleSheets/ (default: parent of this clone)")
     parser.add_argument("--ssh-host", default=os.environ.get("BCL_GUI_SSH_HOST", ""),
                         help="server address to print in the tunnel command (default: the one you logged in to)")
+    parser.add_argument("--print-link", action="store_true",
+                        help="print the tunnel command and login link, then exit")
+    parser.add_argument("--new-token", action="store_true",
+                        help="replace the login token, logging out every browser")
     args = parser.parse_args()
     PLATFORM_DIR = os.path.realpath(args.platform_dir)
-    app.secret_key = secrets.token_bytes(32)
+    PORT = args.port
+    if args.new_token and os.path.exists(TOKEN_FILE):
+        os.remove(TOKEN_FILE)
+    LOGIN_TOKEN = load_or_create(TOKEN_FILE, lambda: secrets.token_urlsafe(24))
+    # Kept on disk too, so a restart doesn't log everyone out.
+    app.secret_key = load_or_create(os.path.join(STATE_DIR, "secret_key"), lambda: secrets.token_hex(32))
 
     host = args.ssh_host or ssh_host()
-    user = os.environ.get("USER", "you")
-    print(f"\nManaging runs in {PLATFORM_DIR}\n")
-    print("1. On your own computer, open a terminal and run:")
-    print(f"     ssh -N -L {args.port}:localhost:{args.port} {user}@{host}")
-    print("2. Then open this link in your browser:")
-    print(f"     http://localhost:{args.port}/?token={LOGIN_TOKEN}\n")
-    print("Leave this window open while you use the page; Ctrl+C stops it.")
-    print("Scheduled runs keep going after it stops.\n")
+    if args.print_link:
+        print_link(args.port, host)
+        return
+    print(f"\nManaging runs in {PLATFORM_DIR} on port {args.port}\n")
+    if os.environ.get("INVOCATION_ID"):
+        # Under systemd: keep the token out of the journal.
+        print("Running as a service. For the login link, run `pixi run gui-link` in an SSH session.")
+    else:
+        print_link(args.port, host)
+        print("Leave this window open while you use the page; Ctrl+C stops it.")
+        print("Scheduled runs keep going after it stops.\n")
     app.run(host="127.0.0.1", port=args.port, threaded=True)
 
 

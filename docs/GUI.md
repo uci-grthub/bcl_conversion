@@ -97,7 +97,8 @@ needs redoing; a ✗ on *HPC3 key login* means step 4.
 
 ## Open the page
 
-1. Log in to the server and start the page. Leave this window open while you use it:
+1. Log in to the server and start the page. Leave this window open while you use it
+   (or skip this step if you [keep it running](#keep-it-running-optional)):
 
    ```bash
    cd /staging/nextcloud/testing_illumina/NovaSeqX/.bcl_gui
@@ -107,10 +108,38 @@ needs redoing; a ✗ on *HPC3 key login* means step 4.
 2. It prints two things. On **your own computer**, open a second Terminal/PowerShell
    window and paste the `ssh -N -L ...` line it printed. That window stays quiet with no
    prompt; that is normal. Leave it open.
-3. Paste the `http://localhost:.../?token=...` link into your browser.
+3. The first time, paste the `http://localhost:.../?token=...` link into your browser.
+   After that, bookmark `http://localhost:PORT/` (your port number, without the token);
+   it keeps working for 30 days, even after the page is restarted. Lost the link? Run
+   `pixi run gui-link` in `.bcl_gui` on the server.
 
-Closing the page or pressing Ctrl+C in step 1 does **not** stop scheduled runs. The link
-changes every time you start the page.
+Closing the page or pressing Ctrl+C in step 1 does **not** stop scheduled runs.
+
+**Shorter tunnel.** On your own computer, add this to `~/.ssh/config` (use your port
+number and login):
+
+```
+Host bclgui
+    HostName 128.195.12.34
+    User YOUR_UCINETID
+    LocalForward 8002 localhost:8002
+```
+
+Then step 2 is just `ssh -N bclgui`.
+
+### Keep it running (optional)
+
+To have the page always on, so step 1 is never needed, run this once on the server:
+
+```bash
+cd /staging/nextcloud/testing_illumina/NovaSeqX/.bcl_gui
+scripts/install_gui_service.sh
+```
+
+It runs as you, survives logging out and reboots, and prints your login link. Useful
+commands: `systemctl --user status bclgui`, `systemctl --user restart bclgui`,
+`journalctl --user -u bclgui` (its log). Remove it with
+`scripts/install_gui_service.sh --uninstall`.
 
 ## A new run, step by step
 
@@ -169,22 +198,31 @@ The run list shows how it is going (refresh the page to update):
   customer.
 - **Published; backup retrying**: if it keeps failing, check the *Cron* log and the HPC3
   readiness check.
-- **The page won't load**: is the `pixi run gui` window still open on the server, and the
-  `ssh -N -L` window on your computer? Restart both and use the new link.
-- **"Open the login link printed in the terminal"**: the link is from an earlier start.
-  Use the newest one.
+- **The page won't load**: is the `pixi run gui` window still open on the server (or
+  `systemctl --user status bclgui` active), and the `ssh -N -L` window on your computer?
+  Restart what stopped.
+- **"Not logged in"**: the 30 days ran out or the token was replaced. Run
+  `pixi run gui-link` on the server and open the link.
 
 ## For the maintainer
 
 - The control clone is `<platform>/.bcl_gui` (set up once per platform folder:
   `git clone https://github.com/uci-grthub/bcl_conversion <platform>/.bcl_gui && cd $_ && pixi install`).
   `git pull` there updates the page and the pipeline version new runs get (new run dirs
-  are cloned from it). Keep it group-writable (`chmod -R g+w logs`), since every operator
-  writes setup logs and uploads under `logs/gui/`.
+  are cloned from it). Only the owner may change its code: every operator's page and cron
+  jobs run whatever is in it, as that operator, so a group-writable copy lets any group
+  member act as any operator. Keep `logs/` group-writable for setup logs and uploads:
+  `chmod -R go-w .bcl_gui && chmod -R g+rwX .bcl_gui/logs`. After `git pull`, operators
+  running the service should `systemctl --user restart bclgui`.
 - Each operator runs their own copy of the page: cron entries go into their crontab and
   use their `~/.env` and hpc3 SSH key. The port is `8000 + uid % 1000`; `--port` overrides.
-- The page binds `127.0.0.1` and requires the printed token, since every account on the
-  host can reach a local port.
+- The page binds `127.0.0.1` and requires the token, since every account on the host can
+  reach a local port. It also refuses any `Host` other than `localhost:PORT` /
+  `127.0.0.1:PORT` (DNS rebinding). The token and cookie-signing key live in
+  `~/.config/bclgui/` (mode 600); `pixi run gui --new-token` replaces the token and logs
+  out every browser (restart the service after). Under systemd the token is not printed,
+  so it stays out of the journal. Never bind it to another address or put it behind a
+  proxy without real authentication.
 - Approval is `.metadata_approved` in the run dir, holding a sha256 of the sheet + project
   config. `run_when_ready.sh` refuses to start without a matching one; a run scheduled by
   hand (no GUI) needs `REQUIRE_APPROVAL=0` on its cron line.

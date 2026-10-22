@@ -98,6 +98,7 @@ masking-sweep-report = "bash scripts/masking_sweep_report.sh"
 # from a control clone beside the run dirs (e.g. NovaSeqX/.bcl_gui); it prints
 # the SSH tunnel command and login link. See docs/GUI.md.
 gui = "python gui/app.py"
+gui-link = "python gui/app.py --print-link"
 # Rule/dependency graphs
 rulegraph = "snakemake --rulegraph | dot -Tpng > rulegraph.png"
 dag = "snakemake --dag | dot -Tpdf > dag.pdf"

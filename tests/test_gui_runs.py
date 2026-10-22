@@ -186,3 +186,24 @@ def test_sheet_run_id_found_in_real_sheet_names():
     assert find("06262026_BXA66618-2426_iR011") == ["iR011"]
     assert find("0915_mr496_samples") == ["mr496"]
     assert find("lab_sheet_final") == []
+
+
+def test_login_token_file_is_private_and_stable(tmp_path):
+    import app
+    path = os.path.join(tmp_path, "state", "token")
+    first = app.load_or_create(path, lambda: "abc123")
+    assert first == "abc123"
+    assert os.stat(path).st_mode & 0o777 == 0o600
+    assert app.load_or_create(path, lambda: "different") == "abc123"
+
+
+def test_login_requires_localhost_host_and_token():
+    import app
+    app.PORT, app.LOGIN_TOKEN = 8123, "tok"
+    client = app.app.test_client()
+    assert client.get("/", headers={"Host": "evil.example:8123"}).status_code == 400
+    assert client.get("/", headers={"Host": "localhost:8123"}).status_code == 403
+    response = client.get("/?token=tok", headers={"Host": "localhost:8123"})
+    assert response.status_code == 302
+    assert "Max-Age=2592000" in response.headers["Set-Cookie"]
+    assert client.get("/?token=wrong", headers={"Host": "127.0.0.1:8123"}).status_code == 403
