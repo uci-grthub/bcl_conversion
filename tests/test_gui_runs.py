@@ -207,3 +207,12 @@ def test_login_requires_localhost_host_and_token():
     assert response.status_code == 302
     assert "Max-Age=2592000" in response.headers["Set-Cookie"]
     assert client.get("/?token=wrong", headers={"Host": "127.0.0.1:8123"}).status_code == 403
+
+
+def test_access_log_hides_token():
+    import logging
+    import app
+    record = logging.LogRecord("werkzeug", logging.INFO, "", 0,
+                               '%s - - "%s" %s', ("127.0.0.1", "GET /?token=s3cret HTTP/1.1", "302"), None)
+    app.RedactToken().filter(record)
+    assert "s3cret" not in record.getMessage() and "token=<hidden>" in record.getMessage()

@@ -15,7 +15,9 @@ crontab. That script removes its own entry once the backups finish.
 """
 import argparse
 import json
+import logging
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -174,6 +176,18 @@ def load_or_create(path, make):
     with os.fdopen(fd, "w") as handle:
         handle.write(value + "\n")
     return value
+
+
+class RedactToken(logging.Filter):
+    """Keep ?token=... out of the access log (and so out of the journal)."""
+
+    def filter(self, record):
+        record.msg = re.sub(r"token=[^\s&\"]+", "token=<hidden>", record.getMessage())
+        record.args = ()
+        return True
+
+
+logging.getLogger("werkzeug").addFilter(RedactToken())
 
 
 def token_matches(value):
