@@ -32,3 +32,14 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--line); v
 .badge.attention { background: #fdecea; color: var(--bad); }
 .badge.ready { background: #fff4e0; color: var(--warn); }
 pre { background: #10151f; color: #d7dde8; padding: 12px; border-radius: 6px; max-height: 420px; overflow: auto; font-size: .8rem; white-space: pre-wrap; }
+.progress { margin: 12px 0; padding: 10px 12px; border-radius: 6px; background: #eef2fb; }
+.progress-line { display: flex; align-items: center; gap: 10px; color: var(--run); }
+.progress .elapsed { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.spinner { width: 16px; height: 16px; flex: none; border: 2px solid #c5d3f0; border-top-color: var(--run); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.segments { display: flex; gap: 4px; margin-top: 8px; }
+.seg { flex: 1; height: 6px; border-radius: 3px; background: #d5dded; }
+.seg.done { background: var(--run); }
+.seg.now { background: linear-gradient(90deg, #d5dded 0%, var(--run) 50%, #d5dded 100%); background-size: 200% 100%; animation: slide 1.2s linear infinite; }
+@keyframes slide { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@media (prefers-reduced-motion: reduce) { .spinner, .seg.now { animation: none; } .seg.now { background: var(--run); opacity: .5; } }

@@ -1,9 +1,16 @@
 {% extends "base.html" %}
 {% block title %}{{ run_id }}{% endblock %}
 {% block content %}
+{% set busy = job and job.running %}
+{# Filled in by the script at the bottom while that action runs. #}
+{% macro progress(action) %}<div class="progress" data-action="{{ action }}" hidden>
+  <div class="progress-line"><span class="spinner"></span><span class="progress-text"></span><span class="elapsed"></span></div>
+  <div class="segments"></div>
+</div>{% endmacro %}
 <h1>{{ run_id }} <span class="badge {{ stage }}">{{ label }}</span></h1>
 {% if detail %}<p class="muted">{{ detail }}</p>{% endif %}
-{% if job and job.running %}<p class="flash running">Working: {{ job.action }} (started {{ job.started }}). The log below updates by itself.</p>
+{% if busy %}<p class="flash running">Working: {{ job.action }} (started {{ job.started }}). The log below updates by itself.</p>
+{{ progress("setup") }}
 {% elif job and job.rc %}<p class="flash error">“{{ job.action }}” failed. See the log below.</p>{% endif %}
 
 {% if config %}
@@ -37,7 +44,8 @@
     {% for c in preflight %}<li class="{{ 'ok' if c.ok else 'bad' }}">{{ '✓' if c.ok else '✗' }} {{ c.name }} <span class="muted">{{ c.detail }}</span></li>{% endfor %}
     </ul>
   {% else %}<p class="hint">Not run yet.</p>{% endif %}
-  <form method="post" action="{{ url_for('preflight', run_id=run_id) }}"><button>Run readiness checks</button></form>
+  {{ progress("readiness checks") }}
+  <form method="post" action="{{ url_for('preflight', run_id=run_id) }}" class="action"><button {% if busy %}disabled{% endif %}>Run readiness checks</button></form>
   <p class="hint">A ✗ on HPC3 means the backups will fail; ask the pipeline maintainer to set up your SSH key.</p>
 </section>
 
@@ -61,7 +69,8 @@
       {% else %}<p class="ok">✓ No issues found in the sheet.</p>{% endif %}
     {% endif %}
   {% else %}<p class="hint">Not run yet.</p>{% endif %}
-  <form method="post" action="{{ url_for('check_metadata', run_id=run_id) }}"><button>Check metadata</button></form>
+  {{ progress("metadata check") }}
+  <form method="post" action="{{ url_for('check_metadata', run_id=run_id) }}" class="action"><button {% if busy %}disabled{% endif %}>Check metadata</button></form>
 </section>
 
 <section class="card">
@@ -107,11 +116,39 @@
 <script>
   const select = document.getElementById("log-name");
   const pre = document.getElementById("log");
-  let wasRunning = {{ 'true' if job and job.running else 'false' }};
+  let wasRunning = {{ 'true' if busy else 'false' }};
+  let shown = null;   // {box, elapsed, at}: the spinner on screen and its clock
+
+  // Grey the button out at once: the page takes a moment to come back.
+  document.querySelectorAll("form.action").forEach((form) => form.addEventListener("submit", () => {
+    const button = form.querySelector("button");
+    setTimeout(() => { button.disabled = true; button.textContent = "Starting…"; });
+  }));
+
+  function showProgress(p) {
+    document.querySelectorAll(".progress").forEach((box) => box.hidden = true);
+    shown = null;
+    const box = p && document.querySelector(`.progress[data-action="${p.action}"]`);
+    if (!box) return;
+    box.hidden = false;
+    box.querySelector(".progress-text").textContent =
+      p.total > 1 ? `Step ${p.step} of ${p.total}: ${p.label}` : `${p.label}…`;
+    box.querySelector(".segments").innerHTML = Array.from({length: p.total}, (_, i) =>
+      `<span class="seg ${i + 1 < p.step ? "done" : i + 1 === p.step ? "now" : ""}"></span>`).join("");
+    shown = {box, elapsed: p.elapsed, at: Date.now()};
+    tick();
+  }
+  function tick() {
+    if (!shown) return;
+    const s = shown.elapsed + Math.floor((Date.now() - shown.at) / 1000);
+    shown.box.querySelector(".elapsed").textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  }
+  setInterval(tick, 1000);
   async function refresh() {
     if (!select.value) { pre.textContent = "No logs yet."; return; }
     const r = await fetch("{{ url_for('run_log', run_id=run_id) }}?name=" + encodeURIComponent(select.value));
     const data = await r.json();
+    showProgress(data.progress);
     const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
     pre.textContent = data.text || "(empty)";
     if (atBottom) pre.scrollTop = pre.scrollHeight;

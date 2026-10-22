@@ -55,6 +55,8 @@ class Job:
         self.outputs = {}
         self.rc = None
         self.started = time.strftime("%H:%M:%S")
+        self.t0 = time.time()
+        self.step = 0   # 1-based index of the step running now
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         open(log_path, "w").close()
         threading.Thread(target=self._run, daemon=True).start()
@@ -63,13 +65,19 @@ class Job:
     def running(self):
         return self.rc is None
 
+    def progress(self):
+        """What the page's spinner shows: which step of how many, and for how long."""
+        label = self.steps[self.step - 1][0] if self.step else ""
+        return {"action": self.action, "step": self.step, "total": len(self.steps),
+                "label": label, "elapsed": int(time.time() - self.t0)}
+
     def _log(self, text):
         with open(self.log_path, "a") as handle:
             handle.write(text)
 
     def _run(self):
         rc = 0
-        for label, argv, cwd in self.steps:
+        for self.step, (label, argv, cwd) in enumerate(self.steps, 1):
             self._log(f"\n=== {label} ===\n$ {' '.join(argv)}\n")
             try:
                 proc = subprocess.Popen(argv, cwd=cwd, env=child_env(), stdout=subprocess.PIPE,
@@ -264,8 +272,9 @@ def run_log(run_id):
     run_dir = run_dir_for(run_id)
     choices = log_choices(run_dir, jobs.get(run_id))
     job = jobs.get(run_id)
+    running = bool(job and job.running)
     return jsonify(text=tail(choices.get(request.args.get("name"))),
-                   job_running=bool(job and job.running))
+                   job_running=running, progress=job.progress() if running else None)
 
 
 @app.route("/run/<run_id>/config", methods=["POST"])
