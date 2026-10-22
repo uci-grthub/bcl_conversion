@@ -190,6 +190,13 @@ The run list shows how it is going (refresh the page to update):
 
 ## When something needs attention
 
+- **Stopping a run**: open the run and press the red **Stop this run** (shown while it is
+  processing or backing up; also **Stop** while the page's own setup or check is running).
+  It removes the run from the schedule and tells it to shut down; that takes up to a
+  minute. A stopped processing run becomes *Stopped before publishing* and does not
+  restart by itself. If publishing had already begun, some customers may have their email.
+  Stopped backups keep what finished; press **Schedule run** again to finish the rest.
+  Only the operator who scheduled a run can stop it.
 - **Approval withdrawn**: the sheet or settings changed after you approved. Check again
   and re-approve.
 - **Stopped before publishing**: the workflow failed. Open the run, pick
@@ -226,6 +233,14 @@ The run list shows how it is going (refresh the page to update):
 - Approval is `.metadata_approved` in the run dir, holding a sha256 of the sheet + project
   config. `run_when_ready.sh` refuses to start without a matching one; a run scheduled by
   hand (no GUI) needs `REQUIRE_APPROVAL=0` on its cron line.
+- **Stop** finds the process groups holding `.auto_launch.lock` / `.post_publish.lock`
+  (via `/proc/*/fd`, so only the operator's own) and sends them SIGTERM after removing the
+  cron line. By hand: `kill -TERM -- -PGID`, where PGID is the group of the
+  `run_and_backup_when_ready.sh` process (`ps -o pgid= -p PID`). Never `kill -9`: the
+  bcl_convert rule's TERM trap is what stops DRAGEN, and a killed shell leaves DRAGEN
+  orphaned on the board holding its locks. To resume a stopped processing run, delete
+  `.auto_launched` and schedule it again; snakemake picks up where it stopped. Check first
+  whether publish had started (`logs/cron_run.log`), since publish re-sends every email.
 - GUI cron entries end in `# bclgui:<run_id>`; `run_and_backup_when_ready.sh` deletes that
   line once every backup step has its `.post_<step>.done` marker.
 - The screenshots in `docs/images/` come from a demo folder of fake runs, not real data.

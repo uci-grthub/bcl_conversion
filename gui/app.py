@@ -20,6 +20,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -65,6 +66,7 @@ class Job:
         self.started = time.strftime("%H:%M:%S")
         self.t0 = time.time()
         self.step = 0   # 1-based index of the step running now
+        self.proc, self.stopped = None, False
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         open(log_path, "w").close()
         threading.Thread(target=self._run, daemon=True).start()
@@ -72,6 +74,16 @@ class Job:
     @property
     def running(self):
         return self.rc is None
+
+    def stop(self):
+        """SIGTERM the step running now; _run then skips the remaining steps."""
+        self.stopped = True
+        proc = self.proc
+        if proc and proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
 
     def progress(self):
         """What the page's spinner shows: which step of how many, and for how long."""
@@ -86,10 +98,15 @@ class Job:
     def _run(self):
         rc = 0
         for self.step, (label, argv, cwd) in enumerate(self.steps, 1):
+            if self.stopped:
+                rc = rc or 1
+                break
             self._log(f"\n=== {label} ===\n$ {' '.join(argv)}\n")
             try:
-                proc = subprocess.Popen(argv, cwd=cwd, env=child_env(), stdout=subprocess.PIPE,
-                                        stderr=subprocess.STDOUT, text=True, errors="replace")
+                # Own session, so stop() can signal pixi and everything it started.
+                self.proc = proc = subprocess.Popen(
+                    argv, cwd=cwd, env=child_env(), stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, text=True, errors="replace", start_new_session=True)
                 chunks = []
                 for line in proc.stdout:
                     chunks.append(line)
@@ -102,6 +119,9 @@ class Job:
             self._log(f"=== {label}: {'OK' if rc == 0 else f'FAILED (exit {rc})'} ===\n")
             if rc != 0:
                 break
+        if self.stopped:
+            self._log("\n=== stopped by user ===\n")
+            rc = rc or 1
         if self.on_finish:
             try:
                 self.on_finish(self, rc)
@@ -301,6 +321,7 @@ def run_page(run_id):
         check=runs.read_check(run_dir) if config else None,
         approval=runs.read_approval(run_dir) if config else None,
         cron_line=line, usb_dest=runs.usb_dest_from_line(line),
+        publish_started=stage == "running" and runs.publish_started(run_dir),
         preflight=preflight, logs=log_choices(run_dir, job))
 
 
@@ -424,6 +445,22 @@ def unschedule(run_id):
     run_dir_for(run_id)
     runs.remove_cron(run_id)
     flash("Removed from the schedule.", "ok")
+    return redirect(url_for("run_page", run_id=run_id))
+
+
+@app.route("/run/<run_id>/stop", methods=["POST"])
+def stop(run_id):
+    run_dir = run_dir_for(run_id)
+    job = jobs.get(run_id)
+    if job and job.running:
+        job.stop()
+        flash(f"Stopping “{job.action}”.", "ok")
+        return redirect(url_for("run_page", run_id=run_id))
+    if runs.stop_run(run_dir):
+        flash("Stop signal sent and the run is off the schedule. It can take a minute to "
+              "wind down; it will not restart by itself.", "ok")
+    else:
+        flash("Nothing of yours is running for this run (another operator may have started it).", "error")
     return redirect(url_for("run_page", run_id=run_id))
 
 

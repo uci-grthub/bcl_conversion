@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import time
 
@@ -239,6 +240,65 @@ def lock_held(path):
     return False
 
 
+RUN_LOCKS = (".auto_launch.lock", ".post_publish.lock")
+
+
+def lock_holders(run_dir):
+    """Process groups of this user's processes that hold the run's cron locks open.
+
+    Cron starts each tick in its own process group, so the group holding the
+    lock is the whole run: the cron scripts, snakemake and its jobs. Another
+    operator's /proc/<pid>/fd is unreadable, so their runs are never found here.
+    """
+    targets = {os.path.realpath(os.path.join(run_dir, name)) for name in RUN_LOCKS}
+    own = os.getpgid(0)
+    groups = set()
+    for pid in filter(str.isdigit, os.listdir("/proc")):
+        fd_dir = f"/proc/{pid}/fd"
+        try:
+            if any(os.readlink(os.path.join(fd_dir, fd)) in targets for fd in os.listdir(fd_dir)):
+                groups.add(os.getpgid(int(pid)))
+        except (PermissionError, FileNotFoundError, ProcessLookupError):
+            continue
+    groups.discard(own)
+    return groups
+
+
+def stop_run(run_dir):
+    """Take the run off the schedule, then SIGTERM every process group running it.
+
+    Unschedule first so the next tick cannot start the backups again. TERM only,
+    never KILL: snakemake stops its jobs on TERM, and the bcl_convert rule's trap
+    stops its DRAGEN process group, which a KILL would leave orphaned on the board.
+    """
+    remove_cron(os.path.basename(run_dir))
+    groups = lock_holders(run_dir)
+    for pgid in groups:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    return groups
+
+
+def started_by_other(run_dir):
+    return "" if lock_holders(run_dir) else "Started by another operator; only they can stop it"
+
+
+def publish_started(run_dir):
+    """True when the latest launch in the cron log got as far as `pixi run publish`."""
+    path = os.path.join(run_dir, "logs", "cron_run.log")
+    if not os.path.exists(path):
+        return False
+    with open(path, errors="replace") as handle:
+        for line in reversed(handle.readlines()[-5000:]):
+            if "running pixi run publish" in line:
+                return True
+            if "running pixi run all" in line:
+                return False
+    return False
+
+
 def last_failure(run_dir):
     path = os.path.join(run_dir, "logs", "cron_run.log")
     if not os.path.exists(path):
@@ -269,14 +329,14 @@ def run_status(run_dir, cron_text):
         if all(has(f".post_{s}.done") for s in steps):
             return "done", "Finished and backed up", ""
         if lock_held(os.path.join(run_dir, ".post_publish.lock")):
-            return "running", "Published; backing up", ""
+            return "running", "Published; backing up", started_by_other(run_dir)
         pending = [s for s in steps if not has(f".post_{s}.done")]
         if not line:
             return "attention", "Published; backups not scheduled", "Waiting on: " + ", ".join(pending)
         return "published", "Published; backup retrying", failure or "Waiting on: " + ", ".join(pending)
     if has(".auto_launched"):
         if lock_held(os.path.join(run_dir, ".auto_launch.lock")):
-            return "running", "Processing (pixi run all / publish)", ""
+            return "running", "Processing (pixi run all / publish)", started_by_other(run_dir)
         return "attention", "Stopped before publishing", failure or "See logs; ask the pipeline maintainer"
     if not config:
         return "new", "Not set up", "Run setup has not finished"

@@ -216,3 +216,61 @@ def test_access_log_hides_token():
                                '%s - - "%s" %s', ("127.0.0.1", "GET /?token=s3cret HTTP/1.1", "302"), None)
     app.RedactToken().filter(record)
     assert "s3cret" not in record.getMessage() and "token=<hidden>" in record.getMessage()
+
+
+def test_stop_run_signals_the_lock_holder_and_unschedules(tmp_path):
+    import time
+    fake_crontab(tmp_path)
+    run_dir = make_run(tmp_path)
+    runs.add_cron(run_dir)
+    open(os.path.join(run_dir, ".auto_launched"), "w").close()
+    # Stands in for a cron tick: own process group, holding the lock like run_when_ready.sh.
+    holder = subprocess.Popen(["bash", "-c", "exec 9>.auto_launch.lock; flock 9; sleep 300 & wait"],
+                              cwd=run_dir, start_new_session=True)
+    for _ in range(50):
+        if runs.lock_held(os.path.join(run_dir, ".auto_launch.lock")):
+            break
+        time.sleep(0.1)
+    assert runs.lock_holders(run_dir) == {holder.pid}
+    assert runs.run_status(run_dir, runs.read_crontab())[:2] == ("running", "Processing (pixi run all / publish)")
+
+    assert runs.stop_run(run_dir) == {holder.pid}
+    assert holder.wait(timeout=5) != 0
+    assert runs.scheduled_line(runs.read_crontab(), "xR999") is None
+    for _ in range(50):   # the backgrounded sleep got the TERM too and lets go of the lock
+        if not runs.lock_held(os.path.join(run_dir, ".auto_launch.lock")):
+            break
+        time.sleep(0.1)
+    assert runs.run_status(run_dir, "")[0] == "attention"
+
+
+def test_publish_started_reads_the_latest_launch(tmp_path):
+    run_dir = make_run(tmp_path)
+    assert not runs.publish_started(run_dir)
+    os.makedirs(os.path.join(run_dir, "logs"))
+    log = os.path.join(run_dir, "logs", "cron_run.log")
+    with open(log, "w") as handle:
+        handle.write("x CopyComplete.txt found; running pixi run all\nx all succeeded; running pixi run publish\n")
+    assert runs.publish_started(run_dir)
+    with open(log, "a") as handle:
+        handle.write("y CopyComplete.txt found; running pixi run all\n")
+    assert not runs.publish_started(run_dir)
+
+
+def test_gui_job_stop_ends_the_running_step(tmp_path):
+    import time
+    import app
+    log = os.path.join(tmp_path, "job.log")
+    job = app.Job("setup", [("Wait", ["bash", "-c", "sleep 300"], str(tmp_path)),
+                            ("Never", ["true"], str(tmp_path))], log)
+    for _ in range(50):
+        if job.proc:
+            break
+        time.sleep(0.1)
+    job.stop()
+    for _ in range(50):
+        if not job.running:
+            break
+        time.sleep(0.1)
+    assert job.rc and "Never" not in job.outputs
+    assert "stopped by user" in open(log).read()

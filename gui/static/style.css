@@ -14,6 +14,7 @@ label { display: block; margin: 12px 0 4px; font-weight: 500; }
 label.inline { font-weight: 400; }
 input:not([type=checkbox]), select { display: block; width: 100%; padding: 8px; margin-top: 4px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
 button, .button { display: inline-block; margin-top: 12px; padding: 8px 16px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; text-decoration: none; }
+button.danger { background: var(--bad); }
 button.secondary { background: #e7eaf0; color: var(--text); }
 button:disabled { background: #b8bfcb; cursor: not-allowed; }
 .hint, .muted { color: var(--muted); font-size: .92rem; }

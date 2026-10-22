@@ -11,7 +11,16 @@
 {% if detail %}<p class="muted">{{ detail }}</p>{% endif %}
 {% if busy %}<p class="flash running">Working: {{ job.action }} (started {{ job.started }}). The log below updates by itself.</p>
 {{ progress("setup") }}
-{% elif job and job.rc %}<p class="flash error">“{{ job.action }}” failed. See the log below.</p>{% endif %}
+{% elif job and job.rc %}<p class="flash error">“{{ job.action }}” {{ 'was stopped' if job.stopped else 'failed' }}. See the log below.</p>{% endif %}
+{% if busy or (stage == "running" and not detail) %}
+  {% if busy %}{% set warning = "Stop “" ~ job.action ~ "”? You can start it again afterwards." %}
+  {% elif label.startswith("Published") %}{% set warning = "Stop the backups for " ~ run_id ~ "? Finished copies are kept; press Schedule run again later to finish the rest." %}
+  {% else %}{% set warning = "Stop " ~ run_id ~ "? Processing stops and the run is removed from the schedule. It will NOT restart by itself; restarting needs the pipeline maintainer." ~ (" Publishing has begun: some customers may already have their email." if publish_started else "") %}{% endif %}
+  <form method="post" action="{{ url_for('stop', run_id=run_id) }}" data-confirm="{{ warning }}" class="stop">
+    <button class="danger">{{ 'Stop' if busy else 'Stop this run' }}</button>
+    {% if publish_started %}<span class="bad">Publishing has begun.</span>{% endif %}
+  </form>
+{% endif %}
 
 {% if config %}
 <section class="card">
@@ -118,6 +127,10 @@
   const pre = document.getElementById("log");
   let wasRunning = {{ 'true' if busy else 'false' }};
   let shown = null;   // {box, elapsed, at}: the spinner on screen and its clock
+
+  document.querySelectorAll("form[data-confirm]").forEach((form) => form.addEventListener("submit", (event) => {
+    if (!confirm(form.dataset.confirm)) event.preventDefault();
+  }));
 
   // Grey the button out at once: the page takes a moment to come back.
   document.querySelectorAll("form.action").forEach((form) => form.addEventListener("submit", () => {
