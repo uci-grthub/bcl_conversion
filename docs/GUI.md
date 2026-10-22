@@ -16,14 +16,14 @@ removes itself from the schedule.
 
 ## First-time setup (once per person)
 
-You need an account on the sequencing server (`grthub_dragen.biochem.uci.edu`) and an
+You need an account on the sequencing server (address `128.195.12.34`) and an
 HPC3 account. Ask the pipeline maintainer if you have neither. Everything below is typed
 into a terminal: **Terminal** on a Mac, **PowerShell** on Windows.
 
 **1. Log in to the server.**
 
 ```bash
-ssh YOUR_UCINETID@grthub_dragen.biochem.uci.edu
+ssh YOUR_UCINETID@128.195.12.34
 ```
 
 Every command in steps 2–5 is typed in this login window.

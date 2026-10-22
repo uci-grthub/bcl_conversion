@@ -371,17 +371,30 @@ def unschedule(run_id):
     return redirect(url_for("run_page", run_id=run_id))
 
 
+def ssh_host():
+    """The address the operator's own SSH session reached this server on.
+
+    The machine's hostname (grthub_dragen.biochem.uci.edu) is not in DNS, so
+    a tunnel command built from it fails on the operator's computer. Whatever
+    address they just logged in with demonstrably works from there.
+    """
+    parts = os.environ.get("SSH_CONNECTION", "").split()
+    return parts[2] if len(parts) == 4 else socket.getfqdn()
+
+
 def main():
     global PLATFORM_DIR
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=8000 + os.getuid() % 1000)
     parser.add_argument("--platform-dir", default=os.environ.get("BCL_GUI_PLATFORM_DIR", PLATFORM_DIR),
                         help="folder holding the run dirs and SampleSheets/ (default: parent of this clone)")
+    parser.add_argument("--ssh-host", default=os.environ.get("BCL_GUI_SSH_HOST", ""),
+                        help="server address to print in the tunnel command (default: the one you logged in to)")
     args = parser.parse_args()
     PLATFORM_DIR = os.path.realpath(args.platform_dir)
     app.secret_key = secrets.token_bytes(32)
 
-    host = socket.getfqdn()
+    host = args.ssh_host or ssh_host()
     user = os.environ.get("USER", "you")
     print(f"\nManaging runs in {PLATFORM_DIR}\n")
     print("1. On your own computer, open a terminal and run:")
