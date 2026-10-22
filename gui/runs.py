@@ -25,6 +25,8 @@ import time
 import yaml
 
 RUN_ID_RE = re.compile(r"^[ixm]R\d+$")
+# A run ID inside a sample-sheet file name, e.g. 251219_23G5F2LT3_10B_PE151_xR077.
+SHEET_RUN_ID_RE = re.compile(r"(?<![A-Za-z0-9])[ixmIXM][Rr]\d+(?![0-9])")
 PROJECT_CONFIG = "snakemake_config_project.yaml"
 APPROVAL_FILE = ".metadata_approved"
 CRON_TAG = "# bclgui:"

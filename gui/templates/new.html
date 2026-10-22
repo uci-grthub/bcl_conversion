@@ -17,7 +17,19 @@
     <input type="file" name="upload" accept=".xlsx">
   </label>
 
+  <p class="hint">The sheet whose name contains the run ID is picked for you.</p>
+
   <button type="submit">Set up run</button>
   <p class="hint">Copies the pipeline, installs its software and prefills the settings. Takes a few minutes the first time.</p>
 </form>
+<script>
+  // Pick the sheet named for the typed run ID (…_xR123.xlsx).
+  document.querySelector("input[name=run_id]").addEventListener("input", (e) => {
+    const id = e.target.value.trim().toLowerCase();
+    if (!/^[ixm]r\d+$/.test(id)) return;
+    const match = [...document.querySelectorAll("select[name=sheet] option")]
+      .find((o) => new RegExp("(^|[^a-z0-9])" + id + "(?![0-9])", "i").test(o.value.replace(/\.xlsx$/i, "")));
+    if (match) match.selected = true;
+  });
+</script>
 {% endblock %}

@@ -6,6 +6,7 @@ md5sum*
 !tests/fixtures/*.csv
 *.png
 !rulegraph.png
+!docs/images/*.png
 Tools/*.storable
 .snakemake/
 src/flexbar/*.txt

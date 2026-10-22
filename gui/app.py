@@ -196,11 +196,21 @@ def new_run():
             return redirect(url_for("new_run"))
         sheet = os.path.join(PLATFORM_DIR, "SampleSheets", name)
 
-    origin = subprocess.run(["git", "-C", CONTROL_DIR, "remote", "get-url", "origin"],
+    # Sheet names carry the run ID (…_xR123.xlsx); a different one means the
+    # wrong sheet was picked, which would process and email the wrong orders.
+    named = runs.SHEET_RUN_ID_RE.findall(os.path.splitext(name)[0])
+    if named and run_id.lower() not in (n.lower() for n in named):
+        flash(f"The sheet {name} is for {named[-1]}, not {run_id}. Pick the sheet for {run_id}.", "error")
+        return redirect(url_for("new_run"))
+
+    # The control clone is shared, so for most operators it is owned by someone
+    # else, and git refuses to read another user's repo without safe.directory.
+    git = ["git", "-c", f"safe.directory={CONTROL_DIR}", "-c", f"safe.directory={CONTROL_DIR}/.git"]
+    origin = subprocess.run(git + ["-C", CONTROL_DIR, "remote", "get-url", "origin"],
                             capture_output=True, text=True).stdout.strip()
     # Clone the control clone (no GitHub credentials needed), then point origin
     # back at GitHub so `git pull` in the run dir behaves as in a normal clone.
-    steps = [("Copy pipeline", ["git", "clone", CONTROL_DIR, run_dir], PLATFORM_DIR)]
+    steps = [("Copy pipeline", git + ["clone", CONTROL_DIR, run_dir], PLATFORM_DIR)]
     if origin:
         steps.append(("Set origin", ["git", "-C", run_dir, "remote", "set-url", "origin", origin], PLATFORM_DIR))
     steps += [

@@ -177,3 +177,12 @@ def test_run_status_stages(tmp_path):
     assert runs.run_status(run_dir, "")[0] == "done"
     # A USB sync on the schedule is one more step to wait for.
     assert runs.run_status(run_dir, runs.cron_line(run_dir, "/mnt/x"))[0] == "published"
+
+
+def test_sheet_run_id_found_in_real_sheet_names():
+    find = lambda name: runs.SHEET_RUN_ID_RE.findall(name)
+    assert find("260724_257J2MLT4_25B_PE51_87_60_71_xR102") == ["xR102"]
+    assert find("251219_23G5F2LT3_10B_PE151_xR077") == ["xR077"]
+    assert find("06262026_BXA66618-2426_iR011") == ["iR011"]
+    assert find("0915_mr496_samples") == ["mr496"]
+    assert find("lab_sheet_final") == []
