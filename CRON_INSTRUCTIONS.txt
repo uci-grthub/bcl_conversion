@@ -1,3 +1,7 @@
+The staff web GUI (`pixi run gui`, docs/GUI.md) does all of the below from a browser,
+including the crontab entry, and removes the entry once the backups finish. These
+instructions are for scheduling a run by hand.
+
 Set up a cron job that waits for CopyComplete.txt, then runs `pixi run all` followed by
 `pixi run publish`, exactly once, directly from cron (no tmux).
 
@@ -16,6 +20,10 @@ SNAKEMAKE_PROFILE=profiles/default, so no --profile flag or manual env sourcing 
    until the sequencer finishes, and must not create .auto_launched):
      chmod +x <run_dir>/run_when_ready.sh
      <run_dir>/run_when_ready.sh
+
+   run_when_ready.sh waits for a staff approval (.metadata_approved, written by the GUI)
+   before launching. Scheduling by hand, either approve in the GUI or prefix the cron
+   command with REQUIRE_APPROVAL=0 (e.g. `*/30 ... REQUIRE_APPROVAL=0 <run_dir>/run_when_ready.sh`).
 
 4. Add half-hourly entries with 'crontab -e'. cron has no start date, so bound the schedule with
    day-of-month/month fields. Example: start at 06:00 on Sep 24, keep checking through Sep 30:

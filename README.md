@@ -44,6 +44,7 @@ pixi run convert output/lane1
 pixi run publish NovaSeqx xR101   # mirror finished run to the share + resend emails
 pixi run masking-sweep 39 22 17   # one deliverable set per alternative R2 masking
 pixi run masking-sweep-report     # compare those variants against the baseline lane
+pixi run gui                      # staff web page: set up, check, approve, schedule (docs/GUI.md)
 ```
 
 > `pixi run` auto-loads secrets from the shared per-platform `../.env` (a local `./.env`

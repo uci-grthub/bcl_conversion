@@ -2,9 +2,11 @@
 # One-time per-run setup. Run once after cloning into a run-named directory:
 #   pixi run init                      # sequencer inferred from the path
 #   pixi run init --sequencer novaseqx # or: --sequencer miseqi100 / miseq
+#   pixi run init --sheet metadata/<file>.xlsx   # use this sheet, skip step 1
 #
 # Idempotent: safe to re-run. It:
-#   1. copies the newest .xlsx from ../SampleSheets into metadata/ (if present),
+#   1. copies the newest .xlsx from ../SampleSheets into metadata/ (if present;
+#      skipped when --sheet names the sheet),
 #   2. creates snakemake_config_project.yaml from the base config (if missing),
 #   3. prefills metadata / library_name / data_dir in that project config.
 # Review the result and fill .env (secrets) before running the workflow.
@@ -13,9 +15,11 @@ set -euo pipefail
 
 # --- parse --sequencer ------------------------------------------------------
 sequencer=""
+sheet=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --sequencer) sequencer="$2"; shift 2 ;;
+        --sheet)     sheet="$2"; shift 2 ;;
         *) shift ;;
     esac
 done
@@ -49,16 +53,31 @@ case "$sequencer" in
 esac
 
 # --- copy newest samplesheet from ../SampleSheets --------------------------
-source_xlsx=$( { find ../SampleSheets -maxdepth 1 -name "*.xlsx" -printf "%T@ %p\n" 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-; } || true)
-if [ -n "$source_xlsx" ]; then
+if [ -n "$sheet" ]; then
+    # An explicit sheet (the staff GUI passes one): the newest-in-SampleSheets
+    # guess, and the `head -1` pick below, could both choose a different file.
+    if [ ! -f "$sheet" ]; then
+        echo "ERROR: --sheet $sheet not found"
+        exit 1
+    fi
     mkdir -p metadata
-    cp "$source_xlsx" metadata/
-    echo "  Copied $source_xlsx --> metadata/"
+    if [ "$(realpath "$(dirname "$sheet")")" != "$(realpath metadata)" ]; then
+        cp "$sheet" metadata/
+        echo "  Copied $sheet --> metadata/"
+    fi
+    metadata_file="metadata/$(basename "$sheet")"
 else
-    echo "  WARNING: No .xlsx found in ../SampleSheets"
-fi
+    source_xlsx=$( { find ../SampleSheets -maxdepth 1 -name "*.xlsx" -printf "%T@ %p\n" 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-; } || true)
+    if [ -n "$source_xlsx" ]; then
+        mkdir -p metadata
+        cp "$source_xlsx" metadata/
+        echo "  Copied $source_xlsx --> metadata/"
+    else
+        echo "  WARNING: No .xlsx found in ../SampleSheets"
+    fi
 
-metadata_file=$( { find metadata/ -maxdepth 1 -name "*.xlsx" ! -name "metadata_validation*" 2>/dev/null | head -1; } || true)
+    metadata_file=$( { find metadata/ -maxdepth 1 -name "*.xlsx" ! -name "metadata_validation*" 2>/dev/null | head -1; } || true)
+fi
 
 # --- create project config from base (if missing) --------------------------
 if [ ! -f snakemake_config_project.yaml ]; then

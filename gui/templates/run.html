@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}{{ run_id }}{% endblock %}
+{% block content %}
+<h1>{{ run_id }} <span class="badge {{ stage }}">{{ label }}</span></h1>
+{% if detail %}<p class="muted">{{ detail }}</p>{% endif %}
+{% if job and job.running %}<p class="flash running">Working: {{ job.action }} (started {{ job.started }}). The log below updates by itself.</p>
+{% elif job and job.rc %}<p class="flash error">“{{ job.action }}” failed. See the log below.</p>{% endif %}
+
+{% if config %}
+<section class="card">
+  <h2>1. Settings</h2>
+  {% if launched %}<p class="hint">The run has started, so settings are locked.</p>{% endif %}
+  <form method="post" action="{{ url_for('save_config', run_id=run_id) }}">
+    <p class="muted">Sample sheet: {{ config.metadata }}</p>
+    <label>Sequencer data folder (data_dir)
+      <input name="data_dir" value="{{ config.data_dir or '' }}" {% if launched %}disabled{% endif %}>
+    </label>
+    <p class="hint">{% if copy_complete %}✓ Sequencer has finished copying (CopyComplete.txt found).
+      {% else %}Sequencer not finished yet (no CopyComplete.txt); that is fine, the schedule waits for it.{% endif %}</p>
+    <label>Send results from (email_sender)
+      <input name="email_sender" value="{{ config.email_sender or '' }}" {% if launched %}disabled{% endif %}>
+    </label>
+    <label>Send results to (email_recipient), your address
+      <input name="email_recipient" value="{{ config.email_recipient or '' }}" {% if launched %}disabled{% endif %}>
+    </label>
+    <label>CC (email_cc, optional)
+      <input name="email_cc" value="{{ config.email_cc or '' }}" {% if launched %}disabled{% endif %}>
+    </label>
+    {% if not launched %}<button type="submit">Save settings</button>{% endif %}
+  </form>
+</section>
+
+<section class="card">
+  <h2>2. Readiness checks</h2>
+  {% if preflight %}
+    <ul class="checks">
+    {% for c in preflight %}<li class="{{ 'ok' if c.ok else 'bad' }}">{{ '✓' if c.ok else '✗' }} {{ c.name }} <span class="muted">{{ c.detail }}</span></li>{% endfor %}
+    </ul>
+  {% else %}<p class="hint">Not run yet.</p>{% endif %}
+  <form method="post" action="{{ url_for('preflight', run_id=run_id) }}"><button>Run readiness checks</button></form>
+  <p class="hint">A ✗ on HPC3 means the backups will fail; ask the pipeline maintainer to set up your SSH key.</p>
+</section>
+
+<section class="card">
+  <h2>3. Check metadata</h2>
+  {% if check %}
+    {% if not check.current %}<p class="flash error">The sheet or settings changed since this check (at {{ check.time }}). Check again.</p>{% endif %}
+    <ul class="checks">
+      <li class="{{ 'ok' if check.validate_rc == 0 else 'bad' }}">{{ '✓' if check.validate_rc == 0 else '✗' }} Sample sheet readable</li>
+      <li class="{{ 'ok' if check.dry_run_rc == 0 else 'bad' }}">{{ '✓' if check.dry_run_rc == 0 else '✗' }} Workflow plan built
+        {% if check.total is not none %}<span class="muted">({{ check.total }} steps planned)</span>{% endif %}</li>
+    </ul>
+    {% if check.validate_rc == 0 %}
+      {% if check.issues %}
+        <p><strong>{{ check.issues|length }} issue(s) found in the sheet.</strong> Read them before approving.
+          <a href="{{ url_for('validation_report', run_id=run_id) }}">Download the highlighted sheet</a></p>
+        <table class="issues">
+          <thead><tr><th>Sheet</th><th>Excel row</th><th>Column</th><th>Problem</th></tr></thead>
+          {% for i in check.issues %}<tr><td>{{ i.sheet }}</td><td>{{ i.excel_row }}</td><td>{{ i.col }}</td><td>{{ i.message }}</td></tr>{% endfor %}
+        </table>
+      {% else %}<p class="ok">✓ No issues found in the sheet.</p>{% endif %}
+    {% endif %}
+  {% else %}<p class="hint">Not run yet.</p>{% endif %}
+  <form method="post" action="{{ url_for('check_metadata', run_id=run_id) }}"><button>Check metadata</button></form>
+</section>
+
+<section class="card">
+  <h2>4. Approve</h2>
+  {% if approval and approval.valid %}
+    <p class="ok">✓ Approved by {{ approval.user }} at {{ approval.time }}.</p>
+    {% if not launched %}<form method="post" action="{{ url_for('revoke', run_id=run_id) }}"><button class="secondary">Withdraw approval</button></form>{% endif %}
+  {% else %}
+    {% if approval %}<p class="flash error">Approval withdrawn: the sheet or settings changed after it was given.</p>{% endif %}
+    <p class="hint">The run will not start until approved. Changing the sheet or settings afterwards cancels the approval.</p>
+    <form method="post" action="{{ url_for('approve', run_id=run_id) }}">
+      {% if check and check.issues %}<label class="inline"><input type="checkbox" name="reviewed"> I reviewed the {{ check.issues|length }} issue(s) above and they are OK</label>{% endif %}
+      <button {% if not (check and check.current and check.ok) %}disabled{% endif %}>Approve run</button>
+    </form>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>5. Schedule</h2>
+  {% if cron_line %}
+    <p class="ok">✓ Scheduled. Checked every 30 minutes; it processes, emails customers, publishes, then backs up.{% if usb_dest %} Also copies to {{ usb_dest }}.{% endif %}</p>
+    <p class="hint">The schedule removes itself once the backups finish.</p>
+    <form method="post" action="{{ url_for('unschedule', run_id=run_id) }}"><button class="secondary">Remove from schedule</button></form>
+  {% else %}
+    <form method="post" action="{{ url_for('schedule', run_id=run_id) }}">
+      <label>Also copy to a USB drive folder (optional)
+        <input name="usb_dest" placeholder="/mnt/extusb3">
+      </label>
+      <button {% if not (approval and approval.valid) %}disabled{% endif %}>Schedule run</button>
+    </form>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Logs</h2>
+  <select id="log-name">
+    {% for name in logs %}<option>{{ name }}</option>{% endfor %}
+  </select>
+  <pre id="log">Loading…</pre>
+</section>
+
+<script>
+  const select = document.getElementById("log-name");
+  const pre = document.getElementById("log");
+  let wasRunning = {{ 'true' if job and job.running else 'false' }};
+  async function refresh() {
+    if (!select.value) { pre.textContent = "No logs yet."; return; }
+    const r = await fetch("{{ url_for('run_log', run_id=run_id) }}?name=" + encodeURIComponent(select.value));
+    const data = await r.json();
+    const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+    pre.textContent = data.text || "(empty)";
+    if (atBottom) pre.scrollTop = pre.scrollHeight;
+    // Reload once a background action finishes so the steps above show its result.
+    if (wasRunning && !data.job_running) location.reload();
+    wasRunning = data.job_running;
+  }
+  select.addEventListener("change", refresh);
+  refresh();
+  setInterval(refresh, 3000);
+</script>
+{% endblock %}

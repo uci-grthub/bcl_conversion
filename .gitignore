@@ -11,6 +11,7 @@ Tools/*.storable
 src/flexbar/*.txt
 *.xml
 *.html
+!gui/templates/*.html
 *.pyc
 *.done
 *.pdf

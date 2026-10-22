@@ -2,6 +2,8 @@
 # Cron entry: wait for CopyComplete.txt in data_dir, then run `pixi run all`
 # followed by `pixi run publish`, exactly once.
 #
+# Nothing starts until the run is approved (.metadata_approved, see below).
+#
 # The .auto_launched sentinel is load-bearing: publish clears the email receipts
 # and re-sends every order email, so a second launch would re-mail customers.
 # Delete it only to deliberately re-run the whole thing.
@@ -20,6 +22,24 @@ fi
 
 if [ -f .auto_launched ]; then
   exit 0
+fi
+
+# Staff approval gate (written by the GUI, gui/runs.py:write_approval). The hash
+# covers the sheet and the project config, so editing either after approval
+# withdraws it. Same recipe as gui/runs.py:approval_hash.
+# Existing runs scheduled by hand can skip the gate with REQUIRE_APPROVAL=0.
+if [ "${REQUIRE_APPROVAL:-1}" != 0 ]; then
+  METADATA=$(python3 -c "import yaml; print(yaml.safe_load(open('snakemake_config_project.yaml')).get('metadata') or '')")
+  APPROVED=$(sed -n 's/^sha256=//p' .metadata_approved 2>/dev/null || true)
+  CURRENT=$(cat "$METADATA" snakemake_config_project.yaml 2>/dev/null | sha256sum | cut -d' ' -f1)
+  if [ -z "$APPROVED" ]; then
+    echo "$(date) waiting for approval (approve the run in the GUI)"
+    exit 0
+  fi
+  if [ "$APPROVED" != "$CURRENT" ]; then
+    echo "$(date) approval withdrawn: sample sheet or settings changed since approval; approve again in the GUI"
+    exit 0
+  fi
 fi
 if [ ! -f "$DATA_DIR/CopyComplete.txt" ]; then
   echo "$(date) waiting for $DATA_DIR/CopyComplete.txt"

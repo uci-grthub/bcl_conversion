@@ -59,3 +59,18 @@ run_step processed_backup bash scripts/backup_processed_run.sh "$RUN_ID"
 if [ -n "$USB_DEST" ]; then
   run_step usb_sync bash scripts/sync_run.sh "$INSTRUMENT" "$RUN_ID" "$USB_DEST" "$USB_PARALLEL"
 fi
+
+# Everything finished: drop this run's GUI cron entry (tagged "# bclgui:<run_id>"),
+# so the schedule does not keep firing. Hand-written entries are left alone.
+steps="raw_backup processed_backup"
+[ -n "$USB_DEST" ] && steps="$steps usb_sync"
+for step in $steps; do
+  [ -f ".post_${step}.done" ] || exit 0
+done
+table="$(crontab -l 2>/dev/null || true)"
+if grep -q "# bclgui:${RUN_ID}\$" <<<"$table"; then
+  # Read in full before writing: a pipe into `crontab -` could install the
+  # table while `crontab -l` is still reading it.
+  grep -v "# bclgui:${RUN_ID}\$" <<<"$table" | crontab -
+  echo "$(date) all steps done; removed the bclgui:${RUN_ID} cron entry"
+fi

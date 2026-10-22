@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}New run{% endblock %}
+{% block content %}
+<h1>New run</h1>
+<form method="post" enctype="multipart/form-data" class="card">
+  <label>Run ID
+    <input name="run_id" required pattern="[ixm]R[0-9]+" placeholder="xR123">
+  </label>
+  <p class="hint">Lower-case instrument letter, capital R, number: xR (NovaSeqX), iR (MiSeq i100), mR (MiSeq).</p>
+
+  <label>Sample sheet from SampleSheets folder (newest first)
+    <select name="sheet">
+      {% for name in sheets %}<option>{{ name }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>…or upload one instead
+    <input type="file" name="upload" accept=".xlsx">
+  </label>
+
+  <button type="submit">Set up run</button>
+  <p class="hint">Copies the pipeline, installs its software and prefills the settings. Takes a few minutes the first time.</p>
+</form>
+{% endblock %}

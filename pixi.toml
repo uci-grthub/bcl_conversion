@@ -32,6 +32,9 @@ pigz = ">=2.8,<3"
 # `dot` for the rulegraph/dag tasks below
 graphviz = ">=12,<15"
 
+# Staff web GUI (gui/app.py)
+flask = "3.1.*"
+
 # Applied on every `pixi run` / `pixi shell`.
 [activation]
 # Source .env so the 4 required secrets are always in the environment — no
@@ -91,6 +94,10 @@ backup-processed = "bash scripts/backup_processed_run.sh"
 masking-sweep = "bash scripts/masking_sweep.sh"
 # Compare the sweep variants against the baseline lane output.
 masking-sweep-report = "bash scripts/masking_sweep_report.sh"
+# Staff web GUI: set up, check, approve and schedule runs in a browser. Run it
+# from a control clone beside the run dirs (e.g. NovaSeqX/.bcl_gui); it prints
+# the SSH tunnel command and login link. See docs/GUI.md.
+gui = "python gui/app.py"
 # Rule/dependency graphs
 rulegraph = "snakemake --rulegraph | dot -Tpng > rulegraph.png"
 dag = "snakemake --dag | dot -Tpdf > dag.pdf"

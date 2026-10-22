@@ -4,6 +4,9 @@ Supports **MiSeq i100** and **NovaSeqX** — the platform is auto-detected from 
 workbook. `pixi run` auto-loads `.env` and the required Snakemake profile, so day-to-day
 commands take no extra flags.
 
+> **Prefer a web page?** `pixi run gui` does this whole SOP (setup, metadata check,
+> approval, cron scheduling, backups) from a browser. See [docs/GUI.md](docs/GUI.md).
+
 ## Quickstart (a normal run)
 
 ```bash
@@ -132,8 +135,9 @@ pixi run snakemake --cores 4 -R compile_read_counts                # force a rul
 
 ### Automated launch (cron)
 
-`monitor_and_run_snakemake.sh` waits for `CopyComplete.txt` in `data_dir` and launches
-`pixi run all` in a tmux session named after the library. See `CRON_INSTRUCTIONS.txt`.
+The GUI (`pixi run gui`, [docs/GUI.md](docs/GUI.md)) schedules runs for you. By hand:
+see `CRON_INSTRUCTIONS.txt`. `run_when_ready.sh` waits for a staff approval
+(`.metadata_approved`, written by the GUI) unless its cron line sets `REQUIRE_APPROVAL=0`.
 
 ### Dependency graphs
 

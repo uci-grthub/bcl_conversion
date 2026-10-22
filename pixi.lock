@@ -176,9 +176,11 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/appdirs-1.4.4-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/argparse-dataclass-2.0.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/attrs-26.1.0-pyhcf101f3_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/blinker-1.9.0-pyhff2d567_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/ca-certificates-2026.6.17-hbd8a1cb_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/certifi-2026.6.17-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/charset-normalizer-3.4.7-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/click-8.5.0-pyh5ded981_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/conda-inject-1.3.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/configargparse-1.7.5-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/connection_pool-0.0.3-pyhd3deb0d_0.tar.bz2
@@ -186,6 +188,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/docutils-0.23-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/dpath-2.2.0-pyha770c72_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/et_xmlfile-2.0.0-pyhd8ed1ab_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/flask-3.1.3-pyhcf101f3_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-dejavu-sans-mono-2.37-hab24e00_0.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-inconsolata-3.000-h77eed37_0.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-source-code-pro-2.038-h77eed37_0.tar.bz2
@@ -200,6 +203,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/humanfriendly-10.0-pyh707e725_8.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/hyperframe-6.1.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/idna-3.18-pyhcf101f3_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/itsdangerous-2.2.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/jinja2-3.1.6-pyhcf101f3_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/jsonschema-4.26.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/jsonschema-specifications-2025.9.1-pyhcf101f3_0.conda
@@ -231,6 +235,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.15.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2025c-hc9c84f9_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/urllib3-2.7.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/werkzeug-3.1.9-pyh5ded981_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/yte-1.9.4-pyhd8ed1ab_0.conda
 packages:
 - conda: https://conda.anaconda.org/bioconda/linux-64/fastp-0.24.3-heae3180_0.tar.bz2
@@ -2815,6 +2820,16 @@ packages:
   run_exports: {}
   size: 64927
   timestamp: 1773935801332
+- conda: https://conda.anaconda.org/conda-forge/noarch/blinker-1.9.0-pyhff2d567_0.conda
+  sha256: f7efd22b5c15b400ed84a996d777b6327e5c402e79e3c534a7e086236f1eb2dc
+  md5: 42834439227a4551b939beeeb8a4b085
+  depends:
+  - python >=3.9
+  license: MIT
+  license_family: MIT
+  run_exports: {}
+  size: 13934
+  timestamp: 1731096548765
 - conda: https://conda.anaconda.org/conda-forge/noarch/ca-certificates-2026.6.17-hbd8a1cb_0.conda
   sha256: f8e3c730fa14ee3f170493779f06522c4acf89169f43db4f039727709b6419cf
   md5: a9965dd99f683c5f444428f896635716
@@ -2843,6 +2858,17 @@ packages:
   run_exports: {}
   size: 58872
   timestamp: 1775127203018
+- conda: https://conda.anaconda.org/conda-forge/noarch/click-8.5.0-pyh5ded981_0.conda
+  sha256: 9afb0c2c089330321a219c7ee5a25313bd574d4024be606cbb33e7a5735df662
+  md5: dea5b13a211bbf99876deb980b408a66
+  depends:
+  - python >=3.11
+  - python
+  license: BSD-3-Clause
+  license_family: BSD
+  run_exports: {}
+  size: 112341
+  timestamp: 1788802215348
 - conda: https://conda.anaconda.org/conda-forge/noarch/conda-inject-1.3.2-pyhd8ed1ab_0.conda
   sha256: c1b355af599e548c4b69129f4d723ddcdb9f6defb939985731499cee2e26a578
   md5: e52c2a160d6bd0649c9fafdf0c813357
@@ -2918,6 +2944,23 @@ packages:
   run_exports: {}
   size: 21908
   timestamp: 1733749746332
+- conda: https://conda.anaconda.org/conda-forge/noarch/flask-3.1.3-pyhcf101f3_1.conda
+  sha256: 3980dfba1e3900106cc3e6210294e73f50d02a67fdfe7b3bb36b2721ba9379cb
+  md5: 156398929bf849da6df8f89a2c390185
+  depends:
+  - python >=3.10
+  - blinker >=1.9.0
+  - click >=8.1.3
+  - itsdangerous >=2.2.0
+  - jinja2 >=3.1.2
+  - markupsafe >=2.1.1
+  - werkzeug >=3.1.0
+  - python
+  license: BSD-3-Clause
+  license_family: BSD
+  run_exports: {}
+  size: 87428
+  timestamp: 1771489274528
 - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-dejavu-sans-mono-2.37-hab24e00_0.tar.bz2
   sha256: 58d7f40d2940dd0a8aa28651239adbf5613254df0f75789919c4e6762054403b
   md5: 0c96522c6bdaed4b1566d11387caaf45
@@ -3062,6 +3105,16 @@ packages:
   run_exports: {}
   size: 163869
   timestamp: 1781620148226
+- conda: https://conda.anaconda.org/conda-forge/noarch/itsdangerous-2.2.0-pyhd8ed1ab_1.conda
+  sha256: 1684b7b16eec08efef5302ce298c606b163c18272b69a62b666fbaa61516f170
+  md5: 7ac5f795c15f288984e32add616cdc59
+  depends:
+  - python >=3.9
+  license: BSD-3-Clause
+  license_family: BSD
+  run_exports: {}
+  size: 19180
+  timestamp: 1733308353037
 - conda: https://conda.anaconda.org/conda-forge/noarch/jinja2-3.1.6-pyhcf101f3_1.conda
   sha256: fc9ca7348a4f25fed2079f2153ecdcf5f9cf2a0bc36c4172420ca09e1849df7b
   md5: 04558c96691bed63104678757beb4f8d
@@ -3429,6 +3482,18 @@ packages:
   run_exports: {}
   size: 103560
   timestamp: 1778188657149
+- conda: https://conda.anaconda.org/conda-forge/noarch/werkzeug-3.1.9-pyh5ded981_0.conda
+  sha256: 9bb5c06955efec7a5801bb39a06896f22026c39d845b9fc8ade15e6861ef9284
+  md5: cb4014ab1e412ad4a8aeeee11577065e
+  depends:
+  - markupsafe >=2.1.1
+  - python >=3.11
+  - python
+  license: BSD-3-Clause
+  license_family: BSD
+  run_exports: {}
+  size: 260273
+  timestamp: 1790550578594
 - conda: https://conda.anaconda.org/conda-forge/noarch/yte-1.9.4-pyhd8ed1ab_0.conda
   sha256: 1ad021f32290e72b70a84dfe0c9b278c61aaa1254f1e1c287d68c32ee4f1093f
   md5: 89d5edf5d52d3bc1ed4d7d3feef508ba

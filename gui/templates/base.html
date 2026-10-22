@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Sequencing runs{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <a class="home" href="{{ url_for('index') }}">Sequencing runs</a>
+    <a class="button" href="{{ url_for('new_run') }}">+ New run</a>
+  </header>
+  <main>
+    {% for category, message in get_flashed_messages(with_categories=true) %}
+      <p class="flash {{ category }}">{{ message }}</p>
+    {% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
