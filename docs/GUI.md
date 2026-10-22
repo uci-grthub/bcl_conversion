@@ -138,7 +138,7 @@ scripts/install_gui_service.sh
 
 It runs as you, survives logging out and reboots, and prints your login link. Useful
 commands: `systemctl --user status bclgui`, `systemctl --user restart bclgui`,
-`journalctl --user -u bclgui` (its log). Remove it with
+`journalctl _SYSTEMD_USER_UNIT=bclgui.service -n 50` (its log). Remove it with
 `scripts/install_gui_service.sh --uninstall`.
 
 ## A new run, step by step
