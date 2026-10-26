@@ -296,6 +296,80 @@ def is_10x_multiome_atac_project_or_sheet(name):
         n = ""
     return "10xmultiomeatacseq" in n
 
+# generate_lane_samplesheets runs at parse time in every Snakemake process, including
+# each spawned `run:` job, so the sample sheets and renaming maps are rewritten while
+# sibling processes read them at parse time (get_config_project_pairs & co). An
+# in-place rewrite truncates first: a reader that lands in that window sees an empty
+# file, drops the lane, and loses that lane's per-order rules (xR123:
+# "There is no rule named send_order_email_1026I_31"). Publish via temp file +
+# os.replace so a reader sees the old file or the new one, never a partial one, and
+# skip the write entirely when the content is unchanged (no mtime churn).
+def write_text_atomic(path, text):
+    import tempfile
+    try:
+        with open(path) as fh:
+            if fh.read() == text:
+                return
+    except (FileNotFoundError, UnicodeDecodeError):
+        pass
+    directory = os.path.dirname(path) or '.'
+    os.makedirs(directory, exist_ok=True)
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=f".{os.path.basename(path)}.")
+    try:
+        with os.fdopen(tmp_fd, 'w') as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        # mkstemp creates 0600; keep the mode an in-place rewrite would have kept.
+        try:
+            mode = os.stat(path).st_mode & 0o777
+        except FileNotFoundError:
+            umask = os.umask(0)
+            os.umask(umask)
+            mode = 0o666 & ~umask
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+# Drop-in for `with open(path, 'w') as f:` that buffers the writes and publishes them
+# with write_text_atomic when the block finishes cleanly (nothing is written on error).
+class atomic_text_writer:
+    def __init__(self, path):
+        self.path = path
+        self.buffer = StringIO()
+
+    def __enter__(self):
+        return self.buffer
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            write_text_atomic(self.path, self.buffer.getvalue())
+        return False
+
+# Read a renaming map that another process may be regenerating. Writers are atomic
+# (write_text_atomic), but Snakemake still deletes a job's outputs before running it,
+# so the file can be briefly missing; older non-atomic writers can leave it empty.
+# Retry rather than silently dropping the lane. Returns None if it never settles.
+def read_renaming_map(map_path, attempts=5, delay=1.0):
+    import time as _time
+    last_error = "missing"
+    for attempt in range(attempts):
+        try:
+            df = pd.read_csv(map_path)
+            if not df.empty:
+                return df
+            last_error = "empty"
+        except FileNotFoundError:
+            last_error = "missing"
+        except Exception as e:
+            last_error = str(e)
+        if attempt < attempts - 1:
+            _time.sleep(delay)
+    print(f"Warning: renaming map {map_path} unreadable after {attempts} attempts ({last_error}), skipping")
+    return None
+
 # Write renaming map with a fixed schema to avoid malformed CSVs
 def write_renaming_map(map_df, map_file):
     required_cols = [
@@ -365,7 +439,7 @@ def write_renaming_map(map_df, map_file):
                 map_df = pd.concat([map_df, pd.DataFrame([_new])], ignore_index=True)
 
     map_df = map_df[required_cols]
-    map_df.to_csv(map_file, index=False, quoting=csv.QUOTE_MINIMAL)
+    write_text_atomic(map_file, map_df.to_csv(index=False, quoting=csv.QUOTE_MINIMAL))
 
 # Shared with the standalone scripts (src/naming.py) so every name and key agrees.
 from naming import dragen_safe_name, normalize_project_name
@@ -648,7 +722,7 @@ def generate_miseq_samplesheets(metadata_file, out_dir, run_info_path, run_name)
 
     os.makedirs(os.path.join(out_dir, config_id), exist_ok=True)
     
-    with open(outfile, 'w') as f:
+    with atomic_text_writer(outfile) as f:
         f.write("[Header]\n")
         f.write("FileFormatVersion,2\n")
         f.write("\n")
@@ -1706,7 +1780,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
 
         outfile = os.path.join(out_dir, config_id, f"SampleSheet_{config_id}.csv")
         os.makedirs(os.path.join(out_dir, config_id), exist_ok=True)
-        with open(outfile, 'w') as f:
+        with atomic_text_writer(outfile) as f:
             f.write("[Header]\n")
             f.write("FileFormatVersion,2\n")
             f.write("\n")
@@ -1888,21 +1962,9 @@ def get_order_id_configs(sample_sheets_dict):
     
     for config_id in sample_sheets_dict:
         map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
-        if os.path.exists(map_path):
+        df = read_renaming_map(map_path)
+        if df is not None:
             try:
-                import time as _time
-                df = None
-                for _attempt in range(3):
-                    try:
-                        df = pd.read_csv(map_path)
-                        if not df.empty:
-                            break
-                    except Exception:
-                        pass
-                    _time.sleep(2)
-                if df is None or df.empty:
-                    print(f"Warning: {map_path} was empty or unreadable after retries, skipping")
-                    continue
                 df['Sample_Project'] = df['Sample_Project'].astype(str)
 
                 # Extract lane from config_id for lane-aware order lookup
@@ -1949,9 +2011,9 @@ def get_project_lane_pairs(sample_sheets_dict):
     pairs = set()
     for config_id in sample_sheets_dict:
         map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
-        if os.path.exists(map_path):
+        df = read_renaming_map(map_path)
+        if df is not None:
             try:
-                df = pd.read_csv(map_path)
                 df['Sample_Project'] = df['Sample_Project'].astype(str)
                 for _, row in df.iterrows():
                     project = str(row.get('Sample_Project', '')).strip()
@@ -1971,9 +2033,9 @@ def get_config_project_pairs(sample_sheets_dict):
     pairs = set()
     for config_id in sample_sheets_dict:
         map_path = f"results/{config_id}/renaming_map_{config_id}.csv"
-        if os.path.exists(map_path):
+        df = read_renaming_map(map_path)
+        if df is not None:
             try:
-                df = pd.read_csv(map_path)
                 df['Sample_Project'] = df['Sample_Project'].astype(str)
                 for project in df['Sample_Project'].unique():
                     project = str(project).strip()

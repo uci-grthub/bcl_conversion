@@ -3200,7 +3200,7 @@ rule generate_renaming_map:
                 positions.append(f"P{i+1:03d}")
             map_df["Position"] = positions
 
-            map_df.to_csv(out_path, index=False)
+            write_text_atomic(out_path, map_df.to_csv(index=False))
             print(f"Generated fallback renaming map from SampleSheet: {out_path}")
             return True
 
@@ -3251,7 +3251,7 @@ rule generate_renaming_map:
                 new_row["Sample_ID"] = "Undetermined"
 
             cur = pd.concat([cur, pd.DataFrame([new_row])], ignore_index=True)
-            cur.to_csv(output.map, index=False)
+            write_text_atomic(output.map, cur.to_csv(index=False))
             print(
                 f"Injected Undetermined row into {output.map} "
                 f"(project={first_project}, lane={owner.get('Lane')}, group={owner.get('Group')})"
@@ -4389,7 +4389,7 @@ checkpoint generate_effective_renaming_map:
 
         map_df = pd.read_csv(input.map, dtype=str, keep_default_na=False)
         effective = apply_orientation_to_map(map_df, decision)
-        effective.to_csv(output.map, index=False)
+        write_text_atomic(output.map, effective.to_csv(index=False))
 
         with open(log[0], 'w') as lf:
             changed = effective[effective['orientation'] != 'original']
