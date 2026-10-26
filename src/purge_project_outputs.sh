@@ -302,16 +302,32 @@ for _, row in new_summary.iterrows():
 COMPARE_COLS = ["index", "index2", "Lane", "Sample_Name", "Project", "Sample_Project"]
 
 affected = set()  # (config_id, group, order_id)
-changed_barcodes = {}  # (config_id, group, order_id) -> set of "old_index-old_index2" patterns
+changed_barcodes = {}  # (config_id, group, order_id) -> set of FASTQ filename globs
 
 def _get_barcode_pat(row):
+    """Glob for the GRT stem name, which embeds the barcode."""
     idx  = str(row.get("index",  "")).strip()
     idx2 = str(row.get("index2", "")).strip()
     if not idx or idx.lower() in ("nan", "none", ""):
         return None
     if idx2 and idx2.lower() not in ("nan", "none", ""):
-        return f"{idx}-{idx2}"
-    return idx
+        return f"*{idx}-{idx2}*.fastq.gz"
+    return f"*{idx}*.fastq.gz"
+
+def _get_illumina_pat(row, sid, lane):
+    """Glob for the Illumina default name (single-cell and bcl2fastq-tab projects),
+    which embeds the sample name instead of the barcode."""
+    name = str(row.get("Sample_Name", "")).strip()
+    if not name or name.lower() in ("nan", "none"):
+        name = str(sid).strip()
+    return f"{name}_S[0-9]*_L{lane:03d}_*_001.fastq.gz"
+
+def _old_fastq_pats(row, sid, lane):
+    pats = {_get_illumina_pat(row, sid, lane)}
+    bc = _get_barcode_pat(row)
+    if bc:
+        pats.add(bc)
+    return pats
 
 all_tabs = set(old_tabs) | set(new_tabs)
 for tab in all_tabs:
@@ -332,14 +348,12 @@ for tab in all_tabs:
         in_old = sid in old_by_id.index
         in_new = sid in new_by_id.index
         if in_old and not in_new:
-            # Sample removed: its old FASTQ (named after old barcode) will not be recreated
+            # Sample removed: its old FASTQ will not be recreated
             try:
                 old_row = old_by_id.loc[sid]
                 lane = int(float(old_row["Lane"]))
                 changed_lanes.add(lane)
-                pat = _get_barcode_pat(old_row)
-                if pat:
-                    lane_old_barcodes.setdefault(lane, set()).add(pat)
+                lane_old_barcodes.setdefault(lane, set()).update(_old_fastq_pats(old_row, sid, lane))
             except Exception: pass
         elif in_new and not in_old:
             # New sample: no old FASTQ to delete
@@ -356,15 +370,17 @@ for tab in all_tabs:
                     except Exception: pass
                     try: changed_lanes.add(int(float(new_row["Lane"])))
                     except Exception: pass
-                    # Only the old FASTQ needs deletion when its barcode changed;
-                    # for non-barcode changes (Sample_Name, Project, etc.) BCL Convert
-                    # would produce identical FASTQ content so no deletion needed.
-                    if col in ("index", "index2"):
+                    # The old FASTQ needs deletion when its barcode changed, and under
+                    # Illumina naming also when its Sample_Name changed (the name is in
+                    # the file name). Other changes (Project, etc.) leave identically
+                    # named FASTQs with identical content, so nothing is deleted.
+                    # Both name forms are queued: GRT-named projects never hold an
+                    # Illumina-named file for the sample, and vice versa.
+                    if col in ("index", "index2", "Sample_Name"):
                         try:
                             lane = int(float(old_row["Lane"]))
-                            pat = _get_barcode_pat(old_row)
-                            if pat:
-                                lane_old_barcodes.setdefault(lane, set()).add(pat)
+                            lane_old_barcodes.setdefault(lane, set()).update(
+                                _old_fastq_pats(old_row, sid, lane))
                         except Exception: pass
                     break
 
@@ -470,13 +486,16 @@ for triple in "${TRIPLES[@]}"; do
             collect_path "output/$CID/$proj/.project_done"
             collect_path "output/$CID/$proj/.fastq_names_done"
         fi
-        # Diff mode: only delete FASTQs whose barcode changed (FASTQ_PATTERNS is set by
-        # the Python diff block to the space-separated old "{index}-{index2}" patterns).
+        # Diff mode: only delete FASTQs of changed samples (FASTQ_PATTERNS is set by
+        # the Python diff block to space-separated filename globs, one for the GRT stem
+        # name and one for the Illumina default name of each changed sample).
         # Regular mode (FASTQ_PATTERNS unset): delete all FASTQs in the project dir.
         if [[ -n "$OLD_METADATA" ]]; then
+            set -f  # the globs are expanded by find, not by this loop
             for pat in $FASTQ_PATTERNS; do
-                collect_glob "output/$CID/$proj/*${pat}*.fastq.gz"
+                collect_glob "output/$CID/$proj/${pat}"
             done
+            set +f
         else
             collect_glob "output/$CID/$proj/*.fastq.gz"
         fi
