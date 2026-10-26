@@ -23,6 +23,12 @@ it) or discovered under ``metadata/`` when that variable is unset.
 Use it when a lane mixes single-cell and bulk libraries under one project name:
 detection is per project, so the only way to keep the 10x/Parse samples readable
 by CellRanger and the Parse pipeline is to keep Illumina naming for the lane.
+
+Projects on a bcl2fastq tab (e.g. ``SequA_bcl2fastq``) are not single cell, but
+their customers expect the bcl2fastq/Illumina file names, so they are named the
+same way.  ``is_single_cell_project`` counts them by default; pass
+``naming=False`` for decisions that only true single-cell libraries need, such
+as keeping the index-read FASTQs.
 """
 
 import os
@@ -33,6 +39,11 @@ from naming import normalize_project_name
 
 # Tokens shared by project names and Summary sheet tabs.
 SINGLE_CELL_TOKENS = ("10x", "parse", "bd")
+
+# Sheet-tab tokens for bulk projects that still get Illumina default naming.
+# Matched with case, spaces, underscores and hyphens ignored ("BCL2FASTQ",
+# "bcl2 fastq" and "Bcl-2-Fastq" all count).
+ILLUMINA_NAMING_TAB_TOKENS = ("bcl2fastq",)
 
 # Accepted values of PIPELINE_FORCE_ILLUMINA_NAMING (see module docstring).
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -45,6 +56,8 @@ _REGISTRY = {
     "loaded_from": None,   # abspath of the workbook the sets came from
     "names": set(),        # normalized project names sitting on a single-cell tab
     "lane_groups": set(),  # (lane, group) pairs sitting on a single-cell tab
+    "naming_names": set(),        # normalized project names on a bcl2fastq tab
+    "naming_lane_groups": set(),  # (lane, group) pairs on a bcl2fastq tab
 }
 
 # Workbooks that could not be read, so a failure is not retried (and re-reported)
@@ -84,6 +97,12 @@ def sheet_tab_indicates_single_cell(tab):
     return any(tok in t for tok in SINGLE_CELL_TOKENS)
 
 
+def sheet_tab_indicates_illumina_naming(tab):
+    """True when a Summary "Sample sheet tab" value names a bcl2fastq tab."""
+    t = re.sub(r"[^a-z0-9]", "", _norm(tab))
+    return any(tok in t for tok in ILLUMINA_NAMING_TAB_TOKENS)
+
+
 def find_metadata_file():
     """Locate the run's metadata workbook (env override, else metadata/*.xlsx)."""
     env_path = os.environ.get("PIPELINE_METADATA_FILE")
@@ -114,6 +133,8 @@ def load_single_cell_registry(metadata_file=None, force=False):
 
     names = set()
     lane_groups = set()
+    naming_names = set()
+    naming_lane_groups = set()
     try:
         import pandas as pd
         # MiSeq submission workbooks carry no Summary sheet at all; that is a
@@ -124,13 +145,18 @@ def load_single_cell_registry(metadata_file=None, force=False):
         df = pd.read_excel(path, sheet_name="Summary", header=2)
         if "Sample sheet tab" in df.columns:
             for _, row in df.iterrows():
-                if not sheet_tab_indicates_single_cell(row.get("Sample sheet tab")):
+                tab = row.get("Sample sheet tab")
+                if sheet_tab_indicates_single_cell(tab):
+                    name_set, pair_set = names, lane_groups
+                elif sheet_tab_indicates_illumina_naming(tab):
+                    name_set, pair_set = naming_names, naming_lane_groups
+                else:
                     continue
                 project = _project_key(row.get("Project Name"))
                 if project and project != "nan":
-                    names.add(project)
+                    name_set.add(project)
                 try:
-                    lane_groups.add((int(float(row.get("Lane"))), int(float(row.get("Gr")))))
+                    pair_set.add((int(float(row.get("Lane"))), int(float(row.get("Gr")))))
                 except Exception:
                     pass
     except Exception as e:
@@ -144,6 +170,8 @@ def load_single_cell_registry(metadata_file=None, force=False):
     _REGISTRY["loaded_from"] = abspath
     _REGISTRY["names"] = names
     _REGISTRY["lane_groups"] = lane_groups
+    _REGISTRY["naming_names"] = naming_names
+    _REGISTRY["naming_lane_groups"] = naming_lane_groups
     return _REGISTRY
 
 
@@ -152,13 +180,15 @@ def force_illumina_naming():
     return _norm(os.environ.get("PIPELINE_FORCE_ILLUMINA_NAMING")) in _TRUTHY
 
 
-def is_single_cell_project(project_name, lane=None, group=None, metadata_file=None):
+def is_single_cell_project(project_name, lane=None, group=None, metadata_file=None,
+                           naming=True):
     """True when the project uses Illumina default naming (10x / Parse / BD).
 
     Matches on the project name, on the Summary "Sample sheet tab" entry for
     that project, or on the (lane, group) the project belongs to — including the
     lane/group encoded in a renamed output folder.  ``force_illumina_naming``
     short-circuits all of that for runs whose lanes mix library types.
+    With ``naming`` (the default), projects on a bcl2fastq tab count too.
     """
     if force_illumina_naming():
         return True
@@ -166,14 +196,19 @@ def is_single_cell_project(project_name, lane=None, group=None, metadata_file=No
         return True
     try:
         load_single_cell_registry(metadata_file)
-        if _project_key(project_name) in _REGISTRY["names"]:
+        names = _REGISTRY["names"]
+        lane_groups = _REGISTRY["lane_groups"]
+        if naming:
+            names = names | _REGISTRY["naming_names"]
+            lane_groups = lane_groups | _REGISTRY["naming_lane_groups"]
+        if _project_key(project_name) in names:
             return True
         if lane is None or group is None:
             m = _RENAMED_SUFFIX_RE.search(str(project_name or ""))
             if m:
                 lane, group = m.group(1), m.group(2)
         if lane is not None and group is not None:
-            if (int(float(lane)), int(float(group))) in _REGISTRY["lane_groups"]:
+            if (int(float(lane)), int(float(group))) in lane_groups:
                 return True
     except Exception as e:
         print(f"Note: single-cell tab lookup failed for '{project_name}': {e}")
