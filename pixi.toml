@@ -64,6 +64,10 @@ convert = "snakemake --cores 8"
 # Publish a finished run: mirror to the share, touch outputs, resend order emails.
 # Extra args pass through to sync_run, e.g. `pixi run publish NovaSeqx xR101`.
 publish = "bash scripts/publish_run.sh"
+# Direct-to-share: symlink output/ .output/ .output_rc/ sweeps/ into
+# /mnt/jbod2_main/nextshare/bcl_convert/<instrument>/<run> and point the share
+# links at Jbod2. Run once after `init` (or use `pixi run init --share`).
+link-share = "bash scripts/link_share_dirs.sh"
 # Force every per-order email rule, in reverse sample-sheet order. Orders with a
 # Reports/order_<id>/.email_receipt are skipped -- delete those to resend.
 send-emails = "bash scripts/send_order_emails.sh"

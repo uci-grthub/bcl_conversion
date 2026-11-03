@@ -91,6 +91,16 @@ fi
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# A direct-to-share run (pixi run link-share) already wrote its data to the share
+# and mailed final links. Mirroring it would rsync the data-dir symlinks verbatim,
+# leaving a mirror whose output/ points back into the same share.
+if [[ -L "$PWD/output" ]]; then
+    echo "ERROR: output/ is a symlink to $(readlink -f "$PWD/output") -- this run writes" >&2
+    echo "  directly to the share, so there is nothing to publish. To resend the order" >&2
+    echo "  emails: rm -f Reports/order_*/.email_receipt && pixi run send-emails" >&2
+    exit 1
+fi
+
 step "step 1/6: rsync mirror to share"
 say "args: $*"
 say "PARALLEL=${PARALLEL:-2}"

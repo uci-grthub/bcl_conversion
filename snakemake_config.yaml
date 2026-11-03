@@ -28,6 +28,13 @@ nextcloud_dir_name: "dragenshare"
 nextcloud_dir_path: "nextcloud"
 external_drive_path: "/mnt/jbod_localdisk/nextshare/bcl_convert/NovaSeqX"
 
+# Direct-to-share mode. When set, output/, .output/, .output_rc/ and sweeps/ must be
+# symlinks into <share_output_root>/<instrument>/<run_id>/ (`pixi run link-share`
+# creates them and sets the Nextcloud keys above to Jbod2/nextshare). FASTQs are then
+# written straight to the share and the emailed links are final -- no publish needed.
+# "" = write everything inside the run dir (default).
+share_output_root: ""
+
 # Fast local NVMe scratch for DRAGEN bcl-convert output (avoids writing directly to slow JBOD RAID).
 # DRAGEN writes FASTQs here first; files are moved to the final output/ path after conversion.
 # Set to "" or omit to write directly to output/ (slower if on network/JBOD storage).

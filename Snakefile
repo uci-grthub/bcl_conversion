@@ -156,6 +156,27 @@ SKIP_RSYNC = WORKING_DIR.startswith("/mnt/")
 
 include: "src/workflow_defs.smk"
 
+# Direct-to-share mode: the bulk data dirs (output, .output, .output_rc, sweeps)
+# are symlinks into <share_output_root>/<instrument>/<run_id>/ so FASTQs land on
+# the share from the start. Set up by `pixi run link-share` (or `init --share`).
+# Refuse to start on a half-linked run dir: a missing link would quietly put a
+# lane on /staging, and its share link would point somewhere Nextcloud can't see.
+# src/ is importable once workflow_defs.smk is included.
+from share_paths import nc_path_for as _nc_path_for, share_link_problems
+SHARE_OUTPUT_ROOT = str(config.get("share_output_root", "") or "").strip()
+if SHARE_OUTPUT_ROOT:
+    _share_problems = share_link_problems(os.getcwd(), SHARE_OUTPUT_ROOT)
+    if _share_problems:
+        sys.exit(
+            f"share_output_root is {SHARE_OUTPUT_ROOT}, but this run dir is not linked into it:\n  - "
+            + "\n  - ".join(_share_problems)
+            + "\nRun `pixi run link-share` (or clear share_output_root to write in the run dir)."
+        )
+
+def nc_path_for(local_path):
+    """Nextcloud path of a local dir, resolved through any share symlinks."""
+    return _nc_path_for(local_path, NEXTCLOUD_DIR_NAME, NEXTCLOUD_DIR_PATH)
+
 # Sanitize Masking strings for filenames: strip appended project-like suffixes
 def sanitize_masking(masking):
     if not masking:
@@ -1330,9 +1351,7 @@ rule flexbar_project_link:
         executed_cmds = []
         try:
             if os.path.isdir(fastq_dir):
-                abs_path = os.path.abspath(fastq_dir)
-                nc_path = f"/{NEXTCLOUD_DIR_NAME}/" + abs_path.split(f"/{NEXTCLOUD_DIR_PATH}/", 1)[1] \
-                          if f"/{NEXTCLOUD_DIR_PATH}/" in abs_path else abs_path
+                nc_path = nc_path_for(fastq_dir)
 
                 max_retries, retry_count = 30, 0
                 share_url = share_token = share_owner = share_internal_path = None
@@ -1671,7 +1690,9 @@ rule normalize_project_fastq_names:
                         os.unlink(src_abs)
                     except Exception:
                         pass
-                os.symlink(os.path.abspath(dst_abs), src_abs)
+                # Relative, so the link resolves from the share as well as from
+                # the run dir (output/ may be a symlink into the share).
+                os.symlink(os.path.relpath(dst_abs, os.path.dirname(src_abs)), src_abs)
 
             _all_flex_rows = globals().get('FLEXBAR_CONFIG_RENAMING_MAP', {}).get(config_id, [])
             _flexbar_orig_proj = globals().get('FLEXBAR_ORDER_ID_PROJECT', {}).get(config_id, '')
@@ -2890,7 +2911,8 @@ rule fqtk_stage_project:
                     os.unlink(src_abs)
                 except Exception:
                     pass
-            os.symlink(os.path.abspath(dst_abs), src_abs)
+            # Relative: resolves from the share as well as from the run dir.
+            os.symlink(os.path.relpath(dst_abs, os.path.dirname(src_abs)), src_abs)
             log_lines.append(f"Linked {src_abs} -> {dst_abs}\n")
 
         # Resolve original project name (before rename) to check is_parse_or_10x
@@ -4554,8 +4576,7 @@ for _pair in [None] + list(PROJECT_LINK_PRIORITY):
 
             try:
                 if os.path.isdir(fastq_dir):
-                    abs_path = os.path.abspath(fastq_dir)
-                    nc_path = f"/{NEXTCLOUD_DIR_NAME}/" + abs_path.split(f"/{NEXTCLOUD_DIR_PATH}/", 1)[1] if f"/{NEXTCLOUD_DIR_PATH}/" in abs_path else abs_path
+                    nc_path = nc_path_for(fastq_dir)
                 
                     max_retries = 30  # Retry up to 30 times with exponential backoff
                     retry_count = 0
@@ -4741,7 +4762,7 @@ rule rescan_nextcloud:
         config_id = "[^/]+",
         project = ".+"
     params:
-        nc_path = lambda wildcards: f"/{NEXTCLOUD_DIR_NAME}/{LIBRARY}/output/{wildcards.config_id}/{wildcards.project}",
+        nc_path = lambda wildcards: nc_path_for(f"output/{wildcards.config_id}/{wildcards.project}"),
         nc_user = NEXTCLOUD_USER,
         ssh_host = NEXTCLOUD_SSH_HOST
     shell:
@@ -4808,6 +4829,7 @@ rule verify_project_links:
         import subprocess
         import re
         import os
+        import urllib.parse
         
         config_id = wildcards.config_id
         project = wildcards.project
@@ -4861,7 +4883,7 @@ rule verify_project_links:
                         '-u', f'{NEXTCLOUD_USER}:{NEXTCLOUD_PASSWORD}',
                         '-X', 'PROPFIND',
                         '-H', 'Depth: 1',
-                        f'{NEXTCLOUD_URL}/remote.php/dav/files/{NEXTCLOUD_USER}/{NEXTCLOUD_DIR_NAME}/{LIBRARY}/output/{config_id}/{project}/'
+                        f'{NEXTCLOUD_URL}/remote.php/dav/files/{NEXTCLOUD_USER}' + urllib.parse.quote(nc_path_for(local_dir), safe='/') + '/'
                     ]
                     
                     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)

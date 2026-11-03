@@ -199,6 +199,12 @@ processed_novaseqx_backup() {
         group_opts=(--chown=":$backup_group")
     fi
 
+    # A direct-to-share run (pixi run link-share) has output/, .output*/ and
+    # sweeps/ as symlinks into the Nextcloud share. Follow symlinks to dirs, so
+    # the backup holds the data and not links that dangle on HPC3. A no-op for
+    # runs that keep their data in the run dir.
+    local -a link_opts=(--copy-dirlinks)
+
     local -a rsync_opts=(-a -H --partial --append-verify)
     [[ -n "${BWLIMIT:-}" ]] && rsync_opts+=(--bwlimit="$BWLIMIT")
 
@@ -211,7 +217,7 @@ processed_novaseqx_backup() {
 
     if [[ -n "${DRY_RUN:-}" ]]; then
         echo "[proc_backup] DRY_RUN -- no data will be transferred"
-        rsync -anH --itemize-changes "${group_opts[@]}" "${excludes[@]}" \
+        rsync -anH --itemize-changes "${group_opts[@]}" "${link_opts[@]}" "${excludes[@]}" \
             "$src" "${host}:${dest_base}/"
         return $?
     fi
@@ -224,7 +230,7 @@ processed_novaseqx_backup() {
     started=$(date +%s)
     {
         rsync "${rsync_opts[@]}" --info=progress2 --stats -h \
-            "${group_opts[@]}" "${excludes[@]}" "$src" "${host}:${dest_base}/" \
+            "${group_opts[@]}" "${link_opts[@]}" "${excludes[@]}" "$src" "${host}:${dest_base}/" \
             | tee "$stats_file"
         rsync_status=${PIPESTATUS[0]}
     } || true
@@ -249,7 +255,7 @@ processed_novaseqx_backup() {
     # differ, so after a full transfer it is a quick file-list walk.
     local -a update_opts=(-a -H)
     [[ -n "${BWLIMIT:-}" ]] && update_opts+=(--bwlimit="$BWLIMIT")
-    if ! rsync "${update_opts[@]}" "${group_opts[@]}" "${excludes[@]}" "$src" "${host}:${dest_base}/"; then
+    if ! rsync "${update_opts[@]}" "${group_opts[@]}" "${link_opts[@]}" "${excludes[@]}" "$src" "${host}:${dest_base}/"; then
         _backup_record_transfer proc_backup "${record[@]}" --status failed
         rm -f "$stats_file"
         echo "[proc_backup] ERROR: same-size update pass failed -- rerun to resume" >&2
@@ -262,7 +268,7 @@ processed_novaseqx_backup() {
     local diff
     # logs/cron_run.log is copied but not verified: the cron wrapper appends this
     # very backup's output to it, so it always differs by the time we check.
-    diff=$(rsync -anH --itemize-changes "${group_opts[@]}" "${excludes[@]}" \
+    diff=$(rsync -anH --itemize-changes "${group_opts[@]}" "${link_opts[@]}" "${excludes[@]}" \
            --exclude "/${name}/logs/cron_run.log" \
            "$src" "${host}:${dest_base}/")
     if [[ -n "$diff" ]]; then

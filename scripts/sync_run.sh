@@ -40,7 +40,8 @@ sync_run() {
     # Resolve run dir case-insensitively: the instrument dir on disk may be
     # cased differently than the arg (e.g. NovaSeqX vs NovaSeqx).
     local src="" base hit
-    for base in /staging/nextcloud/testing_illumina /mnt/jbod_localdisk/nextshare/bcl_convert; do
+    for base in /staging/nextcloud/testing_illumina /mnt/jbod_localdisk/nextshare/bcl_convert \
+                /mnt/jbod2_main/nextshare/bcl_convert; do
         hit=$(find "$base" -maxdepth 2 -mindepth 2 -type d \
             -ipath "$base/${instrument}/${run_id}" -print -quit 2>/dev/null)
         if [[ -n "$hit" ]]; then
@@ -49,7 +50,7 @@ sync_run() {
         fi
     done
     if [[ -z "$src" ]]; then
-        echo "ERROR: run dir not found for ${instrument}/${run_id} in either staging or jbod_localdisk" >&2
+        echo "ERROR: run dir not found for ${instrument}/${run_id} in staging, jbod_localdisk or jbod2_main" >&2
         return 1
     fi
     # Use the on-disk canonical casing (args may differ, e.g. NovaSeqx vs

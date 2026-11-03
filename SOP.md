@@ -18,6 +18,8 @@ cp /path/to/SampleSheet.xlsx metadata/
 # 3. Set up the run: builds the pixi env on first use, then creates
 #    snakemake_config_project.yaml and prefills from the metadata .xlsx
 pixi run init                 # add --sequencer novaseqx|miseqi100|miseq if the path is ambiguous
+                              # add --share to write FASTQs straight to /mnt/jbod2_main/nextshare
+                              # (then skip `pixi run publish`; see README "Writing Directly to the Share")
 
 # 4. Confirm the prefilled config (secrets come from the shared ../.env — no copy needed)
 $EDITOR snakemake_config_project.yaml         # confirm data_dir; set email_* to YOUR address
@@ -175,6 +177,8 @@ pixi run dag                  # dag.pdf
 | `required environment variable(s) not set` | `.env` missing/incomplete — see Credentials. |
 | `required config value(s) are empty` | `library_name` / `metadata` / `data_dir` unset — re-run `pixi run init` or edit the project config. |
 | `snakemake_config_project.yaml` missing | Run `pixi run init` (it's gitignored, absent in a fresh clone). |
+| `share_output_root is ... not linked into it` | Run `pixi run link-share`, or clear `share_output_root` to write in the run dir. |
+| `publish`: `output/ is a symlink` | Run writes direct to the share; nothing to publish. Resend: `rm Reports/order_*/.email_receipt && pixi run send-emails`. |
 | Missing lanes | Confirm `data_dir` and the detected lanes at workflow start. |
 | BCL conversion fails | `which dragen`; verify run paths. |
 | Empty reports | Check metadata sheet names/headers (`pixi run validate`). |

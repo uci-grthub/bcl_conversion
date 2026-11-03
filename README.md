@@ -68,6 +68,7 @@ remain **system-level** and are not installed by pixi:
 - **`snakemake_config_project.yaml`** - Project-specific configuration (overrides base settings)
 - **`metadata/*.xlsx`** - Excel metadata with Summary sheet and per-project sheets
 - **`scripts/publish_run.sh`** - `pixi run publish`: mirror run to share, touch, resend emails
+- **`scripts/link_share_dirs.sh`** - `pixi run link-share`: write run data directly to the jbod2 share
 - **`scripts/sync_run.sh`** - `sync_run` rsync mirror function (sourced by `publish_run.sh`)
 - **`src/RunInfo_nn.xml`** - Normalized run configuration (auto-generated)
 
@@ -198,6 +199,42 @@ snakemake --cores 1 Reports/iR011_read_counts_email.done
 - Sends the read count CSV as an attachment
 - Uses SMTP (Gmail SSL, `smtp.gmail.com:465`, `GMAIL_APP_PASSWORD` from the environment)
 - `SEND_EMAIL_DRY_RUN=1` composes the message without sending it
+
+## Writing Directly to the Share (jbod2)
+
+Instead of converting on `/staging` and copying the run with `publish` afterwards, a run
+can write its FASTQs straight to the Nextcloud share at `/mnt/jbod2_main/nextshare`:
+
+```bash
+pixi run init --share        # or, after a plain init: pixi run link-share [share_root]
+```
+
+`scripts/link_share_dirs.sh` replaces `output/`, `.output/`, `.output_rc/` and `sweeps/`
+with symlinks into `/mnt/jbod2_main/nextshare/bcl_convert/<instrument>/<run_id>/`, and
+sets in `snakemake_config_project.yaml`:
+
+```yaml
+share_output_root: "/mnt/jbod2_main/nextshare/bcl_convert"
+nextcloud_dir_name: "Jbod2"
+nextcloud_dir_path: "nextshare"
+```
+
+The repo, `logs/`, `results/`, `Reports/`, `metadata/` and `.snakemake/` stay on
+`/staging`. Share paths are taken from where the data really is (`os.path.realpath`), so
+the links in the pipeline's own emails already point at `/Jbod2/bcl_convert/...` —
+**no `publish` step**. `publish` refuses a linked run; to resend emails use
+`rm Reports/order_*/.email_receipt && pixi run send-emails`.
+
+- `.output*` live beside `output/` so moving projects out of DRAGEN's staging dir is a
+  rename, not a copy; `sweeps/` too, so masking sweeps can hardlink FASTQs.
+- DRAGEN writes `.output/<lane>` over NFS. If that is too slow, set `scratch_dir` to a
+  local `/staging` path; DRAGEN then writes locally and the result is rsynced over.
+- The Snakefile refuses to start if `share_output_root` is set but any data dir is not a
+  symlink into it (prevents half a run landing on `/staging`).
+- `link-share` refuses a data dir that already holds data; it only links fresh run dirs.
+- **Careful:** `rm -rf output` removes only the link; `rm -rf output/` deletes the data
+  on the share.
+- `pixi run backup-processed` follows the links (`--copy-dirlinks`) so HPC3 gets the data.
 
 ## Publishing a Finished Run
 

@@ -44,7 +44,8 @@ if not os.path.isdir(ROOT_DIR):
 
 # Helper: convert local path to Nextcloud path (as in project_link rule)
 def local_to_nc_path(local_path):
-    abs_path = os.path.abspath(local_path)
+    # realpath: output/ may be a symlink into the share; the share path is the real one.
+    abs_path = os.path.realpath(local_path)
     if "/nextcloud2/" in abs_path:
         # Replace /mnt/extusb1/nextcloud2/ with /DragenExt/
         return "/DragenExt/" + abs_path.split("/nextcloud2/", 1)[1]

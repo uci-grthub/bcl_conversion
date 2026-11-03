@@ -2,6 +2,7 @@
 # One-time per-run setup. Run once after cloning into a run-named directory:
 #   pixi run init                      # sequencer inferred from the path
 #   pixi run init --sequencer novaseqx # or: --sequencer miseqi100 / miseq
+#   pixi run init --share              # also link data dirs into the jbod2 share
 #
 # Idempotent: safe to re-run. It:
 #   1. copies the newest .xlsx from ../SampleSheets into metadata/ (if present),
@@ -13,9 +14,16 @@ set -euo pipefail
 
 # --- parse --sequencer ------------------------------------------------------
 sequencer=""
+share=false
+share_root=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --sequencer) sequencer="$2"; shift 2 ;;
+        # --share [root]: write data straight to the Nextcloud share (link_share_dirs.sh)
+        --share)
+            share=true
+            if [[ $# -gt 1 && "$2" == /* ]]; then share_root="$2"; shift; fi
+            shift ;;
         *) shift ;;
     esac
 done
@@ -95,6 +103,10 @@ if [ -n "$data_dir" ]; then
     echo "  data_dir --> $data_dir"
 else
     echo "  WARNING: Could not find newest run (RunInfo.xml) in $staging_dir — set data_dir manually."
+fi
+
+if [ "$share" = true ]; then
+    bash "$(dirname "${BASH_SOURCE[0]}")/link_share_dirs.sh" ${share_root:+"$share_root"}
 fi
 
 echo "Ready: snakemake_config_project.yaml created/updated. Review it, then fill .env (cp .env.example .env)."
