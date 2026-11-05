@@ -54,3 +54,14 @@ Notes:
   waits until <previous run dir>/.all_ok exists:
     */30 * 4-15 11 * WAIT_FOR=<prev_run_dir> <run_dir>/run_and_backup_when_ready.sh >> <run_dir>/logs/cron_run.log 2>&1
   If the previous run's `all` fails, every run after it waits until that run is fixed.
+- Staging cleanup (scripts/delete_staged_run.sh, scripts/notify_staging_deletable.sh): cron
+  calls the copies in /staging/nextcloud/testing_illumina/.src, never the ones inside a run
+  dir, because delete_staged_run.sh deletes the run dir it is given. Copy them there after
+  changing them. delete_staged_run.sh <run_dir> <usb_base> removes the processed run dir only
+  when publish, both HPC3 backups and the USB sync are done, no step holds a lock, and
+  verify_mirror.py passes for the JBOD and USB copies; it then leaves
+  <instrument dir>/.<run_id>.deleted, which the next run's cron gate can test:
+    15,45 * 4-15 11 * /staging/nextcloud/testing_illumina/.src/delete_staged_run.sh <run_dir> /mnt/extusb3 >> /staging/nextcloud/testing_illumina/.src/delete_staged_run.log 2>&1
+  notify_staging_deletable.sh (hourly) emails once per run when its staging copies can go;
+  the raw run dir under /staging/nextcloud/NovaseqX is always deleted by hand.
+  docs/crontab_2026-11.txt is a snapshot of the crontab that uses all of this.
