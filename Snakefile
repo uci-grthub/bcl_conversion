@@ -485,7 +485,8 @@ def project_keeps_index_reads(config_id, project):
         return True
     # Single-cell orders identified only by their Summary "Sample sheet tab"
     # (name carries no 10x/Parse/BD token) still need their index reads.
-    return is_parse_or_10x(check_name)
+    # naming=False: bcl2fastq-tab projects share the Illumina naming, not this.
+    return is_parse_or_10x(check_name, naming=False)
 
 # Helper definitions are sourced from src/workflow_defs.smk
 

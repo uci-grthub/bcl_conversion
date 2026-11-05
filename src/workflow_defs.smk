@@ -271,7 +271,7 @@ def get_project_links_from_yaml(yaml_path, project, lane=None, order_id=None):
 try:
     from single_cell import is_single_cell_project as is_parse_or_10x
 except Exception:
-    def is_parse_or_10x(project_name, lane=None, group=None):
+    def is_parse_or_10x(project_name, lane=None, group=None, naming=True):
         try:
             p = str(project_name or "").lower()
         except Exception:
