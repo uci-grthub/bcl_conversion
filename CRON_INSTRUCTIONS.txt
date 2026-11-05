@@ -46,3 +46,11 @@ Notes:
   installed on this host (not provisioned by pixi). This is why the job runs here via cron
   and not under Slurm: bcl-convert needs this machine's DRAGEN FPGA and local /staging.
 - monitor_and_run_snakemake.sh (tmux launcher, `pixi run all` only) is the older approach.
+- One run at a time: `pixi run all` holds the host-wide lock
+  /staging/nextcloud/testing_illumina/.pipeline_all.lock, so a second run that is ready
+  just waits for a later tick. The lock is released before publish, so the next run can
+  convert while the previous one publishes and backs up. A successful `all` writes .all_ok.
+- Fixed order: prefix a run's cron command with WAIT_FOR=<previous run dir>. The run then
+  waits until <previous run dir>/.all_ok exists:
+    */30 * 4-15 11 * WAIT_FOR=<prev_run_dir> <run_dir>/run_and_backup_when_ready.sh >> <run_dir>/logs/cron_run.log 2>&1
+  If the previous run's `all` fails, every run after it waits until that run is fixed.
