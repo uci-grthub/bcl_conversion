@@ -1,0 +1,23 @@
+# Crontab snapshot, 2026-11-05, host running bcl-convert (DRAGEN). Install: crontab <file>
+
+0 8 * * 1 /staging/nextcloud/testing_illumina/.src/notify_old_bcl_dirs.sh
+# */30 16-23 31 10 * /staging/nextcloud/testing_illumina/NovaSeqX/xR124/run_and_backup_when_ready.sh /mnt/extusb3 >> /staging/nextcloud/testing_illumina/NovaSeqX/xR124/logs/cron_run.log 2>&1  # bclgui:xR124
+# */30 * 1-7 11 * /staging/nextcloud/testing_illumina/NovaSeqX/xR124/run_and_backup_when_ready.sh /mnt/extusb3 >> /staging/nextcloud/testing_illumina/NovaSeqX/xR124/logs/cron_run.log 2>&1  # bclgui:xR124
+# --- Nov 2026 NovaSeqX schedule ---
+# 11/4: xR125 (FC1 25J3VMLT4) then xR126 (FC2 25J2LLLT4), 25B PE60_8_8_150
+# Each: all + publish + HPC3 raw/processed backups + USB sync, then its staging dir is
+# deleted by delete_staged_run.sh (re-verifies JBOD + USB mirrors first; writes /staging/nextcloud/testing_illumina/NovaSeqX/.<run>.deleted).
+*/30 * 4-15 11 * [ -x /staging/nextcloud/testing_illumina/NovaSeqX/xR125/run_and_backup_when_ready.sh ] && /staging/nextcloud/testing_illumina/NovaSeqX/xR125/run_and_backup_when_ready.sh $(mountpoint -q /mnt/extusb3 && echo /mnt/extusb3) >> /staging/nextcloud/testing_illumina/NovaSeqX/xR125/logs/cron_run.log 2>&1  # bclgui:xR125
+15,45 * 4-15 11 * /staging/nextcloud/testing_illumina/.src/delete_staged_run.sh /staging/nextcloud/testing_illumina/NovaSeqX/xR125 /mnt/extusb3 >> /staging/nextcloud/testing_illumina/.src/delete_staged_run.log 2>&1  # delete:xR125
+# xR126 starts only after xR125 finished every step (or xR125 was already deleted)
+*/30 * 4-15 11 * { [ -f /staging/nextcloud/testing_illumina/NovaSeqX/.xR125.deleted ] || { [ -f /staging/nextcloud/testing_illumina/NovaSeqX/xR125/.post_raw_backup.done ] && [ -f /staging/nextcloud/testing_illumina/NovaSeqX/xR125/.post_processed_backup.done ] && [ -f /staging/nextcloud/testing_illumina/NovaSeqX/xR125/.post_usb_sync.done ]; }; } && [ -x /staging/nextcloud/testing_illumina/NovaSeqX/xR126/run_and_backup_when_ready.sh ] && /staging/nextcloud/testing_illumina/NovaSeqX/xR126/run_and_backup_when_ready.sh $(mountpoint -q /mnt/extusb3 && echo /mnt/extusb3) >> /staging/nextcloud/testing_illumina/NovaSeqX/xR126/logs/cron_run.log 2>&1  # bclgui:xR126
+15,45 * 4-15 11 * /staging/nextcloud/testing_illumina/.src/delete_staged_run.sh /staging/nextcloud/testing_illumina/NovaSeqX/xR126 /mnt/extusb3 >> /staging/nextcloud/testing_illumina/.src/delete_staged_run.log 2>&1  # delete:xR126
+# 11/6: 25B PE151 + 25B PE60_8_8_150 -- run IDs assumed; no-op until the dir is set up.
+# xR127 waits for xR126's pixi run all (.all_ok, or xR126 already deleted).
+*/30 * 6-20 11 * { [ -f /staging/nextcloud/testing_illumina/NovaSeqX/.xR126.deleted ] || [ -f /staging/nextcloud/testing_illumina/NovaSeqX/xR126/.all_ok ]; } && [ -x /staging/nextcloud/testing_illumina/NovaSeqX/xR127/run_and_backup_when_ready.sh ] && /staging/nextcloud/testing_illumina/NovaSeqX/xR127/run_and_backup_when_ready.sh >> /staging/nextcloud/testing_illumina/NovaSeqX/xR127/logs/cron_run.log 2>&1  # bclgui:xR127
+*/30 * 6-20 11 * [ -x /staging/nextcloud/testing_illumina/NovaSeqX/xR128/run_and_backup_when_ready.sh ] && WAIT_FOR=/staging/nextcloud/testing_illumina/NovaSeqX/xR127 /staging/nextcloud/testing_illumina/NovaSeqX/xR128/run_and_backup_when_ready.sh >> /staging/nextcloud/testing_illumina/NovaSeqX/xR128/logs/cron_run.log 2>&1  # bclgui:xR128
+# 11/9: 25B PE60_8_8_150 + 10B PE151 -- run IDs assumed; no-op until the dir is set up
+*/30 * 9-23 11 * [ -x /staging/nextcloud/testing_illumina/NovaSeqX/xR129/run_and_backup_when_ready.sh ] && WAIT_FOR=/staging/nextcloud/testing_illumina/NovaSeqX/xR128 /staging/nextcloud/testing_illumina/NovaSeqX/xR129/run_and_backup_when_ready.sh >> /staging/nextcloud/testing_illumina/NovaSeqX/xR129/logs/cron_run.log 2>&1  # bclgui:xR129
+*/30 * 9-23 11 * [ -x /staging/nextcloud/testing_illumina/NovaSeqX/xR130/run_and_backup_when_ready.sh ] && WAIT_FOR=/staging/nextcloud/testing_illumina/NovaSeqX/xR129 /staging/nextcloud/testing_illumina/NovaSeqX/xR130/run_and_backup_when_ready.sh >> /staging/nextcloud/testing_illumina/NovaSeqX/xR130/logs/cron_run.log 2>&1  # bclgui:xR130
+# Email when a run is published + backed up to HPC3, so its staging copies can be deleted by hand
+50 * * * * /staging/nextcloud/testing_illumina/.src/notify_staging_deletable.sh >> /staging/nextcloud/testing_illumina/.src/notify_staging_deletable.log 2>&1

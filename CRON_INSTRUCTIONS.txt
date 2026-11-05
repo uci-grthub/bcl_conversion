@@ -64,4 +64,4 @@ Notes:
     15,45 * 4-15 11 * /staging/nextcloud/testing_illumina/.src/delete_staged_run.sh <run_dir> /mnt/extusb3 >> /staging/nextcloud/testing_illumina/.src/delete_staged_run.log 2>&1
   notify_staging_deletable.sh (hourly) emails once per run when its staging copies can go;
   the raw run dir under /staging/nextcloud/NovaseqX is always deleted by hand.
-  docs/crontab_2026-11.txt is a snapshot of the crontab that uses all of this.
+  docs/crontab_2026-11.cron is a snapshot of the crontab that uses all of this.
