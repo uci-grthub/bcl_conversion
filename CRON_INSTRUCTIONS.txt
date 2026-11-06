@@ -65,3 +65,13 @@ Notes:
   notify_staging_deletable.sh (hourly) emails once per run when its staging copies can go;
   the raw run dir under /staging/nextcloud/NovaseqX is always deleted by hand.
   docs/crontab_2026-11.cron is a snapshot of the crontab that uses all of this.
+- Freeing staging early (scripts/backup_from_mirror.sh): once a run has published, its
+  staging dir can be deleted before the backups finish, and the backups continued from
+  the JBOD mirror (a full run dir). Remove the run's bclgui/delete cron lines, re-check
+  the mirror (verify_mirror.py <mirror> --src <staging run dir>, sizes only), stop the
+  running run_and_backup_when_ready.sh chain, write <instrument dir>/.<run_id>.deleted,
+  delete the staging dir, then add:
+    */30 * 6-15 11 * /staging/nextcloud/testing_illumina/.src/backup_from_mirror.sh <mirror_dir> /mnt/extusb3 >> /staging/nextcloud/testing_illumina/.src/backup_from_mirror.log 2>&1
+  It refuses to run while the staging copy still exists (sync_run would pick that one),
+  uses the same .post_<step>.done markers in the mirror, and emails once all three
+  backups are done so the raw run dir can be deleted by hand.
