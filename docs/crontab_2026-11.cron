@@ -1,4 +1,4 @@
-# Crontab snapshot, 2026-11-05, host running bcl-convert (DRAGEN). Install: crontab <file>
+# Crontab snapshot, 2026-11-07, host running bcl-convert (DRAGEN). Install: crontab <file>
 
 0 8 * * 1 /staging/nextcloud/testing_illumina/.src/notify_old_bcl_dirs.sh
 # */30 16-23 31 10 * /staging/nextcloud/testing_illumina/NovaSeqX/xR124/run_and_backup_when_ready.sh /mnt/extusb3 >> /staging/nextcloud/testing_illumina/NovaSeqX/xR124/logs/cron_run.log 2>&1  # bclgui:xR124
@@ -7,11 +7,11 @@
 # 11/4: xR125 (FC1 25J3VMLT4) then xR126 (FC2 25J2LLLT4), 25B PE60_8_8_150
 # Each: all + publish + HPC3 raw/processed backups + USB sync, then its staging dir is
 # deleted by delete_staged_run.sh (re-verifies JBOD + USB mirrors first; writes /staging/nextcloud/testing_illumina/NovaSeqX/.<run>.deleted).
-*/30 * 4-15 11 * [ -x /staging/nextcloud/testing_illumina/NovaSeqX/xR125/run_and_backup_when_ready.sh ] && /staging/nextcloud/testing_illumina/NovaSeqX/xR125/run_and_backup_when_ready.sh $(mountpoint -q /mnt/extusb3 && echo /mnt/extusb3) >> /staging/nextcloud/testing_illumina/NovaSeqX/xR125/logs/cron_run.log 2>&1  # bclgui:xR125
-15,45 * 4-15 11 * /staging/nextcloud/testing_illumina/.src/delete_staged_run.sh /staging/nextcloud/testing_illumina/NovaSeqX/xR125 /mnt/extusb3 >> /staging/nextcloud/testing_illumina/.src/delete_staged_run.log 2>&1  # delete:xR125
-# xR126 starts only after xR125 finished every step (or xR125 was already deleted)
-*/30 * 4-15 11 * { [ -f /staging/nextcloud/testing_illumina/NovaSeqX/.xR125.deleted ] || { [ -f /staging/nextcloud/testing_illumina/NovaSeqX/xR125/.post_raw_backup.done ] && [ -f /staging/nextcloud/testing_illumina/NovaSeqX/xR125/.post_processed_backup.done ] && [ -f /staging/nextcloud/testing_illumina/NovaSeqX/xR125/.post_usb_sync.done ]; }; } && [ -x /staging/nextcloud/testing_illumina/NovaSeqX/xR126/run_and_backup_when_ready.sh ] && /staging/nextcloud/testing_illumina/NovaSeqX/xR126/run_and_backup_when_ready.sh $(mountpoint -q /mnt/extusb3 && echo /mnt/extusb3) >> /staging/nextcloud/testing_illumina/NovaSeqX/xR126/logs/cron_run.log 2>&1  # bclgui:xR126
+# xR126 runs as soon as it is ready; .pipeline_all.lock keeps its pixi run all from overlapping another run's
+*/30 * 4-15 11 * [ -x /staging/nextcloud/testing_illumina/NovaSeqX/xR126/run_and_backup_when_ready.sh ] && /staging/nextcloud/testing_illumina/NovaSeqX/xR126/run_and_backup_when_ready.sh $(mountpoint -q /mnt/extusb3 && echo /mnt/extusb3) >> /staging/nextcloud/testing_illumina/NovaSeqX/xR126/logs/cron_run.log 2>&1  # bclgui:xR126
 15,45 * 4-15 11 * /staging/nextcloud/testing_illumina/.src/delete_staged_run.sh /staging/nextcloud/testing_illumina/NovaSeqX/xR126 /mnt/extusb3 >> /staging/nextcloud/testing_illumina/.src/delete_staged_run.log 2>&1  # delete:xR126
+# xR125: backups continue from its JBOD mirror; paused until xR126's HPC3 raw + processed backups and USB sync are done (markers in xR126 staging or its JBOD mirror)
+*/30 * 6-15 11 * { [ -f /staging/nextcloud/testing_illumina/NovaSeqX/.xR126.deleted ] || ( for d in /staging/nextcloud/testing_illumina/NovaSeqX/xR126 /mnt/jbod_localdisk/nextshare/bcl_convert/NovaSeqX/xR126; do [ -f $d/.post_raw_backup.done ] && [ -f $d/.post_processed_backup.done ] && [ -f $d/.post_usb_sync.done ] && exit 0; done; exit 1 ); } && /staging/nextcloud/testing_illumina/.src/backup_from_mirror.sh /mnt/jbod_localdisk/nextshare/bcl_convert/NovaSeqX/xR125 /mnt/extusb3 >> /staging/nextcloud/testing_illumina/.src/backup_from_mirror.log 2>&1  # backup:xR125
 # 11/6: 25B PE151 + 25B PE60_8_8_150 -- run IDs assumed; no-op until the dir is set up.
 # xR127 waits for xR126's pixi run all (.all_ok, or xR126 already deleted).
 */30 * 6-20 11 * { [ -f /staging/nextcloud/testing_illumina/NovaSeqX/.xR126.deleted ] || [ -f /staging/nextcloud/testing_illumina/NovaSeqX/xR126/.all_ok ]; } && [ -x /staging/nextcloud/testing_illumina/NovaSeqX/xR127/run_and_backup_when_ready.sh ] && /staging/nextcloud/testing_illumina/NovaSeqX/xR127/run_and_backup_when_ready.sh >> /staging/nextcloud/testing_illumina/NovaSeqX/xR127/logs/cron_run.log 2>&1  # bclgui:xR127
