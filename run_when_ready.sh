@@ -12,7 +12,10 @@ PIXI="$(command -v pixi 2>/dev/null || echo "$HOME/.pixi/bin/pixi")"
 
 cd "$(realpath "$(dirname "$0")")"
 
-DATA_DIR=$(python3 -c "import yaml; print(yaml.safe_load(open('snakemake_config_project.yaml')).get('data_dir', ''))")
+# Read the config with the project's pixi Python, not whatever python3 is first on
+# PATH: an interactive shell can put a python3 without PyYAML (e.g. miniforge)
+# ahead of /usr/bin/python3, and the launch then dies before it starts.
+DATA_DIR=$("$PIXI" run --frozen python -c "import yaml; print(yaml.safe_load(open('snakemake_config_project.yaml')).get('data_dir', ''))")
 if [ -z "$DATA_DIR" ]; then
   echo "$(date) data_dir not set in snakemake_config_project.yaml. Exiting."
   exit 1
