@@ -206,3 +206,47 @@ def test_report_flags_typo_and_not_10x_projects(tmp_path):
             "'LinE_RNAseq_PoolA_8plex' for lane 2 group 1") in msgs
     # KencS lives on the 10x tab its Summary row names, so Barcode List is not expected to list it.
     assert not any("KencS" in m and "missing from Barcode List" in m for m in msgs)
+
+
+def test_sample_name_fill_down_stops_at_project_boundary(tmp_path):
+    # xR128: MartT_Riboseq's only row had a blank Sample Name and inherited
+    # 'DY_Sample' from the ShiY project above it.
+    os.chdir(tmp_path)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Summary"
+    ws.append([None, None, None, "Flowcell:TEST"])
+    ws.append(["Lane", "Gr", "Order ID", "Lab ID", "Project Name", "Contact (E-mail)",
+               "Sample sheet tab", "Masking"])
+    for gr, oid, lab, proj, mask in [
+        (1, "1126I-07", "ShiY", "ShiY_DNAseq_2plex", "R1:151, I1:8, I2:0, R2:151"),
+        (2, "1126I-05", "MartT", "MartT_Riboseq_26D", "R1:151, I1:6, I2:8, R2:151"),
+        (3, "1126I-10", "ByunM", "ByunM_dTAG_2plex", "R1:151, I1:8, I2:8, R2:151"),
+    ]:
+        ws.append([6, gr, oid, lab, proj, "x@uci.edu", "Barcode List", mask])
+    ws = wb.create_sheet("Barcode List")
+    ws.append([])
+    ws.append(["Lane", "Group", "Order ID", "LabID", "Contact", "Project name",
+               "Sample Name", "Index Name", "i7 Barcode Sequence", "i5 Barcode Sequence"])
+    ws.append([6, 1, "1126I-07", "ShiY", "x@uci.edu", "ShiY_DNAseq_2plex",
+               "DY_Ctrl", "P7179/P5099", "TTGAACCG", None])
+    ws.append([None, None, None, None, None, None, "DY_Sample", None, "AATCCAGC", None])
+    ws.append([6, 2, "1126I-05", "MartT", "x@uci.edu", "MartT_Riboseq_26D",
+               None, None, "GCCAAT", "AGATCTCG"])
+    ws.append([6, 3, "1126I-10", "ByunM", "x@uci.edu", "ByunM_dTAG_2plex",
+               "dTAG", "A10", "CGTATCTC", "GTACCTTG"])
+    ws.append([None, None, None, None, None, None, None, "B10", "TTACGTGC", "CAAGGTCT"])
+    wb.save("in.xlsx")
+
+    validate_metadata_and_write_report("in.xlsx", out_xlsx="out.xlsx")
+
+    bl = pd.read_excel("out.xlsx", sheet_name="Barcode List")
+    names = dict(zip(bl["Index Name"].fillna("") + "|" + bl["i7 Barcode Sequence"], bl["Sample Name"]))
+    assert pd.isna(names["|GCCAAT"])                      # not 'DY_Sample'
+    assert names["B10|TTACGTGC"] == "dTAG_2"               # still filled within its own project
+    martt = bl[bl["i7 Barcode Sequence"] == "GCCAAT"]
+    assert martt["Index Name"].isna().all()                # Index Name does not leak either
+
+    msgs = pd.read_excel("out.xlsx", sheet_name="RECOMMENDED_CHANGES")["message"].tolist()
+    assert any("blank in project 'MartT_Riboseq_26D'" in m for m in msgs)
+    assert not any("blank in project 'ByunM_dTAG_2plex'" in m for m in msgs)

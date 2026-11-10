@@ -409,9 +409,12 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
         try:
             # Identify columns that should be filled down (metadata columns, not barcode sequences)
             fill_cols = ['Lane', 'Lane.1', 'Group', 'group', 'Gr', 'gr', 'Order ID', 'order ID', 'LabID', 'Lab ID', 'Contact', 'Email',
-                        'Project name', 'Project', 'Sample_Project', 'Sample Name', 'Sample_Name',
-                        'Sample_ID', 'Index Name']
+                        'Project name', 'Project', 'Sample_Project']
             cols_to_fill = [c for c in fill_cols if c in df.columns]
+            # Per-sample columns are filled down within each project only (below), so a
+            # blank first row of one project never inherits the previous project's sample.
+            per_project_cols = [c for c in ('Sample Name', 'Sample_Name', 'Sample_ID', 'Index Name')
+                                if c in df.columns]
 
             # Only forward-fill i7/index (first index) barcode columns when they contain sequence values.
             # Do NOT forward-fill i5/index2 (second index) columns to avoid propagating blanks for single-index libraries.
@@ -445,6 +448,28 @@ def validate_metadata_and_write_report(metadata_file, out_xlsx=None):
             final_fill = cols_to_fill + seq_cols
             if final_fill:
                 df[final_fill] = df[final_fill].ffill()
+
+            if per_project_cols:
+                proj_col = next((c for c in ('Project name', 'Project', 'Sample_Project')
+                                 if c in df.columns), None)
+                if proj_col:
+                    blank_before = {c: df[c].isna() for c in per_project_cols}
+                    df[per_project_cols] = df.groupby(df[proj_col], sort=False, dropna=False)[per_project_cols].ffill()
+                    name_col = next((c for c in _SAMPLE_NAME_COLS if c in per_project_cols), None)
+                    if name_col and not _is_summary_tab(sheet):
+                        # A blank name with no earlier name in its project has nothing to fill from.
+                        for ridx in df.index[blank_before[name_col] & df[name_col].isna() & df[proj_col].notna()]:
+                            row = df.loc[ridx]
+                            issues.append({
+                                'sheet': sheet, 'row': int(ridx), 'col': name_col,
+                                'message': (f"Sample name is blank in project '{row[proj_col]}' and no "
+                                            f"earlier row of that project has one to fill down; enter a name"),
+                                'lane': row.get('Lane', ''),
+                                'group': row.get('Group', row.get('Gr', row.get('group', ''))),
+                                'excel_row': int(ridx) + 2,
+                            })
+                else:
+                    df[per_project_cols] = df[per_project_cols].ffill()
 
             # After forward-fill: handle Order ID fills.
             try:

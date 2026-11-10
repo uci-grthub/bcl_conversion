@@ -1125,12 +1125,12 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
 
                 # Sample Name / ID
                 # We want a single 'Sample_Name' column to use for ID generation later
-                if 'Sample Name' in df.columns:
-                    df['Sample Name'] = df['Sample Name'].ffill()
-                    sheet_samples['Sample_Name'] = df['Sample Name']
-                elif 'Sample_Name' in df.columns:
-                    df['Sample_Name'] = df['Sample_Name'].ffill()
-                    sheet_samples['Sample_Name'] = df['Sample_Name']
+                # Fill down within each project only: a blank first row of one project
+                # must not inherit the previous project's last sample name.
+                _name_col = next((c for c in ('Sample Name', 'Sample_Name') if c in df.columns), None)
+                if _name_col:
+                    df[_name_col] = df[_name_col].groupby(sheet_samples['Project'], sort=False, dropna=False).ffill()
+                    sheet_samples['Sample_Name'] = df[_name_col]
                 
                 # If Sample_Name is missing/NaN, try Sample_ID
                 if 'Sample_ID' in df.columns:
