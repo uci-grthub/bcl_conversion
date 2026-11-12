@@ -24,6 +24,13 @@ Adding decoys tightens how close two barcodes can be, so the matching thresholds
 should run with follow from the finished table rather than being fixed in the caller.
 They are written to a shell-sourceable sidecar next to the output TSV.
 
+A barcode can also be set by hand with --override SAMPLE=BARCODE (from the
+fqtk_barcode_overrides config key). That is for a library whose dominant form is
+someone else's: in xR128 lane 5 the Undetermined reads starting GTAGAG were mostly
+MartJ_BGS10's GTAGAGGA (unassigned for their i5), while LuptA Pool_9 itself read
+GTAGAGAT. An override must extend the sheet barcode and still passes the collision
+check and threshold calculation below. See docs/fqtk_resolver_dominant_form.md.
+
 Usage:
     resolve_fqtk_barcodes.py --barcodes metadata/fqtk_barcodes_lane2.tsv \
         --undetermined-i1 .output/lane2/Undetermined_S0_L002_I1_001.fastq.gz \
@@ -113,12 +120,31 @@ def main():
         "--min-fraction", type=float, default=0.5,
         help="dominant form must hold at least this share of matching reads (default: 0.5)",
     )
+    parser.add_argument(
+        "--override", action="append", default=[], metavar="SAMPLE=BARCODE",
+        help="set SAMPLE's barcode by hand instead of measuring it (repeatable)",
+    )
     args = parser.parse_args()
 
     header, entries = read_barcode_tsv(args.barcodes)
     sheet_indexes = read_sheet_indexes(args.samplesheet) if args.samplesheet else []
 
     errors = []
+    by_sample = {e["sample_id"]: e for e in entries}
+    for spec in args.override:
+        sample, sep, barcode = spec.partition("=")
+        sample, barcode = sample.strip(), barcode.strip().upper()
+        entry = by_sample.get(sample)
+        if not sep or entry is None:
+            errors.append(f"override {spec!r}: no sample {sample!r} in {args.barcodes}")
+        elif len(barcode) != args.target_length or not barcode.startswith(entry["barcode"]):
+            errors.append(
+                f"override {spec!r}: must be {args.target_length}bp and extend the sheet "
+                f"barcode {entry['barcode']}"
+            )
+        else:
+            print(f"{sample}: {entry['barcode']} -> {barcode} (override, not measured)")
+            entry["barcode"] = barcode
     short = [e for e in entries if len(e["barcode"]) < args.target_length]
     if not short:
         print(f"All barcodes already {args.target_length}bp or longer.")

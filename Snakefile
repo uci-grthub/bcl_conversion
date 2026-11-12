@@ -1,6 +1,7 @@
 
 import os
 import re
+import shlex
 import subprocess
 import sys
 import glob
@@ -2771,6 +2772,11 @@ rule fqtk_per_config:
         r1      = lambda wildcards: f".output/{wildcards.config_id}/Undetermined_S0_L{int(wildcards.config_id.replace('lane', '')):03d}_R1_001.fastq.gz",
         i1      = lambda wildcards: f".output/{wildcards.config_id}/Undetermined_S0_L{int(wildcards.config_id.replace('lane', '')):03d}_I1_001.fastq.gz",
         r2      = lambda wildcards: f".output/{wildcards.config_id}/Undetermined_S0_L{int(wildcards.config_id.replace('lane', '')):03d}_R2_001.fastq.gz",
+        # Hand-set barcodes for samples the resolver would measure wrongly, from
+        # config fqtk_barcode_overrides: {lane5: {Pool_9: GTAGAGAT}}.
+        overrides = lambda wildcards: " ".join(
+            f"--override {shlex.quote(f'{s}={b}')}"
+            for s, b in ((config.get('fqtk_barcode_overrides') or {}).get(wildcards.config_id) or {}).items()),
     shell:
         """
         (
@@ -2807,6 +2813,7 @@ rule fqtk_per_config:
             --undetermined-i1 "$I1" \
             --samplesheet {input.samplesheet} \
             --target-length 8 \
+            {params.overrides} \
             --output "$RESOLVED"
 
         # Matching thresholds come from how close the resolved barcodes and decoys
