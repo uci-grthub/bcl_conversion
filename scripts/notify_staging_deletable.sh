@@ -22,7 +22,12 @@ ENV_FILE="$STAGING_ROOT/.env"
 SENDER="kstachel@uci.edu"
 RECIPIENT="kstachel@uci.edu"
 
-source "$ENV_FILE"
+# Secrets: the shared $ENV_FILE has no GMAIL_APP_PASSWORD; it lives in ~/.env,
+# the same per-user file scripts/load_dotenv.sh reads for the pipeline. Load both
+# (~/.env wins) and export everything, so send_email.py sees the password.
+set -a
+for f in "$ENV_FILE" "$HOME/.env"; do [ -f "$f" ] && . "$f"; done
+set +a
 
 shopt -s nullglob
 for run_dir in "$STAGING_ROOT"/*/xR*/; do

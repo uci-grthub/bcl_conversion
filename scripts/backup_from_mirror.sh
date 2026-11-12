@@ -75,7 +75,12 @@ done
 raw_dir="$(sed -n 's/^data_dir:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p' snakemake_config_project.yaml | head -1)"
 raw_size="n/a"
 [ -n "$raw_dir" ] && [ -d "$raw_dir" ] && raw_size="$(du -sh "$raw_dir" 2>/dev/null | cut -f1)"
-source "$ENV_FILE"
+# Secrets: the shared $ENV_FILE has no GMAIL_APP_PASSWORD; it lives in ~/.env,
+# the same per-user file scripts/load_dotenv.sh reads for the pipeline. Load both
+# (~/.env wins) and export everything, so send_email.py sees the password.
+set -a
+for f in "$ENV_FILE" "$HOME/.env"; do [ -f "$f" ] && . "$f"; done
+set +a
 body="$(mktemp /tmp/backup_from_mirror_XXXXXX.html)"
 cat > "$body" <<HTML
 <html><body style="font-family:Arial,sans-serif;font-size:14px">
