@@ -1631,6 +1631,9 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
         # written here may be shorter than the lane's index read; scripts/
         # resolve_fqtk_barcodes.py extends them from the observed Undetermined reads
         # before fqtk runs.
+        # fqtk demultiplexes from Undetermined_*_I1_*.fastq.gz, which DRAGEN writes only
+        # with CreateFastqForIndexReads=1; set below when any sample is routed to fqtk.
+        fqtk_needs_index_reads = False
         if 'Sample_Project' in ss_data.columns:
             fqtk_mask = ss_data['Sample_Project'].str.contains('fqtk', case=False, na=False)
 
@@ -1652,6 +1655,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
                 fqtk_mask = fqtk_mask | ss_data['Sample_Project'].isin(collision_projects)
 
             if fqtk_mask.any():
+                fqtk_needs_index_reads = True
                 fqtk_tsv_path = os.path.join("metadata", f"fqtk_barcodes_{config_id}.tsv")
                 os.makedirs("metadata", exist_ok=True)
                 with open(fqtk_tsv_path, 'w') as tf:
@@ -1793,7 +1797,7 @@ def generate_lane_samplesheets(metadata_file, lane_configs, project_lookup, mask
             # (DRAGEN 4.x does not support CreateFastqForIndexReads as a per-sample column.)
             _INDEX_READ_KEYWORDS = ["10x", "BD", "parse", "Parse", "SMK", "smk", "CITE", "cite", "Hashtag", "hashtag"]
             create_fastq_for_index = "0"
-            if special_atac_index_reads or NO_DEMUX:
+            if special_atac_index_reads or NO_DEMUX or fqtk_needs_index_reads:
                 f.write("CreateFastqForIndexReads,1\n")
             else:
                 # Check both Project Name and Sample Sheet tab columns for index-read keywords
