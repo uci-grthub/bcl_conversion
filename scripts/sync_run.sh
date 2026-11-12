@@ -99,6 +99,7 @@ sync_run() {
     echo "[sync_run] parallel: $parallel_enabled (PARALLEL=$parallel)"
     echo "[sync_run] lanes:    ${lane_dirs[*]:-all}"
     echo "[sync_run] excluded from mirror (rebuilt there): .snakemake, Reports, logs/*link*"
+    echo "[sync_run] excluded from mirror (not delivered): Undetermined_S0_*.fastq.gz"
     echo "[sync_run] hardlinks preserved within the sequential pass (-H); across passes, see dedupe_mirror.py"
 
     if [[ "$parallel_enabled" != "false" && -d "$src/output" ]]; then
@@ -171,6 +172,7 @@ sync_run() {
     fi
     if ! rsync -aWH --info=progress2 --stats -h \
         --exclude '.snakemake' \
+        --exclude 'Undetermined_S0_*.fastq.gz' \
         --exclude 'logs/*link*' \
         --exclude 'logs/**/*link*' \
         --exclude '/Reports' \

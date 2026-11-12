@@ -167,7 +167,8 @@ processed_novaseqx_backup() {
     # tick bumps (`exec N>lock`), so the verify pass would always see them differ.
     local -a excludes=(--exclude '.DS_Store'
                        --exclude "/${name}/.post_*.lock"
-                       --exclude "/${name}/.auto_launch.lock")
+                       --exclude "/${name}/.auto_launch.lock"
+                       --exclude 'Undetermined_S0_*.fastq.gz')
     [[ -z "${KEEP_PIXI:-}" ]] && excludes+=(--exclude "/${name}/.pixi")
     [[ -n "${SKIP_SWEEPS:-}" ]] && excludes+=(--exclude "/${name}/sweeps")
 
