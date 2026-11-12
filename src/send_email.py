@@ -21,6 +21,17 @@ content_arg = sys.argv[4] if len(sys.argv) > 4 else ""
 attachment_paths = sys.argv[5] if len(sys.argv) > 5 else None
 cc_email = sys.argv[6] if len(sys.argv) > 6 else "kstachel@uci.edu"
 
+
+def _addr_list(value):
+    """Split a comma/semicolon separated address string into a list."""
+    return [a.strip() for a in re.split(r"[;,]", value or "") if a.strip()]
+
+
+cc_list = _addr_list(cc_email)
+cc_email = ", ".join(cc_list)
+# Bcc goes on the SMTP envelope only, never in a header.
+bcc_list = _addr_list(os.environ.get("EMAIL_BCC", ""))
+
 # Parse multiple attachments (semicolon or comma separated)
 attachment_list = []
 if attachment_paths and attachment_paths.lower() != "none":
@@ -265,15 +276,15 @@ print(f"Actual MIME message size: {actual_mb:.1f} MB")
 
 # If dry-run mode is enabled, don't attempt SMTP send
 if DRY_RUN:
-    print(f"Dry-run: would send email to {receiver_email} (cc: {cc_email}), subject: {subject}")
+    print(f"Dry-run: would send email to {receiver_email} (cc: {cc_email}) (bcc: {', '.join(bcc_list)}), subject: {subject}")
     sys.exit(0)
 
 try:
     with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
         server.login(sender_email, app_password)
-        recipients = [receiver_email, cc_email]
+        recipients = list(dict.fromkeys([receiver_email] + cc_list + bcc_list))
         server.sendmail(sender_email, recipients, msg_str)
-    print(f"Email sent successfully to {receiver_email} (cc: {cc_email})!")
+    print(f"Email sent successfully to {receiver_email} (cc: {cc_email}) (bcc: {', '.join(bcc_list)})!")
 except Exception as e:
 
     print(f"Error sending email: {e}")
