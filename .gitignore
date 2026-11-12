@@ -45,3 +45,6 @@ recover_lane6_r2.sh
 .auto_launch.lock
 .published_ok
 .post_publish.lock
+
+# local customer contact lists (never commit)
+customer_emails_*.yaml

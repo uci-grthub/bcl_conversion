@@ -28,30 +28,28 @@ MIRROR = "/mnt/jbod_localdisk/nextshare/bcl_convert/NovaSeqX/xR128"
 METADATA = os.path.join(REPO, "metadata/261109_25B_25HVN2LT4_PE151_xR128.xlsx")
 SENDER = "kstachel@uci.edu"
 CC = "mloakes@uci.edu"
-BCC = "phuongnv@uci.edu,cyamamo1@hs.uci.edu,jiew5@uci.edu,chungs@uci.edu"
+# Customer contacts and extra bcc addresses live in a gitignored local file,
+# never in the repo:
+#   bcc: [addr, ...]                       # added to BCC_COMMITTED
+#   recipients: {order: [first name, email]}
+#   sheet_typos: {order: summary-sheet email}   # sheet contact known wrong
+CONTACTS = os.path.join(REPO, "customer_emails_xR128.yaml")
+BCC_COMMITTED = ["chungs@uci.edu"]
 GREETING = "Dear GRT Hub User,"
 
-# order -> (first name, contact email); emails checked against the Summary sheet.
-RECIPIENTS = {
-    "1126I-08": ("Quy", "nguyenq@aurekabio.com"),
-    "1126I-03": ("Claudia", "cweihe@uci.edu"),
-    "1026I-53": ("Yaqun", "yaqunh@uci.edu"),
-    "1026I-29": ("Katherine", "katherine.borkovich@ucr.edu"),
-    "1026I-58": ("Mia", "jingyc2@uci.edu"),
-    "1126I-01": ("Claudia", "cweihe@uci.edu"),
-    "1026I-48": ("Satish", "sbaggam@uci.edu"),
-    "0926I-27": ("Tzu", "liutc2@uci.edu"),
-    "1026I-55": ("Rebekah", "rcharney@buffalo.edu"),
-    "1126I-07": ("Doyeong", "dku3@uci.edu"),
-    "1126I-05": ("Brandon", "toyb@uci.edu"),
-    "1126I-02": ("Claudia", "cweihe@uci.edu"),
-    "0926I-19": ("Miranda", "mirandek@uci.edu"),
-    "1026I-06": ("Satish", "sbaggam@uci.edu"),
-    "1126I-10": ("Yuri", "yuril4@uci.edu"),
-    "1026I-02": ("Vaidehi", "sgandhi@uci.edu"),
-    "1026I-37": ("Madi", "mhfitzsi@uci.edu"),
-    "1026I-42": ("Roberta", "buonor@uci.edu"),
-}
+
+def load_contacts():
+    if not os.path.isfile(CONTACTS):
+        sys.exit(f"ERROR: missing {CONTACTS} (local, gitignored contact list)")
+    with open(CONTACTS) as f:
+        data = yaml.safe_load(f) or {}
+    recipients = {str(k): tuple(v) for k, v in (data.get("recipients") or {}).items()}
+    bcc = ",".join(dict.fromkeys(list(data.get("bcc") or []) + BCC_COMMITTED))
+    typos = {str(k): v for k, v in (data.get("sheet_typos") or {}).items()}
+    return recipients, bcc, typos
+
+
+RECIPIENTS, BCC, SHEET_TYPOS = load_contacts()
 
 
 def die(msg):
@@ -89,7 +87,8 @@ def check_all(orders):
         die(f"orders in Summary sheet with no recipient: {sorted(missing)}")
     for oid in orders:
         name, mail = RECIPIENTS[oid]
-        if contacts.get(oid) != {mail.lower()}:
+        expected = SHEET_TYPOS.get(oid, mail).lower()
+        if contacts.get(oid) != {expected}:
             die(f"{oid}: recipient {mail} != Summary contact {contacts.get(oid)}")
         mdir = os.path.join(MIRROR, "Reports", f"order_{oid}")
         sdir = os.path.join(STAGING, "Reports", f"order_{oid}")
