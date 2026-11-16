@@ -16,6 +16,13 @@ job runs, and a short one would otherwise shrink this whole check in silence.
     python3 scripts/verify_mirror.py <mirror_dir>                 # existence + size
     python3 scripts/verify_mirror.py <mirror_dir> --src <run_dir> # also compare sizes to the source
     python3 scripts/verify_mirror.py <mirror_dir> --md5           # re-verify every checksum (slow)
+    python3 scripts/verify_mirror.py <usb_dir> --flat --src <run_dir>  # USB copy (see below)
+
+A USB copy (scripts/sync_usb.sh) holds only the contents of output/, flattened:
+<usb_dir>/<lane>/<project>/md5sums.txt. --flat looks for the listings there and
+still compares against <run_dir>/output/<lane>/<project> in the source. --lanes
+limits the source-side "project missing from the mirror" check to the lanes a
+partial copy was asked for.
 
 Exit status is 0 when the mirror is complete, 1 otherwise.
 """
@@ -61,7 +68,7 @@ def fastqs_on_disk(project_dir):
     return {name for name in os.listdir(project_dir) if name.endswith(".fastq.gz")}
 
 
-def check_md5sums_file(md5_path, rel_dir, project_dir, entries, src, problems):
+def check_md5sums_file(md5_path, rel_dir, project_dir, entries, src, problems, src_rel=None):
     """Decide whether md5sums.txt itself is trustworthy before believing its contents.
 
     calculate_md5sums writes with `find ... | xargs md5sum | sort > md5sums.txt`,
@@ -103,7 +110,7 @@ def check_md5sums_file(md5_path, rel_dir, project_dir, entries, src, problems):
     # The source copy is the reference for how long the listing should be, and
     # catches the case where the mirror copied a partial file faithfully.
     if src:
-        src_md5 = os.path.join(src, rel_dir, "md5sums.txt")
+        src_md5 = os.path.join(src, src_rel or rel_dir, "md5sums.txt")
         if os.path.exists(src_md5):
             src_entries = read_md5sums(src_md5)
             if len(src_entries) != len(entries):
@@ -114,12 +121,14 @@ def check_md5sums_file(md5_path, rel_dir, project_dir, entries, src, problems):
     return True
 
 
-def check_project(md5_path, mirror, src, check_md5, problems):
+def check_project(md5_path, mirror, src, check_md5, problems, flat=False):
     project_dir = os.path.dirname(md5_path)
     rel_dir = os.path.relpath(project_dir, mirror)
+    # The source run dir always nests lanes under output/; a flat copy does not.
+    src_rel = os.path.join("output", rel_dir) if flat else rel_dir
     entries = read_md5sums(md5_path)
 
-    if not check_md5sums_file(md5_path, rel_dir, project_dir, entries, src, problems):
+    if not check_md5sums_file(md5_path, rel_dir, project_dir, entries, src, problems, src_rel):
         return 0
 
     for name, digest in sorted(entries.items()):
@@ -136,7 +145,7 @@ def check_project(md5_path, mirror, src, check_md5, problems):
         # A truncated transfer is the failure mode that survives every
         # existence-only check, so compare against the source when we have it.
         if src:
-            src_path = os.path.join(src, rel_dir, name)
+            src_path = os.path.join(src, src_rel, name)
             if not os.path.exists(src_path):
                 problems.append(f"{rel_dir}: {name} exists in mirror but not in source {src_path}")
             else:
@@ -161,6 +170,10 @@ def main():
     parser.add_argument("--src", help="the source run directory, to compare file sizes against")
     parser.add_argument("--md5", action="store_true",
                         help="re-verify every checksum (slow; reads all the data)")
+    parser.add_argument("--flat", action="store_true",
+                        help="mirror holds output/'s contents directly (USB copy from sync_usb.sh)")
+    parser.add_argument("--lanes", nargs="+", metavar="LANE",
+                        help="only expect these lane dirs from the source (partial copy)")
     args = parser.parse_args()
 
     mirror = os.path.abspath(args.mirror)
@@ -173,24 +186,33 @@ def main():
         print(f"error: source {src} is not a directory", file=sys.stderr)
         return 1
 
-    md5_files = sorted(glob(os.path.join(mirror, "output", "*", "*", "md5sums.txt")))
+    lane_glob = os.path.join(mirror, "*") if args.flat else os.path.join(mirror, "output", "*")
+    md5_files = sorted(glob(os.path.join(lane_glob, "*", "md5sums.txt")))
     if not md5_files:
-        print(f"error: no output/*/*/md5sums.txt under {mirror}; either the mirror is "
+        layout = "*/*" if args.flat else "output/*/*"
+        print(f"error: no {layout}/md5sums.txt under {mirror}; either the mirror is "
               "empty or the conversion run never completed", file=sys.stderr)
         return 1
 
     problems = []
     n_files = 0
     for md5_path in md5_files:
-        n_files += check_project(md5_path, mirror, src, args.md5, problems)
+        n_files += check_project(md5_path, mirror, src, args.md5, problems, args.flat)
 
     # A project directory present in the source but absent from the mirror has no
     # md5sums.txt to drive the loop above, so it would otherwise pass silently.
     if src:
+        src_output = os.path.join(src, "output")
         src_projects = {
-            os.path.relpath(os.path.dirname(p), src)
-            for p in glob(os.path.join(src, "output", "*", "*", "md5sums.txt"))
+            # Keyed the way the mirror lays them out, so the two sets compare.
+            os.path.relpath(os.path.dirname(p), src_output if args.flat else src)
+            for p in glob(os.path.join(src_output, "*", "*", "md5sums.txt"))
         }
+        if args.lanes:
+            src_projects = {
+                p for p in src_projects
+                if (p.split(os.sep)[0] if args.flat else p.split(os.sep)[1]) in args.lanes
+            }
         mirror_projects = {os.path.relpath(os.path.dirname(p), mirror) for p in md5_files}
         for missing in sorted(src_projects - mirror_projects):
             problems.append(f"project {missing} is in the source but not in the mirror")

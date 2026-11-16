@@ -124,3 +124,57 @@ def test_truncation_check_does_not_mask_a_missing_fastq(tmp_path):
     problems = []
     vm.check_project(os.path.join(project, "md5sums.txt"), mirror, None, False, problems)
     assert any(p.endswith(f"missing {sorted(FASTQS)[0]}") for p in problems), problems
+
+
+def run_main(vm, argv):
+    """Call verify_mirror.main() with argv, restoring sys.argv afterwards."""
+    saved = sys.argv
+    sys.argv = ["verify_mirror.py"] + argv
+    try:
+        return vm.main()
+    finally:
+        sys.argv = saved
+
+
+def make_flat_copy(src, usb):
+    """What sync_usb.sh writes: output/'s lane dirs directly under the run dir."""
+    import shutil
+    shutil.copytree(os.path.join(src, "output"), usb)
+
+
+def test_flat_usb_copy_passes_against_source(tmp_path):
+    """A USB copy has no output/ level; --flat still maps it onto the source."""
+    vm = load_verify_mirror()
+    src = os.path.join(str(tmp_path), "src")
+    make_run(src, fastqs=FASTQS)
+    usb = os.path.join(str(tmp_path), "usb")
+    make_flat_copy(src, usb)
+    assert run_main(vm, [usb, "--flat", "--src", src]) == 0
+    # Without --flat the flat copy has no output/*/*/md5sums.txt to find.
+    assert run_main(vm, [usb, "--src", src]) == 1
+
+
+def test_flat_usb_copy_flags_truncated_fastq(tmp_path):
+    vm = load_verify_mirror()
+    src = os.path.join(str(tmp_path), "src")
+    make_run(src, fastqs=FASTQS)
+    usb = os.path.join(str(tmp_path), "usb")
+    make_flat_copy(src, usb)
+    with open(os.path.join(usb, "lane1", "Proj_A", sorted(FASTQS)[0]), "wb") as fh:
+        fh.write(b"short")
+    assert run_main(vm, [usb, "--flat", "--src", src]) == 1
+
+
+def test_flat_usb_copy_flags_missing_lane_unless_excluded(tmp_path):
+    """A lane absent from the copy fails, unless --lanes says it was not asked for."""
+    vm = load_verify_mirror()
+    src = os.path.join(str(tmp_path), "src")
+    make_run(src, fastqs=FASTQS)
+    lane2 = os.path.join(src, "output", "lane2")
+    import shutil
+    shutil.copytree(os.path.join(src, "output", "lane1"), lane2)
+    usb = os.path.join(str(tmp_path), "usb")
+    make_flat_copy(src, usb)
+    shutil.rmtree(os.path.join(usb, "lane2"))
+    assert run_main(vm, [usb, "--flat", "--src", src]) == 1
+    assert run_main(vm, [usb, "--flat", "--src", src, "--lanes", "lane1"]) == 0

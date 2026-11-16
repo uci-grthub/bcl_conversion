@@ -246,6 +246,17 @@ bash scripts/sync_run.sh NovaSeqX xR108 /mnt/extusb3 false '' 4-6
 bash scripts/sync_run.sh NovaSeqX xR108 /mnt/extusb4 false xR108_part2 7,8
 ```
 
+The USB backup (`run_and_backup_when_ready.sh <usb_base>`, `backup_from_mirror.sh`) does
+not use `sync_run`. It calls `scripts/sync_usb.sh`, which copies only the contents of
+`output/`, flattened, so the drive holds `<usb_base>/<instrument>/<run_id>/lane1/<project>/…`
+and nothing else. It takes an optional lane subset and checks the copy with
+`verify_mirror.py --flat` against the source:
+
+```bash
+bash scripts/sync_usb.sh NovaSeqX xR130 /mnt/extusb3
+bash scripts/sync_usb.sh NovaSeqX xR130 /mnt/extusb4 7,8
+```
+
 Notes:
 
 - Run it **from the run directory**, so the `snakemake` steps see the right config.
