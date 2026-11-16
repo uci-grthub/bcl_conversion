@@ -10,9 +10,10 @@
 #                        resumes a partial HPC3 copy via --append-verify)
 #   2. processed_backup  scripts/backup_processed_run.sh <mirror_dir> (HPC3 dest is
 #                        still NSProcessed/<run_id>)
-#   3. usb_sync          scripts/sync_run.sh <instrument> <run_id> <usb_base> false,
-#                        only while <usb_base> is mounted. sync_run resolves the
-#                        staging copy first, so this refuses to run if one exists.
+#   3. usb_sync          scripts/sync_usb.sh <instrument> <run_id> <usb_base> (output/
+#                        contents only), only while <usb_base> is mounted. sync_usb
+#                        resolves the staging copy first, so it copies from staging
+#                        if one still exists.
 # Each step writes <mirror>/.post_<step>.done; a failed step retries next tick.
 # When all three are done it emails once (.backup_done_notified) that the raw run
 # dir can be deleted by hand.
@@ -62,7 +63,7 @@ run_step() {
 run_step raw_backup       bash scripts/backup_raw_run.sh
 run_step processed_backup bash scripts/backup_processed_run.sh "$mirror"
 if mountpoint -q -- "$usb_base"; then
-  run_step usb_sync bash scripts/sync_run.sh "$instrument" "$run_id" "$usb_base" false
+  run_step usb_sync bash scripts/sync_usb.sh "$instrument" "$run_id" "$usb_base"
 elif [ ! -f .post_usb_sync.done ]; then
   log "[usb_sync] $usb_base not mounted; will retry next tick"
 fi

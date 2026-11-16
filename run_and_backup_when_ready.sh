@@ -3,12 +3,10 @@
 # and `pixi run publish`, exactly once), followed by the run's backups:
 #   1. HPC3 raw backup        (scripts/backup_raw_run.sh)
 #   2. HPC3 processed backup  (scripts/backup_processed_run.sh <run_id>)
-#   3. sync_run to a USB/local drive, only when a destination is given
+#   3. USB copy of output/ only (scripts/sync_usb.sh), when a destination is given
 #
-#   run_and_backup_when_ready.sh [usb_dest_base] [parallel]
+#   run_and_backup_when_ready.sh [usb_dest_base]
 #     usb_dest_base  e.g. /mnt/extusb3; omit to skip the USB sync
-#     parallel       sync_run's parallel flag (default false: right for a single
-#                    USB drive, see scripts/sync_run.sh)
 #
 # The run dir is the directory this script lives in; instrument and run ID are
 # taken from its path (.../<instrument>/<run_id>). The backup scripts open their
@@ -26,7 +24,6 @@ cd "$RUN_DIR" || exit 1
 RUN_ID="$(basename "$RUN_DIR")"
 INSTRUMENT="$(basename "$(dirname "$RUN_DIR")")"
 USB_DEST="${1:-}"
-USB_PARALLEL="${2:-false}"
 
 if [ ! -f .auto_launched ]; then
   ./run_when_ready.sh || { echo "$(date) run_when_ready.sh failed; backups skipped"; exit 1; }
@@ -57,5 +54,5 @@ run_step() {
 run_step raw_backup       bash scripts/backup_raw_run.sh
 run_step processed_backup bash scripts/backup_processed_run.sh "$RUN_ID"
 if [ -n "$USB_DEST" ]; then
-  run_step usb_sync bash scripts/sync_run.sh "$INSTRUMENT" "$RUN_ID" "$USB_DEST" "$USB_PARALLEL"
+  run_step usb_sync bash scripts/sync_usb.sh "$INSTRUMENT" "$RUN_ID" "$USB_DEST"
 fi

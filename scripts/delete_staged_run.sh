@@ -12,7 +12,8 @@
 #   - nothing is still running in it (.auto_launch.lock, .post_publish.lock free;
 #     both stay held through the delete)
 #   - scripts/verify_mirror.py passes for the JBOD mirror and the USB copy
-#     (every FASTQ in md5sums.txt present, sizes match the staging source)
+#     (every FASTQ in md5sums.txt present, sizes match the staging source; the
+#     USB copy holds only output/'s contents, so it is checked with --flat)
 #   - <usb_base> is a mountpoint
 # Before deleting it writes <instrument dir>/.<run_id>.deleted (a tombstone the
 # next run's cron gate can check) and keeps a copy of logs/cron_run.log as
@@ -77,7 +78,9 @@ for mirror in "$jbod_mirror" "$usb_mirror"; do
   if [ ! -d "$mirror" ]; then
     log "$run_id: mirror $mirror not found; not deleting"; exit 0
   fi
-  if ! python3 -I "$verifier" "$mirror" --src "$run_dir"; then
+  layout=()
+  [ "$mirror" = "$usb_mirror" ] && layout=(--flat)
+  if ! python3 -I "$verifier" "$mirror" --src "$run_dir" "${layout[@]}"; then
     log "$run_id: verify_mirror FAILED for $mirror; not deleting"; exit 0
   fi
   log "$run_id: verified $mirror"
